@@ -16,6 +16,7 @@ pub mod init;
 pub mod inspect;
 pub mod parser;
 pub mod paths;
+pub mod prepare;
 pub mod query;
 pub mod reconcile;
 pub mod refresh;

@@ -388,6 +388,30 @@ impl SourceReader {
         expected_revision: &str,
         span: SourceSpan,
     ) -> Result<RangeRead, ReadError> {
+        Ok(self
+            .read_ranges(resource_id, expected_revision, &[span])?
+            .remove(0))
+    }
+
+    /// Several spans of one Resource, from one verified read of its
+    /// current bytes (#17 task 9).
+    ///
+    /// The same contract as [`Self::read_range`], once: the file is read
+    /// and hashed a single time and every span is sliced out of those
+    /// exact bytes. Preparing a dozen call sites in one file is one
+    /// read, not a dozen -- and no span can be sliced from a different
+    /// snapshot than its neighbour.
+    ///
+    /// All-or-nothing, deliberately: a revision mismatch, a hash
+    /// mismatch, or a span that does not describe the current bytes
+    /// fails the whole batch rather than returning a partly trustworthy
+    /// mixture.
+    pub fn read_ranges(
+        &self,
+        resource_id: ResourceId,
+        expected_revision: &str,
+        spans: &[SourceSpan],
+    ) -> Result<Vec<RangeRead>, ReadError> {
         let resource = self.readable_resource(resource_id)?;
         if resource.resource_revision != expected_revision {
             return Err(ReadError::RevisionMismatch {
@@ -398,18 +422,21 @@ impl SourceReader {
         }
 
         let (bytes, verification) = self.verified_bytes(&resource)?;
-        let source = slice(&bytes, span)?;
-
-        Ok(RangeRead {
-            resource_id,
-            path_rel: resource.path_rel,
-            resource_revision: resource.resource_revision,
-            requested_span: span,
-            effective_span: span,
-            source,
-            verification,
-            result_source: ResultSource::StructuralIndex,
-        })
+        spans
+            .iter()
+            .map(|span| {
+                Ok(RangeRead {
+                    resource_id,
+                    path_rel: resource.path_rel.clone(),
+                    resource_revision: resource.resource_revision.clone(),
+                    requested_span: *span,
+                    effective_span: *span,
+                    source: slice(&bytes, *span)?,
+                    verification: verification.clone(),
+                    result_source: ResultSource::StructuralIndex,
+                })
+            })
+            .collect()
     }
 
     /// One Symbol's current metadata *and* the current source of its
