@@ -1,0 +1,65 @@
+name: I1 acceptance
+
+# I1 acceptance infrastructure (#15 task 12), not a product feature: builds
+# and runs the full workspace -- including the real-binary end-to-end
+# acceptance suite in crates/daemon/tests/i1_acceptance.rs -- on all three
+# P0 Tier-1 platforms. Windows runs the exact same suite as Linux/macOS
+# (no stubbing/skipping of Windows-specific behavior), so this is what
+# actually exercises the Windows Named Pipe transport and CLI/daemon
+# handshake/status on a real Windows runner.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  acceptance:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Format check
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test (unit + integration + I1 real-binary acceptance suite)
+        run: cargo test --workspace --locked
+
+      - name: Build
+        run: cargo build --workspace --locked
+
+      - name: CLI and daemon smoke
+        run: |
+          ./target/debug/brainprint --version
+          ./target/debug/brainprint --help
+          ./target/debug/brainprintd --version
+          ./target/debug/brainprintd --help
+
+      - name: Upload Cargo.lock
+        uses: actions/upload-artifact@v4
+        with:
+          name: i1-acceptance-cargo-lock-${{ matrix.os }}
+          path: Cargo.lock
+          retention-days: 7
