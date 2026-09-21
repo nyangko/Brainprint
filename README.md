@@ -150,27 +150,28 @@ The intended model is:
 - Expensive parsing/semantic work should be reusable across agents on the same workspace.
 - WorkItem / Role / Persona metadata may shape later projections, but they must never change source facts, relations, or freshness.
 
-## Brainprint 1.0 → 1.4
+## Brainprint 0.1.0 → 0.5.0 → 1.0.0
 
-Brainprint will evolve through five deliberate product stages.
+Brainprint will evolve through five pre-1.0 product stages, then enter a separate stabilization/hardening gate before 1.0.0.
 
 These versions describe the **primary improvement axis** of each release. They do not mean that a required baseline capability is absent until a later version.
 
 | Version | Primary goal | Core question |
 | --- | --- | --- |
-| **1.0** | **Token & Context Economy** | How much repeated reading, searching, context, and support work can we remove while remaining correct? |
-| **1.1** | **Deterministic Work Offload** | What ordinary computation can software perform so the LLM does not have to? |
-| **1.2** | **Rules & Project Intelligence** | Can the agent receive only the project rules, decisions, and working state relevant to the current task? |
-| **1.3** | **Language & Ecosystem Expansion** | How much more of the real software system can Brainprint understand accurately? |
-| **1.4** | **Persona & Role Awareness** | Can presentation adapt to the worker without changing project truth? |
+| **0.1.0** | **Token & Context Economy** | How much repeated reading, searching, context, and support work can we remove while remaining correct? |
+| **0.2.0** | **Deterministic Work Offload** | What ordinary computation can software perform so the LLM does not have to? |
+| **0.3.0** | **Rules & Project Intelligence** | Can the agent receive only the project rules, decisions, and working state relevant to the current task? |
+| **0.4.0** | **Language & Ecosystem Expansion** | How much more of the real software system can Brainprint understand accurately? |
+| **0.5.0** | **Persona & Role Awareness** | Can presentation adapt to the worker without changing project truth? |
+| **1.0.0** | **Stable Release / Hardening** | Is Brainprint correct, stable, optimized, maintainable, recoverable, and documented enough to call stable? |
 
-The detailed release goals are tracked in [#18 — Brainprint 1.0–1.4 product roadmap](https://github.com/nyangko/Brainprint/issues/18).
+The detailed release goals are tracked in [#18 — Brainprint 0.1.0–0.5.0 → 1.0.0 product roadmap](https://github.com/nyangko/Brainprint/issues/18).
 
-### 1.0 — Token & Context Economy
+### 0.1.0 — Token & Context Economy
 
 The first practical release is not intended to be an indexing demo. It must be usable on real projects.
 
-The 1.0 baseline includes:
+The 0.1.0 baseline includes:
 
 - local daemon and workspace identity,
 - structural code intelligence,
@@ -185,23 +186,23 @@ The 1.0 baseline includes:
 - multi-agent shared truth,
 - real-project benchmark and dogfooding.
 
-### 1.1 — Deterministic Work Offload
+### 0.2.0 — Deterministic Work Offload
 
-Expand the 1.0 baseline so the model performs less mechanical work: result shaping, repeated diagnostics reduction, deterministic diff/state comparison, delivery reuse, verification deltas, and measured adaptive optimizations where they prove useful.
+Expand the 0.1.0 baseline so the model performs less mechanical work: result shaping, repeated diagnostics reduction, deterministic diff/state comparison, delivery reuse, verification deltas, and measured adaptive optimizations where they prove useful.
 
-### 1.2 — Rules & Project Intelligence
+### 0.3.0 — Rules & Project Intelligence
 
 Strengthen project policy, decisions, blueprints, working-state lineage, precedence, conflict handling, handoff/resume, and compact applicable-rule projection.
 
 The goal is to stop making every new agent rediscover **how this project is supposed to be worked on**.
 
-### 1.3 — Language & Ecosystem Expansion
+### 0.4.0 — Language & Ecosystem Expansion
 
-1.0 already targets a practical baseline for Python, TypeScript/JavaScript, React, Svelte, C#, and Rust.
+0.1.0 already targets a practical baseline for Python, TypeScript/JavaScript, React, Svelte, C#, and Rust.
 
 1.3 expands semantic depth and ecosystem understanding: additional languages, framework adapters, ORM/database relations, routes, events, queues, cache/config semantics, and cross-project relations where evidence is reliable.
 
-### 1.4 — Persona & Role Awareness
+### 0.5.0 — Persona & Role Awareness
 
 Persona is intentionally last.
 
@@ -222,9 +223,28 @@ Persona
 
 If Persona provides little measurable value, it stays small.
 
+### 1.0.0 — Stable Release
+
+1.0.0 is not another feature bucket after 0.5.0. It is the first release Brainprint will call stable only after separate hardening.
+
+Before promotion to 1.0.0, the project must verify:
+
+- correctness and major bug closure on real projects,
+- regression coverage for core workflows,
+- acceptable CPU/RAM/I/O/index-size and long-running background cost,
+- measured token/context/tool-call improvements,
+- multi-agent stability and recovery behavior,
+- migration/upgrade paths,
+- code quality and maintainability of critical modules,
+- stable enough CLI/MCP/public contracts,
+- README/Wiki/API behavior consistency,
+- honest language/feature coverage and known limitations.
+
+0.5.0 completion alone is **not** sufficient to tag 1.0.0.
+
 ## Current implementation status
 
-Brainprint 1.0 is currently under active implementation.
+Brainprint 0.1.0 is currently under active implementation.
 
 The implementation roadmap is tracked in [#12 — P0 implementation roadmap](https://github.com/nyangko/Brainprint/issues/12).
 
@@ -243,7 +263,7 @@ Current workstreams:
 
 The implementation is intentionally being built bottom-up: first trustworthy project facts and freshness, then relations and semantics, then projection and agent-facing interfaces.
 
-## What 1.0 should feel like
+## What 0.1.0 should feel like
 
 For a request such as:
 
@@ -318,7 +338,7 @@ Original source, images, audio, video, and other project assets remain external 
 
 ## Agent integration
 
-The intended 1.0 integration model is:
+The intended 0.1.0 integration model is:
 
 ```text
 Agent plugin / extension
@@ -331,11 +351,11 @@ Agent plugin / extension
 
 Agent-specific packaging may differ, but the Core should remain shared. Codex, Claude, Gemini, and other clients should not each run a separate project intelligence engine for the same workspace.
 
-Marketplace-specific packaging and richer one-click distribution can evolve after the 1.0 integration contract is proven.
+Marketplace-specific packaging and richer one-click distribution can evolve after the 0.1.0 integration contract is proven.
 
 ## Documentation
 
-The final 1.0 release will include README and Wiki documentation generated from the **actual accepted implementation**, not from planned features.
+Documentation will evolve during pre-1.0 development, but README/Wiki will receive a final audit against the **actual accepted implementation** before 1.0.0.
 
 The Wiki is expected to cover:
 
@@ -358,12 +378,12 @@ The Wiki is expected to cover:
 ## Design and implementation tracking
 
 - [#12 — P0 implementation roadmap](https://github.com/nyangko/Brainprint/issues/12)
-- [#18 — Brainprint 1.0–1.4 product roadmap](https://github.com/nyangko/Brainprint/issues/18)
+- [#18 — Brainprint 0.1.0–0.5.0 → 1.0.0 product roadmap](https://github.com/nyangko/Brainprint/issues/18)
 
 The design issues remain the source of truth for architectural decisions while implementation issues track executable work.
 
 ## Current maturity
 
-**Active development. Not yet a stable 1.0 release.**
+**Active pre-1.0 development. Current target: 0.1.0.**
 
-Interfaces, storage details, and integration contracts may still change while the 1.0 acceptance work is in progress. The project will not call 1.0 complete until the real agent workflow, recovery behavior, and benchmark criteria are validated.
+Interfaces, storage details, and integration contracts may still change throughout 0.x development. Brainprint will not be promoted to 1.0.0 merely because the planned feature stages are complete: correctness, bugs, performance, resource usage, code quality, upgrade/recovery, public contracts, and documentation must pass a separate stabilization/hardening review.
