@@ -7,6 +7,7 @@ pub mod discovery;
 pub mod generation;
 pub mod identity;
 pub mod init;
+pub mod parser;
 pub mod paths;
 pub mod reconcile;
 pub mod registry;

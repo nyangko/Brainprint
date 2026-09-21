@@ -23,6 +23,15 @@ serde_json = "1.0"
 sha2 = "0.10"
 tokio = { version = "1", default-features = false }
 toml = "1.1"
+# Tier-1 structural parser backend and its grammars (#16 task 7). Versions
+# are Cargo dependencies, deliberately not architecture constants.
+tree-sitter = "0.26"
+tree-sitter-c-sharp = "0.23"
+tree-sitter-javascript = "0.25"
+tree-sitter-python = "0.25"
+tree-sitter-rust = "0.24"
+tree-sitter-svelte-ng = "1.0"
+tree-sitter-typescript = "0.23"
 uuid = { version = "1", features = ["v4"] }
 
 [workspace.lints.rust]

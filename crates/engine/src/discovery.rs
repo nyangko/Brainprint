@@ -428,7 +428,7 @@ fn is_test_file_name(lower_name: &str) -> bool {
 
 fn language_for_extension(extension: &str) -> Option<ResourceLanguage> {
     match extension {
-        "py" => Some(ResourceLanguage::Python),
+        "py" | "pyi" => Some(ResourceLanguage::Python),
         "js" | "mjs" | "cjs" | "jsx" => Some(ResourceLanguage::JavaScript),
         "ts" | "mts" | "cts" | "tsx" => Some(ResourceLanguage::TypeScript),
         "svelte" => Some(ResourceLanguage::Svelte),
