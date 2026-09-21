@@ -27,32 +27,48 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::db::{self, DbKind, DbOpenError, Migration};
 
-const GLOBAL_MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    name: "create_project_workspace_registry",
-    sql: "
-        CREATE TABLE project_registry (
-            id INTEGER PRIMARY KEY,
-            project_uid BLOB NOT NULL UNIQUE,
-            home_locator TEXT NOT NULL,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
-        );
-        CREATE INDEX idx_project_registry_locator ON project_registry (home_locator);
+const GLOBAL_MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        name: "create_project_workspace_registry",
+        sql: "
+            CREATE TABLE project_registry (
+                id INTEGER PRIMARY KEY,
+                project_uid BLOB NOT NULL UNIQUE,
+                home_locator TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX idx_project_registry_locator ON project_registry (home_locator);
 
-        CREATE TABLE workspace_registry (
-            id INTEGER PRIMARY KEY,
-            workspace_uid BLOB NOT NULL UNIQUE,
-            project_uid BLOB NOT NULL REFERENCES project_registry (project_uid),
-            locator TEXT NOT NULL,
-            is_project_home INTEGER NOT NULL DEFAULT 0,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
-        );
-        CREATE INDEX idx_workspace_registry_project ON workspace_registry (project_uid);
-        CREATE INDEX idx_workspace_registry_locator ON workspace_registry (locator);
-    ",
-}];
+            CREATE TABLE workspace_registry (
+                id INTEGER PRIMARY KEY,
+                workspace_uid BLOB NOT NULL UNIQUE,
+                project_uid BLOB NOT NULL REFERENCES project_registry (project_uid),
+                locator TEXT NOT NULL,
+                is_project_home INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX idx_workspace_registry_project ON workspace_registry (project_uid);
+            CREATE INDEX idx_workspace_registry_locator ON workspace_registry (locator);
+        ",
+    },
+    Migration {
+        version: 2,
+        name: "create_project_git_lineage",
+        sql: "
+            CREATE TABLE project_git_lineage (
+                id INTEGER PRIMARY KEY,
+                git_common_dir TEXT NOT NULL UNIQUE,
+                project_uid BLOB NOT NULL REFERENCES project_registry (project_uid),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX idx_project_git_lineage_project ON project_git_lineage (project_uid);
+        ",
+    },
+];
 
 /// A registered Project: its stable identity and current project-home locator.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -116,6 +132,16 @@ pub enum RegistryError {
         requested_project_id: ProjectId,
         requested_locator: PathBuf,
     },
+    /// `register_git_lineage` was called for a `git_common_dir` already
+    /// mapped to a *different* Project. The common Git directory is
+    /// canonical repository-lineage evidence (#15 task 7), so two
+    /// different Projects claiming the same one is a conflict, never a
+    /// silent merge.
+    GitLineageConflict {
+        git_common_dir: PathBuf,
+        existing_project_id: ProjectId,
+        requested_project_id: ProjectId,
+    },
 }
 
 impl fmt::Display for RegistryError {
@@ -152,6 +178,16 @@ impl fmt::Display for RegistryError {
                 existing_locator.display(),
                 requested_locator.display()
             ),
+            Self::GitLineageConflict {
+                git_common_dir,
+                existing_project_id,
+                requested_project_id,
+            } => write!(
+                formatter,
+                "git common directory {} is already linked to project {existing_project_id} \
+                 (requested project {requested_project_id})",
+                git_common_dir.display()
+            ),
         }
     }
 }
@@ -164,7 +200,8 @@ impl Error for RegistryError {
             Self::UnknownProject { .. }
             | Self::UnknownWorkspace { .. }
             | Self::ProjectLocatorConflict { .. }
-            | Self::WorkspaceIdentityConflict { .. } => None,
+            | Self::WorkspaceIdentityConflict { .. }
+            | Self::GitLineageConflict { .. } => None,
         }
     }
 }
@@ -428,6 +465,58 @@ impl GlobalRegistry {
             projects,
             workspaces,
         })
+    }
+
+    /// Record that `git_common_dir` (Git's canonical common-git-directory
+    /// plumbing path; see #15 task 7) belongs to `project_id`'s lineage, or
+    /// confirm an unchanged re-registration.
+    ///
+    /// Create-only, mirroring [`Self::register_project`]: the same common
+    /// Git directory observed for two different Projects is a conflict,
+    /// never a silent merge.
+    pub fn register_git_lineage(
+        &self,
+        git_common_dir: &Path,
+        project_id: ProjectId,
+    ) -> Result<(), RegistryError> {
+        if let Some(existing) = self.find_project_by_git_lineage(git_common_dir)? {
+            if existing == project_id {
+                return Ok(());
+            }
+            return Err(RegistryError::GitLineageConflict {
+                git_common_dir: git_common_dir.to_path_buf(),
+                existing_project_id: existing,
+                requested_project_id: project_id,
+            });
+        }
+
+        let now = db::now_millis_text();
+        self.connection.execute(
+            "INSERT INTO project_git_lineage (git_common_dir, project_uid, created_at, updated_at) \
+             VALUES (?1, ?2, ?3, ?3)",
+            params![
+                locator_to_text(git_common_dir),
+                project_id.to_bytes().to_vec(),
+                now
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Look up the Project (if any) whose lineage claims `git_common_dir`.
+    pub fn find_project_by_git_lineage(
+        &self,
+        git_common_dir: &Path,
+    ) -> Result<Option<ProjectId>, RegistryError> {
+        self.connection
+            .query_row(
+                "SELECT project_uid FROM project_git_lineage WHERE git_common_dir = ?1",
+                params![locator_to_text(git_common_dir)],
+                |row| row.get::<_, Vec<u8>>(0),
+            )
+            .optional()
+            .map(|found| found.map(project_id_from_blob))
+            .map_err(RegistryError::from)
     }
 }
 
@@ -733,5 +822,67 @@ mod tests {
         assert_eq!(project.project_id, project_id);
         assert_eq!(workspace.workspace_id, workspace_id);
         assert_eq!(workspace.project_id, project_id);
+    }
+
+    #[test]
+    fn git_lineage_round_trips_and_is_idempotent() {
+        let dir = TestDir::create("git-lineage-roundtrip");
+        let registry = GlobalRegistry::open(&dir.db_path()).expect("registry should open");
+        let project_id = ProjectId::generate();
+        registry
+            .register_project(project_id, Path::new("/repo/main"))
+            .expect("project should register");
+        let common_dir = Path::new("/repo/main/.git");
+
+        registry
+            .register_git_lineage(common_dir, project_id)
+            .expect("first lineage registration should succeed");
+        registry
+            .register_git_lineage(common_dir, project_id)
+            .expect("re-registering the same lineage should be idempotent");
+
+        let found = registry
+            .find_project_by_git_lineage(common_dir)
+            .expect("lookup should succeed");
+        assert_eq!(found, Some(project_id));
+    }
+
+    #[test]
+    fn unregistered_git_lineage_is_none() {
+        let dir = TestDir::create("git-lineage-missing");
+        let registry = GlobalRegistry::open(&dir.db_path()).expect("registry should open");
+
+        let found = registry
+            .find_project_by_git_lineage(Path::new("/repo/unknown/.git"))
+            .expect("lookup should succeed");
+        assert_eq!(found, None);
+    }
+
+    #[test]
+    fn git_lineage_conflict_is_rejected() {
+        let dir = TestDir::create("git-lineage-conflict");
+        let registry = GlobalRegistry::open(&dir.db_path()).expect("registry should open");
+        let first_project = ProjectId::generate();
+        let second_project = ProjectId::generate();
+        registry
+            .register_project(first_project, Path::new("/repo/first"))
+            .expect("first project should register");
+        registry
+            .register_project(second_project, Path::new("/repo/second"))
+            .expect("second project should register");
+        let common_dir = Path::new("/repo/first/.git");
+        registry
+            .register_git_lineage(common_dir, first_project)
+            .expect("first lineage registration should succeed");
+
+        let error = registry
+            .register_git_lineage(common_dir, second_project)
+            .expect_err("the same common Git directory must never be linked to two Projects");
+
+        assert!(matches!(
+            error,
+            RegistryError::GitLineageConflict { existing_project_id, .. }
+            if existing_project_id == first_project
+        ));
     }
 }

@@ -1,14 +1,26 @@
-//! Fresh Workspace init orchestration: Git and non-Git (#15 task 6 / #13
-//! task 3 §7, task 5 §4, task 5 §17).
+//! Workspace init orchestration: fresh Project-home and secondary Git
+//! worktree, Git and non-Git (#15 task 6/7 / #13 task 3 §7, task 5 §4,
+//! task 5 §17, task 9 §2-3).
 //!
 //! This connects tasks 1-5 (identity types, path/config bootstrap, the
 //! migration runner, the global registry, and project/workspace/index
-//! schema) into one orchestration for the *fresh* case only: a directory
-//! Brainprint has never touched before, Git or not. A secondary Git
-//! worktree of an already-registered Project is explicitly out of scope
-//! (#15 task 7) — this module makes no attempt to detect or link one; a
-//! worktree directory with its own `.git` is treated as an independent
-//! fresh case, and that is by design, not an oversight.
+//! schema) into one orchestration covering two cases:
+//! - **fresh Project-home**: a directory Brainprint has never touched
+//!   before, Git or not, with no evidence of belonging to an already
+//!   registered Project. This Workspace becomes its Project's canonical
+//!   `project.db` owner.
+//! - **secondary Git worktree**: a Git worktree whose common Git directory
+//!   (Git's own on-disk plumbing evidence, not a path/branch-name guess —
+//!   #15 task 7 rule 8-9) is already linked to a registered Project. This
+//!   Workspace gets a new WorkspaceID under the *same* ProjectID, its own
+//!   `workspace.db`/`index.db`, and never a local `project.db` copy — it
+//!   shares the existing project-home's store via the global registry.
+//!
+//! Routing between the two is evidence-based, not a guess: a worktree with
+//! insufficient or unrelated Git evidence (no `commondir`, or a common
+//! directory the registry has never seen) is treated as an independent
+//! fresh case rather than force-linked to an unrelated Project (#15 task 7
+//! rule 11-12: prefer false split/conflict over false merge).
 //!
 //! The whole flow is written to be safely re-callable: if `<workspace>/.brainprint/workspace.toml`
 //! already holds a valid identity, that identity is reused end to end
@@ -107,6 +119,15 @@ pub enum InitError {
     CorruptDbMeta {
         kind: DbKind,
     },
+    /// A secondary worktree resolved to a registered Project whose
+    /// project-home `project.db` is missing (or unbound) at its registry
+    /// locator. #15 task 7 forbids silently creating a fresh `project.db`
+    /// here or elsewhere — this is an explicit missing/recovery-required
+    /// result (actual recovery is #15 task 11).
+    ProjectHomeMissing {
+        project_id: ProjectId,
+        home_locator: PathBuf,
+    },
 }
 
 impl fmt::Display for InitError {
@@ -161,6 +182,15 @@ impl fmt::Display for InitError {
                     "{kind} db_meta has a partially-set identity binding"
                 )
             }
+            Self::ProjectHomeMissing {
+                project_id,
+                home_locator,
+            } => write!(
+                formatter,
+                "project {project_id}'s project-home store is missing at {} \
+                 (registry locator); explicit recovery is required (#15 task 11)",
+                home_locator.display()
+            ),
         }
     }
 }
@@ -179,7 +209,8 @@ impl Error for InitError {
             | Self::UnsupportedIdentityFormat { .. }
             | Self::ProjectIdentityMismatch { .. }
             | Self::WorkspaceIdentityMismatch { .. }
-            | Self::CorruptDbMeta { .. } => None,
+            | Self::CorruptDbMeta { .. }
+            | Self::ProjectHomeMissing { .. } => None,
         }
     }
 }
@@ -208,15 +239,28 @@ impl From<rusqlite::Error> for InitError {
     }
 }
 
-/// Init `requested_root` as a fresh Brainprint Workspace, or verify/resume
-/// one already initialized there.
+/// Init `requested_root` as a Brainprint Workspace, or verify/resume one
+/// already initialized there.
 ///
 /// For a Git repository or worktree, the Workspace root is the nearest
 /// ancestor containing `.git` (not necessarily `requested_root` itself);
 /// for a non-Git directory, `requested_root` itself is the Workspace root.
 /// `global_paths` is the already-resolved `~/.brainprint` location (see
 /// [`GlobalPaths::discover`] / [`GlobalPaths::from_home`]).
-pub fn init_fresh_workspace(
+///
+/// Routing (#15 task 7):
+/// 1. A Workspace that already has a local identity (`workspace.toml`)
+///    resumes with that identity, and is a project-home or secondary
+///    worktree according to what the registry already recorded for its
+///    Project (never re-derived from Git evidence at resume time).
+/// 2. Otherwise, for a Git Workspace, its common Git directory (Git's own
+///    on-disk plumbing, see [`git_common_dir`]) is looked up in the
+///    registry's lineage table. A hit means this is a secondary worktree of
+///    an already-registered Project: same ProjectID, a new WorkspaceID, and
+///    no local `project.db`.
+/// 3. Anything else (non-Git, or Git with no linkable lineage evidence) is
+///    a fresh Project-home init, exactly as #15 task 6.
+pub fn init_workspace(
     requested_root: &Path,
     global_paths: &GlobalPaths,
 ) -> Result<InitOutcome, InitError> {
@@ -228,24 +272,86 @@ pub fn init_fresh_workspace(
     let git_root = find_git_root(&canonical_start);
     let is_git = git_root.is_some();
     let workspace_root = git_root.unwrap_or(canonical_start);
-
     let workspace_paths = WorkspacePaths::from_root(&workspace_root);
 
-    let (identity, freshly_created) = match read_identity_file(&workspace_paths.identity_file)? {
-        Some(existing) => (existing, false),
-        None => {
-            let identity = WorkspaceIdentity {
-                format_version: IDENTITY_FORMAT_VERSION,
-                project_id: ProjectId::generate(),
-                workspace_id: WorkspaceId::generate(),
-                created_at: db::now_millis_text(),
-            };
-            write_identity_file(&workspace_paths.identity_file, &identity)?;
-            (identity, true)
-        }
-    };
+    let registry = GlobalRegistry::open(&global_paths.global_db)?;
 
-    config::bootstrap_workspace_config(&workspace_paths)?;
+    if let Some(existing) = read_identity_file(&workspace_paths.identity_file)? {
+        // #15 task 7 rule: resuming a Workspace never re-derives its role
+        // from Git evidence -- the registry's recorded project-home
+        // locator is the single source of truth for "is this the
+        // project-home or a secondary worktree".
+        let is_project_home = registry
+            .get_project(existing.project_id)?
+            .map(|entry| entry.home_locator == workspace_root)
+            // No registry entry yet only happens mid-way through a
+            // partially-failed fresh project-home init (the registry write
+            // comes last); resuming that completes it as project-home.
+            .unwrap_or(true);
+
+        return if is_project_home {
+            finish_project_home(
+                existing,
+                false,
+                workspace_root,
+                is_git,
+                &workspace_paths,
+                &registry,
+            )
+        } else {
+            finish_secondary_worktree(existing, false, workspace_root, &workspace_paths, &registry)
+        };
+    }
+
+    if is_git {
+        if let Some(common_dir) = git_common_dir(&workspace_root)? {
+            if let Some(project_id) = registry.find_project_by_git_lineage(&common_dir)? {
+                let identity = WorkspaceIdentity {
+                    format_version: IDENTITY_FORMAT_VERSION,
+                    project_id,
+                    workspace_id: WorkspaceId::generate(),
+                    created_at: db::now_millis_text(),
+                };
+                write_identity_file(&workspace_paths.identity_file, &identity)?;
+                return finish_secondary_worktree(
+                    identity,
+                    true,
+                    workspace_root,
+                    &workspace_paths,
+                    &registry,
+                );
+            }
+        }
+    }
+
+    let identity = WorkspaceIdentity {
+        format_version: IDENTITY_FORMAT_VERSION,
+        project_id: ProjectId::generate(),
+        workspace_id: WorkspaceId::generate(),
+        created_at: db::now_millis_text(),
+    };
+    write_identity_file(&workspace_paths.identity_file, &identity)?;
+    finish_project_home(
+        identity,
+        true,
+        workspace_root,
+        is_git,
+        &workspace_paths,
+        &registry,
+    )
+}
+
+/// Complete/verify a project-home Workspace: the one Workspace that owns
+/// its Project's canonical `project.db` (#13 task 5 §4).
+fn finish_project_home(
+    identity: WorkspaceIdentity,
+    freshly_created: bool,
+    workspace_root: PathBuf,
+    is_git: bool,
+    workspace_paths: &WorkspacePaths,
+    registry: &GlobalRegistry,
+) -> Result<InitOutcome, InitError> {
+    config::bootstrap_workspace_config(workspace_paths)?;
 
     let project_db = schema::project::open(&workspace_paths.project_db)?;
     bind_or_verify_project_identity(&project_db.connection, identity.project_id)?;
@@ -266,7 +372,6 @@ pub fn init_fresh_workspace(
         identity.workspace_id,
     )?;
 
-    let registry = GlobalRegistry::open(&global_paths.global_db)?;
     registry.register_project(identity.project_id, &workspace_root)?;
     registry.register_workspace(
         identity.workspace_id,
@@ -275,6 +380,12 @@ pub fn init_fresh_workspace(
         true,
     )?;
 
+    if is_git {
+        if let Some(common_dir) = git_common_dir(&workspace_root)? {
+            registry.register_git_lineage(&common_dir, identity.project_id)?;
+        }
+    }
+
     Ok(InitOutcome {
         project_id: identity.project_id,
         workspace_id: identity.workspace_id,
@@ -282,6 +393,98 @@ pub fn init_fresh_workspace(
         is_git,
         freshly_created,
     })
+}
+
+/// Complete/verify a secondary Git worktree Workspace: same ProjectID as
+/// its project-home, its own `workspace.db`/`index.db`, and never a local
+/// `project.db` (#15 task 7).
+fn finish_secondary_worktree(
+    identity: WorkspaceIdentity,
+    freshly_created: bool,
+    workspace_root: PathBuf,
+    workspace_paths: &WorkspacePaths,
+    registry: &GlobalRegistry,
+) -> Result<InitOutcome, InitError> {
+    verify_project_home_store(registry, identity.project_id)?;
+
+    config::bootstrap_workspace_config(workspace_paths)?;
+
+    let workspace_db = schema::workspace::open(&workspace_paths.workspace_db)?;
+    bind_or_verify_workspace_scoped_identity(
+        &workspace_db.connection,
+        DbKind::Workspace,
+        identity.project_id,
+        identity.workspace_id,
+    )?;
+
+    let index_db = schema::index::open(&workspace_paths.index_db)?;
+    bind_or_verify_workspace_scoped_identity(
+        &index_db.connection,
+        DbKind::Index,
+        identity.project_id,
+        identity.workspace_id,
+    )?;
+
+    registry.register_workspace(
+        identity.workspace_id,
+        identity.project_id,
+        &workspace_root,
+        false,
+    )?;
+
+    Ok(InitOutcome {
+        project_id: identity.project_id,
+        workspace_id: identity.workspace_id,
+        workspace_root,
+        is_git: true,
+        freshly_created,
+    })
+}
+
+/// Confirm `project_id`'s project-home `project.db` actually exists and is
+/// bound to `project_id`, without ever creating it (#15 task 7: a missing
+/// project-home store is an explicit missing/recovery-required result, not
+/// something to paper over with a fresh empty DB).
+fn verify_project_home_store(
+    registry: &GlobalRegistry,
+    project_id: ProjectId,
+) -> Result<(), InitError> {
+    let project_entry = registry
+        .get_project(project_id)?
+        .ok_or(RegistryError::UnknownProject { project_id })?;
+
+    let home_paths = WorkspacePaths::from_root(&project_entry.home_locator);
+    if !home_paths.project_db.is_file() {
+        return Err(InitError::ProjectHomeMissing {
+            project_id,
+            home_locator: project_entry.home_locator,
+        });
+    }
+
+    let project_db = schema::project::open(&home_paths.project_db)?;
+    let bound: Option<Vec<u8>> = project_db.connection.query_row(
+        "SELECT project_uid FROM db_meta WHERE id = 0",
+        [],
+        |row| row.get(0),
+    )?;
+
+    match bound {
+        Some(bytes) => {
+            let found = stable_id_from_blob::<ProjectId>(&bytes, DbKind::Project)?;
+            if found == project_id {
+                Ok(())
+            } else {
+                Err(InitError::ProjectIdentityMismatch {
+                    expected: project_id,
+                    found,
+                })
+            }
+        }
+        None => Err(InitError::ProjectHomeMissing {
+            project_id,
+            home_locator: project_entry.home_locator,
+        }),
+    }
 }
 
 fn find_git_root(start: &Path) -> Option<PathBuf> {
@@ -293,6 +496,83 @@ fn find_git_root(start: &Path) -> Option<PathBuf> {
         if !current.pop() {
             return None;
         }
+    }
+}
+
+/// Resolve the canonical Git "common directory" for `workspace_root`'s
+/// `.git` entry by following Git's own on-disk plumbing files -- never by
+/// invoking `git` or guessing from paths/branch names (#15 task 7 rule
+/// 8-9).
+///
+/// - `.git` as a directory: the common directory is that directory itself.
+/// - `.git` as a file (`gitdir: <path>`, e.g. a linked worktree or a
+///   submodule): follows it to the private git dir, then reads that dir's
+///   `commondir` file (present only for a linked worktree) to find the
+///   shared common directory.
+///
+/// Returns `Ok(None)` whenever the evidence is incomplete or unresolvable
+/// (missing `.git`, a `gitdir` pointer to nowhere, or a private git dir
+/// with no `commondir` -- e.g. a submodule, which is not a linked worktree
+/// of anything) -- insufficient evidence to claim a lineage connection, so
+/// callers fall back to treating the target as independent (task 7 rule
+/// 12: prefer false split over false merge).
+fn git_common_dir(workspace_root: &Path) -> Result<Option<PathBuf>, InitError> {
+    let dot_git = workspace_root.join(".git");
+    let metadata = match fs::symlink_metadata(&dot_git) {
+        Ok(metadata) => metadata,
+        Err(source) if source.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(source) => {
+            return Err(InitError::Io {
+                path: dot_git,
+                source,
+            });
+        }
+    };
+
+    if metadata.is_dir() {
+        return canonicalize_lenient(&dot_git);
+    }
+
+    let contents = fs::read_to_string(&dot_git).map_err(|source| InitError::Io {
+        path: dot_git.clone(),
+        source,
+    })?;
+    let Some(target) = contents.strip_prefix("gitdir:") else {
+        return Ok(None);
+    };
+    let Some(private_git_dir) =
+        canonicalize_lenient(&resolve_relative(workspace_root, target.trim()))?
+    else {
+        return Ok(None);
+    };
+
+    let commondir_file = private_git_dir.join("commondir");
+    let Ok(commondir_contents) = fs::read_to_string(&commondir_file) else {
+        return Ok(None);
+    };
+    canonicalize_lenient(&resolve_relative(
+        &private_git_dir,
+        commondir_contents.trim(),
+    ))
+}
+
+fn resolve_relative(base_dir: &Path, text: &str) -> PathBuf {
+    let candidate = Path::new(text);
+    if candidate.is_absolute() {
+        candidate.to_path_buf()
+    } else {
+        base_dir.join(candidate)
+    }
+}
+
+fn canonicalize_lenient(path: &Path) -> Result<Option<PathBuf>, InitError> {
+    match fs::canonicalize(path) {
+        Ok(canonical) => Ok(Some(canonical)),
+        Err(source) if source.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(source) => Err(InitError::Io {
+            path: path.to_path_buf(),
+            source,
+        }),
     }
 }
 
@@ -499,13 +779,56 @@ mod tests {
             .expect(".git directory should be created");
     }
 
+    /// Run a real `git` command for worktree lineage tests. Unlike
+    /// [`make_git_repo`]'s bare `.git` directory fixture, `git worktree
+    /// add` needs an actual repository so the `commondir` plumbing this
+    /// module reads is genuinely present.
+    fn run_git(args: &[&str], cwd: &Path) {
+        let output = process::Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .env("GIT_AUTHOR_NAME", "brainprint-test")
+            .env("GIT_AUTHOR_EMAIL", "test@brainprint.invalid")
+            .env("GIT_COMMITTER_NAME", "brainprint-test")
+            .env("GIT_COMMITTER_EMAIL", "test@brainprint.invalid")
+            .output()
+            .expect("git should be installed and runnable for this test");
+        assert!(
+            output.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn real_git_repo(workspace: &TestDir) {
+        run_git(&["init", "-q"], workspace.path());
+        run_git(
+            &["commit", "-q", "--allow-empty", "-m", "init"],
+            workspace.path(),
+        );
+    }
+
+    fn add_worktree(main_repo: &TestDir, worktree: &TestDir, branch: &str) {
+        run_git(
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                branch,
+                &worktree.path().to_string_lossy(),
+            ],
+            main_repo.path(),
+        );
+    }
+
     #[test]
     fn fresh_git_repository_init_succeeds() {
         let global_home = TestDir::create("git-fresh-global");
         let workspace = TestDir::create("git-fresh-workspace");
         make_git_repo(&workspace);
 
-        let outcome = init_fresh_workspace(workspace.path(), &global_paths(&global_home))
+        let outcome = init_workspace(workspace.path(), &global_paths(&global_home))
             .expect("fresh git init should succeed");
 
         assert!(outcome.is_git);
@@ -523,7 +846,7 @@ mod tests {
         make_git_repo(&workspace);
         let paths = global_paths(&global_home);
 
-        let outcome = init_fresh_workspace(workspace.path(), &paths).expect("init should succeed");
+        let outcome = init_workspace(workspace.path(), &paths).expect("init should succeed");
 
         let registry = GlobalRegistry::open(&paths.global_db).expect("registry should open");
         let project = registry
@@ -548,7 +871,7 @@ mod tests {
         make_git_repo(&workspace);
         let paths = global_paths(&global_home);
 
-        let outcome = init_fresh_workspace(workspace.path(), &paths).expect("init should succeed");
+        let outcome = init_workspace(workspace.path(), &paths).expect("init should succeed");
 
         let workspace_paths = WorkspacePaths::from_root(&outcome.workspace_root);
         assert!(workspace_paths.identity_file.is_file());
@@ -566,7 +889,7 @@ mod tests {
         make_git_repo(&workspace);
         let paths = global_paths(&global_home);
 
-        let outcome = init_fresh_workspace(workspace.path(), &paths).expect("init should succeed");
+        let outcome = init_workspace(workspace.path(), &paths).expect("init should succeed");
         let workspace_paths = WorkspacePaths::from_root(&outcome.workspace_root);
 
         assert!(workspace_paths.project_db.is_file());
@@ -581,7 +904,7 @@ mod tests {
         make_git_repo(&workspace);
         let paths = global_paths(&global_home);
 
-        let outcome = init_fresh_workspace(workspace.path(), &paths).expect("init should succeed");
+        let outcome = init_workspace(workspace.path(), &paths).expect("init should succeed");
         let workspace_paths = WorkspacePaths::from_root(&outcome.workspace_root);
 
         let project_db =
@@ -628,7 +951,7 @@ mod tests {
         let paths = global_paths(&global_home);
 
         let outcome =
-            init_fresh_workspace(workspace.path(), &paths).expect("non-git init should succeed");
+            init_workspace(workspace.path(), &paths).expect("non-git init should succeed");
 
         assert!(!outcome.is_git);
         assert!(outcome.freshly_created);
@@ -659,7 +982,7 @@ mod tests {
         let workspace = TestDir::create("non-git-root-workspace");
         let paths = global_paths(&global_home);
 
-        let outcome = init_fresh_workspace(workspace.path(), &paths).expect("init should succeed");
+        let outcome = init_workspace(workspace.path(), &paths).expect("init should succeed");
         assert_eq!(
             outcome.workspace_root,
             fs::canonicalize(workspace.path()).expect("workspace path should canonicalize")
@@ -675,8 +998,7 @@ mod tests {
         fs::create_dir_all(&nested).expect("nested dir should be created");
         let paths = global_paths(&global_home);
 
-        let outcome =
-            init_fresh_workspace(&nested, &paths).expect("init from nested dir should succeed");
+        let outcome = init_workspace(&nested, &paths).expect("init from nested dir should succeed");
         assert_eq!(
             outcome.workspace_root,
             fs::canonicalize(workspace.path()).expect("workspace path should canonicalize")
@@ -690,12 +1012,10 @@ mod tests {
         make_git_repo(&workspace);
         let paths = global_paths(&global_home);
 
-        let first =
-            init_fresh_workspace(workspace.path(), &paths).expect("first init should succeed");
+        let first = init_workspace(workspace.path(), &paths).expect("first init should succeed");
         assert!(first.freshly_created);
 
-        let second =
-            init_fresh_workspace(workspace.path(), &paths).expect("second init should succeed");
+        let second = init_workspace(workspace.path(), &paths).expect("second init should succeed");
         assert!(!second.freshly_created);
         assert_eq!(second.project_id, first.project_id);
         assert_eq!(second.workspace_id, first.workspace_id);
@@ -715,7 +1035,7 @@ mod tests {
         fs::write(&workspace_paths.identity_file, "not [ valid toml")
             .expect("fixture should be written");
 
-        let error = init_fresh_workspace(workspace.path(), &paths)
+        let error = init_workspace(workspace.path(), &paths)
             .expect_err("malformed identity must be rejected");
         assert!(matches!(error, InitError::MalformedIdentity { .. }));
     }
@@ -727,8 +1047,7 @@ mod tests {
         make_git_repo(&workspace);
         let paths = global_paths(&global_home);
 
-        let outcome =
-            init_fresh_workspace(workspace.path(), &paths).expect("first init should succeed");
+        let outcome = init_workspace(workspace.path(), &paths).expect("first init should succeed");
         let workspace_paths = WorkspacePaths::from_root(&outcome.workspace_root);
 
         {
@@ -744,7 +1063,7 @@ mod tests {
                 .expect("tampering update should succeed");
         }
 
-        let error = init_fresh_workspace(workspace.path(), &paths)
+        let error = init_workspace(workspace.path(), &paths)
             .expect_err("mismatched project.db identity must be rejected");
         assert!(matches!(error, InitError::ProjectIdentityMismatch { .. }));
     }
@@ -756,8 +1075,7 @@ mod tests {
         make_git_repo(&workspace);
         let paths = global_paths(&global_home);
 
-        let outcome =
-            init_fresh_workspace(workspace.path(), &paths).expect("first init should succeed");
+        let outcome = init_workspace(workspace.path(), &paths).expect("first init should succeed");
         let workspace_paths = WorkspacePaths::from_root(&outcome.workspace_root);
 
         {
@@ -773,7 +1091,7 @@ mod tests {
                 .expect("tampering update should succeed");
         }
 
-        let error = init_fresh_workspace(workspace.path(), &paths)
+        let error = init_workspace(workspace.path(), &paths)
             .expect_err("mismatched workspace.db identity must be rejected");
         assert!(matches!(error, InitError::WorkspaceIdentityMismatch { .. }));
     }
@@ -786,7 +1104,7 @@ mod tests {
         let paths = global_paths(&global_home);
 
         let outcome =
-            init_fresh_workspace(original.path(), &paths).expect("original init should succeed");
+            init_workspace(original.path(), &paths).expect("original init should succeed");
 
         // Simulate copying `.brainprint/workspace.toml` (but not the DBs)
         // to a brand new directory: same identity, different locator.
@@ -802,7 +1120,7 @@ mod tests {
         )
         .expect("identity file should copy");
 
-        let error = init_fresh_workspace(copy.path(), &paths)
+        let error = init_workspace(copy.path(), &paths)
             .expect_err("same identity at a different locator must be rejected");
         assert!(matches!(error, InitError::Registry(_)));
     }
@@ -822,8 +1140,8 @@ mod tests {
         fs::write(&workspace_paths.data_dir, b"not a directory")
             .expect("blocking file should be written");
 
-        let error = init_fresh_workspace(workspace.path(), &paths)
-            .expect_err("blocked data dir must fail init");
+        let error =
+            init_workspace(workspace.path(), &paths).expect_err("blocked data dir must fail init");
         assert!(matches!(error, InitError::Db(_)));
 
         // The identity file was written before the failure, but the
@@ -853,7 +1171,7 @@ mod tests {
         let original_content = "fn main() {}\n";
         fs::write(&source_path, original_content).expect("source fixture should be written");
 
-        init_fresh_workspace(workspace.path(), &paths).expect("init should succeed");
+        init_workspace(workspace.path(), &paths).expect("init should succeed");
 
         let after = fs::read_to_string(&source_path).expect("source file should still be readable");
         assert_eq!(after, original_content);
@@ -874,9 +1192,197 @@ mod tests {
         .expect(".git file fixture should be written");
         let paths = global_paths(&global_home);
 
-        let outcome = init_fresh_workspace(workspace.path(), &paths)
-            .expect("worktree-style init should succeed");
+        let outcome =
+            init_workspace(workspace.path(), &paths).expect("worktree-style init should succeed");
         assert!(outcome.is_git);
         assert!(outcome.freshly_created);
+    }
+
+    #[test]
+    fn secondary_worktree_shares_project_id_and_gets_new_workspace_id() {
+        let global_home = TestDir::create("worktree-basic-global");
+        let main_repo = TestDir::create("worktree-basic-main");
+        real_git_repo(&main_repo);
+        let paths = global_paths(&global_home);
+
+        let main_outcome =
+            init_workspace(main_repo.path(), &paths).expect("main init should succeed");
+        assert!(main_outcome.is_git);
+
+        let secondary = TestDir::create("worktree-basic-secondary");
+        add_worktree(&main_repo, &secondary, "feature-x");
+
+        let secondary_outcome =
+            init_workspace(secondary.path(), &paths).expect("secondary init should succeed");
+
+        assert_eq!(secondary_outcome.project_id, main_outcome.project_id);
+        assert_ne!(secondary_outcome.workspace_id, main_outcome.workspace_id);
+
+        let main_paths = WorkspacePaths::from_root(&main_outcome.workspace_root);
+        assert!(main_paths.project_db.is_file());
+
+        let secondary_paths = WorkspacePaths::from_root(&secondary_outcome.workspace_root);
+        assert!(!secondary_paths.project_db.exists());
+        assert!(secondary_paths.workspace_db.is_file());
+        assert!(secondary_paths.index_db.is_file());
+
+        let registry = GlobalRegistry::open(&paths.global_db).expect("registry should open");
+        let project = registry
+            .get_project(main_outcome.project_id)
+            .expect("lookup should succeed")
+            .expect("project should be registered");
+        assert_eq!(project.home_locator, main_outcome.workspace_root);
+
+        let main_entry = registry
+            .get_workspace(main_outcome.workspace_id)
+            .expect("lookup should succeed")
+            .expect("main workspace should be registered");
+        assert!(main_entry.is_project_home);
+
+        let secondary_entry = registry
+            .get_workspace(secondary_outcome.workspace_id)
+            .expect("lookup should succeed")
+            .expect("secondary workspace should be registered");
+        assert!(!secondary_entry.is_project_home);
+        assert_eq!(secondary_entry.project_id, main_outcome.project_id);
+    }
+
+    #[test]
+    fn multiple_secondary_worktrees_share_project_id_with_unique_workspace_ids() {
+        let global_home = TestDir::create("worktree-multi-global");
+        let main_repo = TestDir::create("worktree-multi-main");
+        real_git_repo(&main_repo);
+        let paths = global_paths(&global_home);
+
+        let main_outcome =
+            init_workspace(main_repo.path(), &paths).expect("main init should succeed");
+
+        let worktree_a = TestDir::create("worktree-multi-a");
+        add_worktree(&main_repo, &worktree_a, "feature-a");
+        let outcome_a =
+            init_workspace(worktree_a.path(), &paths).expect("worktree a init should succeed");
+
+        let worktree_b = TestDir::create("worktree-multi-b");
+        add_worktree(&main_repo, &worktree_b, "feature-b");
+        let outcome_b =
+            init_workspace(worktree_b.path(), &paths).expect("worktree b init should succeed");
+
+        assert_eq!(outcome_a.project_id, main_outcome.project_id);
+        assert_eq!(outcome_b.project_id, main_outcome.project_id);
+
+        let mut workspace_ids = vec![
+            main_outcome.workspace_id,
+            outcome_a.workspace_id,
+            outcome_b.workspace_id,
+        ];
+        workspace_ids.sort();
+        workspace_ids.dedup();
+        assert_eq!(
+            workspace_ids.len(),
+            3,
+            "all three Workspaces must have distinct WorkspaceIDs"
+        );
+    }
+
+    #[test]
+    fn secondary_worktree_reinit_is_idempotent_and_creates_no_project_db() {
+        let global_home = TestDir::create("worktree-reinit-global");
+        let main_repo = TestDir::create("worktree-reinit-main");
+        real_git_repo(&main_repo);
+        let paths = global_paths(&global_home);
+        init_workspace(main_repo.path(), &paths).expect("main init should succeed");
+
+        let secondary = TestDir::create("worktree-reinit-secondary");
+        add_worktree(&main_repo, &secondary, "feature-reinit");
+
+        let first =
+            init_workspace(secondary.path(), &paths).expect("first secondary init should succeed");
+        assert!(first.freshly_created);
+
+        let second =
+            init_workspace(secondary.path(), &paths).expect("second secondary init should succeed");
+        assert!(!second.freshly_created);
+        assert_eq!(second.project_id, first.project_id);
+        assert_eq!(second.workspace_id, first.workspace_id);
+
+        let secondary_paths = WorkspacePaths::from_root(&second.workspace_root);
+        assert!(!secondary_paths.project_db.exists());
+    }
+
+    #[test]
+    fn copied_secondary_workspace_toml_is_rejected_as_duplicate_workspace_id() {
+        let global_home = TestDir::create("worktree-copy-global");
+        let main_repo = TestDir::create("worktree-copy-main");
+        real_git_repo(&main_repo);
+        let paths = global_paths(&global_home);
+        init_workspace(main_repo.path(), &paths).expect("main init should succeed");
+
+        let original_secondary = TestDir::create("worktree-copy-original");
+        add_worktree(&main_repo, &original_secondary, "feature-copy-original");
+        let original_outcome = init_workspace(original_secondary.path(), &paths)
+            .expect("original secondary init should succeed");
+
+        // Simulate copying `.brainprint/workspace.toml` into a second,
+        // independent worktree: same WorkspaceID, different locator.
+        let copy_target = TestDir::create("worktree-copy-target");
+        add_worktree(&main_repo, &copy_target, "feature-copy-target");
+        let copy_canonical =
+            fs::canonicalize(copy_target.path()).expect("copy path should canonicalize");
+        let copy_workspace_paths = WorkspacePaths::from_root(&copy_canonical);
+        let original_workspace_paths = WorkspacePaths::from_root(&original_outcome.workspace_root);
+        fs::create_dir_all(&copy_workspace_paths.root).expect("root should be created");
+        fs::copy(
+            &original_workspace_paths.identity_file,
+            &copy_workspace_paths.identity_file,
+        )
+        .expect("identity file should copy");
+
+        let error = init_workspace(copy_target.path(), &paths)
+            .expect_err("the same WorkspaceID at a second locator must be rejected");
+        assert!(matches!(error, InitError::Registry(_)));
+    }
+
+    #[test]
+    fn missing_project_home_store_is_rejected_not_silently_recreated() {
+        let global_home = TestDir::create("worktree-missing-home-global");
+        let main_repo = TestDir::create("worktree-missing-home-main");
+        real_git_repo(&main_repo);
+        let paths = global_paths(&global_home);
+        let main_outcome =
+            init_workspace(main_repo.path(), &paths).expect("main init should succeed");
+
+        let secondary = TestDir::create("worktree-missing-home-secondary");
+        add_worktree(&main_repo, &secondary, "feature-missing-home");
+
+        let main_paths = WorkspacePaths::from_root(&main_outcome.workspace_root);
+        fs::remove_file(&main_paths.project_db).expect("project.db fixture removal should succeed");
+
+        let error = init_workspace(secondary.path(), &paths)
+            .expect_err("a missing project-home store must be rejected, not silently recreated");
+        assert!(matches!(error, InitError::ProjectHomeMissing { .. }));
+        assert!(
+            !main_paths.project_db.exists(),
+            "a missing project-home store must never be silently recreated"
+        );
+    }
+
+    #[test]
+    fn unrelated_fresh_git_repository_still_gets_its_own_project_id() {
+        let global_home = TestDir::create("worktree-unrelated-global");
+        let paths = global_paths(&global_home);
+
+        let first_repo = TestDir::create("worktree-unrelated-first");
+        real_git_repo(&first_repo);
+        let first_outcome =
+            init_workspace(first_repo.path(), &paths).expect("first repo init should succeed");
+
+        let second_repo = TestDir::create("worktree-unrelated-second");
+        real_git_repo(&second_repo);
+        let second_outcome =
+            init_workspace(second_repo.path(), &paths).expect("second repo init should succeed");
+
+        assert_ne!(first_outcome.project_id, second_outcome.project_id);
+        assert!(first_outcome.freshly_created);
+        assert!(second_outcome.freshly_created);
     }
 }
