@@ -2,6 +2,7 @@
 
 pub mod config;
 pub mod db;
+pub mod generation;
 pub mod init;
 pub mod paths;
 pub mod registry;
