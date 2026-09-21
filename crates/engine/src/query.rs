@@ -380,6 +380,12 @@ impl QueryIndex {
         Self { connection }
     }
 
+    /// The underlying connection, for the read paths built on top of this
+    /// index (#16 task 11).
+    pub(crate) const fn connection(&self) -> &Connection {
+        &self.connection
+    }
+
     /// Whether results read right now may be claimed to describe the
     /// current Workspace.
     pub fn currentness(&self) -> Result<Currentness, QueryError> {
@@ -743,7 +749,7 @@ fn symbol_candidate_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SymbolCandi
 
 /// The structural coverage a path's extension implies. Deterministic and
 /// offline: the dialect registry decides, nothing is parsed.
-fn coverage_of(path_rel: &str, kind: &str) -> StructuralCoverage {
+pub(crate) fn coverage_of(path_rel: &str, kind: &str) -> StructuralCoverage {
     if kind != ResourceKind::File.as_str() {
         return StructuralCoverage::Unsupported;
     }

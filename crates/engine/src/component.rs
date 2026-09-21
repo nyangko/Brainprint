@@ -39,6 +39,13 @@ pub const WATCHER_CONTINUITY_LOST_CODE: &str = "WATCHER_CONTINUITY_LOST";
 /// a later failure to recover from it.
 pub const RECONCILE_FAILED_CODE: &str = "RECONCILE_FAILED";
 
+/// `last_error_code` written when a current-source read found the file's
+/// bytes no longer hashing to the persisted Resource's `content_hash`
+/// (#16 task 11). The read refuses to slice a stale span, and marks the
+/// component so later queries stop claiming CURRENT. Recovering is
+/// reconcile's (#16 task 6) or the targeted refresh's (#16 task 13) job.
+pub const SOURCE_HASH_MISMATCH_CODE: &str = "SOURCE_HASH_MISMATCH";
+
 /// Whether work is outstanding for this component.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProcessingState {

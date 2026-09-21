@@ -579,8 +579,18 @@ fn hash_file(path: &Path) -> Result<String, IdentityError> {
     // ponytail: whole-file read; swap for a streaming reader if Workspaces
     // with very large files show up in the task 4 scan benchmark.
     let bytes = fs::read(path).map_err(|source| io_error(path, source))?;
-    let digest = Sha256::digest(&bytes);
-    Ok(format!("{CONTENT_HASH_ALGORITHM}:{digest:x}"))
+    Ok(content_hash_of(&bytes))
+}
+
+/// The stored `content_hash` form of these exact bytes.
+///
+/// Public so a current-source read (#16 task 11) can hash the very buffer
+/// it is about to slice and compare that against the persisted Resource,
+/// rather than re-reading the file or trusting mtime.
+#[must_use]
+pub fn content_hash_of(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    format!("{CONTENT_HASH_ALGORITHM}:{digest:x}")
 }
 
 fn mtime_nanos(metadata: &fs::Metadata) -> i64 {

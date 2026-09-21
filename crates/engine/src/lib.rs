@@ -8,6 +8,7 @@ pub mod extract;
 pub mod generation;
 pub mod identity;
 pub mod init;
+pub mod inspect;
 pub mod parser;
 pub mod paths;
 pub mod query;
