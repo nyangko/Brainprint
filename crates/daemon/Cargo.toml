@@ -5,6 +5,10 @@ edition.workspace = true
 rust-version.workspace = true
 repository.workspace = true
 
+[lib]
+name = "brainprint_daemon"
+path = "src/lib.rs"
+
 [[bin]]
 name = "brainprintd"
 path = "src/main.rs"
@@ -12,6 +16,7 @@ path = "src/main.rs"
 [dependencies]
 brainprint-core.workspace = true
 brainprint-engine.workspace = true
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt-multi-thread", "signal", "time"] }
 
 [lints]
 workspace = true

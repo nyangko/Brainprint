@@ -65,6 +65,18 @@ impl GlobalPaths {
             root,
         }
     }
+
+    /// Resolve the effective runtime root for daemon IPC/lock artifacts
+    /// (#13 task 4 §3-4, #15 task 9): `$XDG_RUNTIME_DIR/brainprint` when
+    /// that variable names a directory, falling back to
+    /// [`Self::fallback_runtime_dir`] otherwise -- including on platforms
+    /// such as macOS that don't set it at all.
+    #[must_use]
+    pub fn runtime_root(&self) -> PathBuf {
+        non_empty_env("XDG_RUNTIME_DIR")
+            .map(|xdg_runtime_dir| PathBuf::from(xdg_runtime_dir).join("brainprint"))
+            .unwrap_or_else(|| self.fallback_runtime_dir.clone())
+    }
 }
 
 /// Workspace-local Brainprint paths rooted at `<workspace>/.brainprint`.
