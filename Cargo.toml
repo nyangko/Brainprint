@@ -19,6 +19,10 @@ brainprint-engine = { path = "crates/engine" }
 rusqlite = { version = "0.40", features = ["bundled"] }
 serde = { version = "1.0", features = ["derive"] }
 notify = "8"
+# Linear-time, backtracking-free matcher for the bounded text fallback
+# (#16 task 12). Already in the tree via tree-sitter; depended on
+# directly so the fallback never needs an external `rg` binary.
+regex = "1"
 serde_json = "1.0"
 sha2 = "0.10"
 tokio = { version = "1", default-features = false }

@@ -59,6 +59,7 @@ version = "0.1.0"
 dependencies = [
  "brainprint-core",
  "notify",
+ "regex",
  "rusqlite",
  "serde",
  "serde_json",
