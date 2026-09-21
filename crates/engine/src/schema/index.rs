@@ -284,6 +284,41 @@ pub const INDEX_MIGRATIONS: &[Migration] = &[
               ON relation (kind, source_entity_id, target_entity_id) \
               WHERE dispatch IS NULL;",
     },
+    Migration {
+        version: 5,
+        name: "canonical_relation_identity",
+        // #17 task 2 settles what identifies an edge: `kind`, `source`,
+        // `target`. Not `dispatch` -- "A calls B" does not become two
+        // facts because one call site is dynamic; per-site dispatch is
+        // Occurrence evidence. Not `target_scope` either, which is a
+        // function of the target entity and so cannot discriminate.
+        //
+        // The original UNIQUE (kind, source, target, dispatch) stays: it
+        // is strictly weaker than the index below, so it constrains
+        // nothing new and rejects nothing this contract allows. What
+        // makes new writes correct is `idx_relation_identity`, not the
+        // NULL-only partial index migration 4 added for the same reason.
+        //
+        // Before it can exist, the rows have to mean one thing. The
+        // order matters: rows that were only distinct because NULL
+        // never collides are collapsed to the first *before* dispatch
+        // is filled in, or the backfill would make them collide under
+        // the original UNIQUE mid-migration. Then NULL dispatch becomes
+        // UNKNOWN, and NULL target_scope is derived from what the
+        // target entity actually is.
+        sql: "DELETE FROM relation WHERE id NOT IN ( \
+                  SELECT MIN(id) FROM relation \
+                  GROUP BY kind, source_entity_id, target_entity_id \
+              ); \
+              UPDATE relation SET dispatch = 'UNKNOWN' WHERE dispatch IS NULL; \
+              UPDATE relation SET target_scope = ( \
+                  SELECT CASE WHEN graph_entity.external_entity_id IS NOT NULL \
+                              THEN 'EXTERNAL' ELSE 'INTERNAL' END \
+                  FROM graph_entity WHERE graph_entity.id = relation.target_entity_id \
+              ) WHERE target_scope IS NULL; \
+              CREATE UNIQUE INDEX idx_relation_identity \
+              ON relation (kind, source_entity_id, target_entity_id);",
+    },
 ];
 
 /// Open (creating and migrating if needed) an `index.db` at `path`.
@@ -366,7 +401,7 @@ mod tests {
     fn fresh_rebuildable_index_db_can_be_created() {
         let dir = TestDir::create("fresh");
         let opened = open(&dir.db_path()).expect("fresh index.db should migrate");
-        assert_eq!(opened.schema_version, 4);
+        assert_eq!(opened.schema_version, 5);
     }
 
     #[test]
@@ -593,14 +628,14 @@ mod tests {
         open(&dir.db_path()).expect("first open should migrate");
         let reopened = open(&dir.db_path()).expect("reopen should be a no-op");
 
-        assert_eq!(reopened.schema_version, 4);
+        assert_eq!(reopened.schema_version, 5);
         let ledger_count: u32 = reopened
             .connection
             .query_row("SELECT COUNT(*) FROM schema_migration", [], |row| {
                 row.get(0)
             })
             .expect("ledger should be queryable");
-        assert_eq!(ledger_count, 4, "migration must not reapply on reopen");
+        assert_eq!(ledger_count, 5, "migration must not reapply on reopen");
     }
 
     #[test]

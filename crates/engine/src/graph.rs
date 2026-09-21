@@ -26,13 +26,26 @@
 //! is for. Storing the mirror would double every write and create a way
 //! for the two halves to disagree.
 //!
-//! Uniqueness is the schema's, not a new one:
-//! `(kind, source_entity_id, target_entity_id, dispatch)`. Inserting the
-//! same edge twice is reported as "already there", never duplicated.
-//! SQLite counts NULLs as distinct, so that constraint alone would have
-//! left the commonest case -- an edge whose dispatch is not yet known --
-//! unconstrained; migration 4 adds the partial unique index that makes
-//! the intended contract actually hold.
+//! ## Canonical identity
+//!
+//! An edge is identified by `(kind, source, target)` and nothing else
+//! (#17 task 2). [`Dispatch`] is an attribute of the edge, not part of
+//! its name: "A calls B" does not become two facts because one call site
+//! binds statically and another does not, and per-site detail is
+//! Occurrence evidence. [`TargetScope`] is a function of the target
+//! entity, so it cannot discriminate between edges either -- and because
+//! it is derived rather than supplied, a caller cannot label an external
+//! package INTERNAL. `idx_relation_identity` (migration 5) is exactly
+//! that tuple, so the runtime [`RelationKey`] and the database agree by
+//! construction rather than by convention.
+//!
+//! Neither axis is ever NULL on a write: "not known" is
+//! [`Dispatch::Unknown`], which is a value, so the same logical edge can
+//! never exist twice under two spellings of "no information".
+//!
+//! A `relation` row means [`Resolution::Resolved`]. Candidates and
+//! unresolved references are different tables with a different lifecycle
+//! (#17 task 7); nothing here writes a relation to mean "maybe".
 //!
 //! ## What this tier deliberately does not do
 //!
@@ -49,7 +62,11 @@ use std::{error::Error, fmt, path::Path};
 use brainprint_core::{ResourceId, SymbolId};
 use rusqlite::{Connection, OptionalExtension, params};
 
-use crate::{db::DbOpenError, schema};
+use crate::{
+    db::DbOpenError,
+    resolution::{Dispatch, Resolution, ResolutionContext, TargetScope, UnknownAxisValue},
+    schema,
+};
 
 /// The P0 canonical relation kinds (#17 "Relation 의미").
 ///
@@ -206,31 +223,72 @@ pub struct GraphEntity {
     pub endpoint: GraphEndpoint,
 }
 
-/// One canonical edge.
+/// One canonical, resolved edge.
 ///
-/// `dispatch` and `target_scope` are carried as stored. They belong to
-/// the resolution contract (#17 task 2); `dispatch` is part of the row's
-/// uniqueness, so storage cannot ignore it, but storage also does not get
-/// to invent its vocabulary.
+/// There is no `resolution` field: a stored relation is
+/// [`Resolution::Resolved`] by definition, and there is deliberately no
+/// way to write one that means anything else.
+///
+/// There is no `target_scope` field either. It is derived from the
+/// target endpoint ([`Self::target_scope`]), which is what keeps a
+/// caller from declaring an external package INTERNAL.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Relation {
     pub kind: RelationKind,
     pub source: GraphEndpoint,
     pub target: GraphEndpoint,
-    pub dispatch: Option<String>,
-    pub target_scope: Option<String>,
+    /// How the source binds to the target. [`Dispatch::Unknown`] when an
+    /// extractor has not established it -- never NULL.
+    pub dispatch: Dispatch,
     /// The generation that first published this edge.
     pub created_generation: i64,
 }
 
-/// What identifies one edge for lookup or deletion: exactly the columns
-/// the schema's UNIQUE constraint names.
+impl Relation {
+    /// Always [`Resolution::Resolved`]. A relation row is a confirmed
+    /// edge; a possible one is a candidate, and it lives elsewhere.
+    #[must_use]
+    pub const fn resolution(&self) -> Resolution {
+        Resolution::Resolved
+    }
+
+    /// Derived from the target endpoint: a Resource, Symbol, or domain
+    /// entity is in this Workspace; an external package is not.
+    #[must_use]
+    pub const fn target_scope(&self) -> TargetScope {
+        target_scope_of(&self.target)
+    }
+
+    /// This edge's canonical identity.
+    #[must_use]
+    pub const fn key(&self) -> RelationKey<'_> {
+        RelationKey {
+            kind: self.kind,
+            source: &self.source,
+            target: &self.target,
+        }
+    }
+}
+
+/// The scope a target endpoint implies. Deterministic, and the only way
+/// `relation.target_scope` is ever written.
+#[must_use]
+pub const fn target_scope_of(target: &GraphEndpoint) -> TargetScope {
+    match target {
+        GraphEndpoint::Resource(_) | GraphEndpoint::Symbol(_) | GraphEndpoint::Domain(_) => {
+            TargetScope::Internal
+        }
+        GraphEndpoint::External(_) => TargetScope::External,
+    }
+}
+
+/// What identifies one edge -- the same tuple `idx_relation_identity`
+/// enforces, so runtime and storage cannot drift apart.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RelationKey<'a> {
     pub kind: RelationKind,
     pub source: &'a GraphEndpoint,
     pub target: &'a GraphEndpoint,
-    pub dispatch: Option<&'a str>,
 }
 
 /// Failure at the graph storage boundary.
@@ -243,6 +301,15 @@ pub enum GraphError {
     },
     UnknownEntityKind {
         raw: String,
+    },
+    /// A stored `dispatch`/`target_scope` outside its closed vocabulary.
+    UnknownAxisValue(UnknownAxisValue),
+    /// A stored `target_scope` disagrees with what its target endpoint
+    /// is. The column is derived on every write, so this is corruption,
+    /// not a case to paper over.
+    TargetScopeMismatch {
+        stored: TargetScope,
+        derived: TargetScope,
     },
     /// A `graph_entity` row claims a kind whose payload column is NULL,
     /// or vice versa. The schema's CHECK makes this unreachable through
@@ -275,6 +342,11 @@ impl fmt::Display for GraphError {
                 write!(formatter, "unknown relation kind {raw:?}")
             }
             Self::UnknownEntityKind { raw } => write!(formatter, "unknown entity kind {raw:?}"),
+            Self::UnknownAxisValue(source) => write!(formatter, "{source}"),
+            Self::TargetScopeMismatch { stored, derived } => write!(
+                formatter,
+                "stored target scope {stored} is not the {derived} its target endpoint implies"
+            ),
             Self::MalformedEntity { kind } => {
                 write!(
                     formatter,
@@ -315,6 +387,12 @@ impl From<DbOpenError> for GraphError {
 impl From<rusqlite::Error> for GraphError {
     fn from(source: rusqlite::Error) -> Self {
         Self::Sqlite(source)
+    }
+}
+
+impl From<UnknownAxisValue> for GraphError {
+    fn from(source: UnknownAxisValue) -> Self {
+        Self::UnknownAxisValue(source)
     }
 }
 
@@ -372,6 +450,39 @@ impl GraphStore {
         Ok(self
             .connection
             .query_row("SELECT COUNT(*) FROM graph_entity", [], |row| row.get(0))?)
+    }
+
+    /// The `resolution_context` row for this context, creating it on
+    /// first use, and returning its deterministic key.
+    ///
+    /// Same evidence, same key, same row: a context is identified by
+    /// what it fingerprints, so a second call with equal fingerprints
+    /// reuses the row rather than accumulating near-duplicates. Only
+    /// fingerprints are stored -- never the config, lockfile, or source
+    /// they were computed from.
+    pub fn ensure_resolution_context(
+        &self,
+        context: &ResolutionContext,
+        created_generation: i64,
+    ) -> Result<String, GraphError> {
+        ensure_resolution_context(&self.connection, context, created_generation)
+    }
+
+    /// The context behind a key, or `None`.
+    pub fn resolution_context(
+        &self,
+        context_key: &str,
+    ) -> Result<Option<ResolutionContext>, GraphError> {
+        resolution_context(&self.connection, context_key)
+    }
+
+    /// How many resolution contexts this index holds.
+    pub fn resolution_context_count(&self) -> Result<i64, GraphError> {
+        Ok(self
+            .connection
+            .query_row("SELECT COUNT(*) FROM resolution_context", [], |row| {
+                row.get(0)
+            })?)
     }
 
     /// Insert one edge, or report that the schema already had it.
@@ -465,12 +576,68 @@ pub(crate) fn ensure_entity(
     })
 }
 
+pub(crate) fn ensure_resolution_context(
+    connection: &Connection,
+    context: &ResolutionContext,
+    created_generation: i64,
+) -> Result<String, GraphError> {
+    let key = context.context_key();
+    connection.execute(
+        "INSERT INTO resolution_context \
+         (context_key, language, scope_key, config_fingerprint, dependency_fingerprint, \
+          environment_fingerprint, module_resolution_fingerprint, backend_snapshot_token, \
+          created_generation) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) \
+         ON CONFLICT (context_key) DO NOTHING",
+        params![
+            key,
+            context.language,
+            context.scope_key,
+            context.config_fingerprint,
+            context.dependency_fingerprint,
+            context.environment_fingerprint,
+            context.module_resolution_fingerprint,
+            context.backend_snapshot_token,
+            created_generation,
+        ],
+    )?;
+    Ok(key)
+}
+
+pub(crate) fn resolution_context(
+    connection: &Connection,
+    context_key: &str,
+) -> Result<Option<ResolutionContext>, GraphError> {
+    Ok(connection
+        .query_row(
+            "SELECT language, scope_key, config_fingerprint, dependency_fingerprint, \
+                    environment_fingerprint, module_resolution_fingerprint, \
+                    backend_snapshot_token \
+             FROM resolution_context WHERE context_key = ?1",
+            params![context_key],
+            |row| {
+                Ok(ResolutionContext {
+                    language: row.get(0)?,
+                    scope_key: row.get(1)?,
+                    config_fingerprint: row.get(2)?,
+                    dependency_fingerprint: row.get(3)?,
+                    environment_fingerprint: row.get(4)?,
+                    module_resolution_fingerprint: row.get(5)?,
+                    backend_snapshot_token: row.get(6)?,
+                })
+            },
+        )
+        .optional()?)
+}
+
 pub(crate) fn insert_relation(
     connection: &Connection,
     relation: &Relation,
 ) -> Result<bool, GraphError> {
     let source = require_entity(connection, &relation.source)?;
     let target = require_entity(connection, &relation.target)?;
+    // Both axes are written from values, never left NULL, and the scope
+    // comes from the target endpoint rather than from the caller.
     let changed = connection.execute(
         "INSERT INTO relation \
          (kind, source_entity_id, target_entity_id, dispatch, target_scope, created_generation) \
@@ -480,8 +647,8 @@ pub(crate) fn insert_relation(
             relation.kind.as_str(),
             source,
             target,
-            relation.dispatch,
-            relation.target_scope,
+            relation.dispatch.as_str(),
+            relation.target_scope().as_str(),
             relation.created_generation,
         ],
     )?;
@@ -503,9 +670,8 @@ pub(crate) fn relation(
             "SELECT kind, source_entity_id, target_entity_id, dispatch, target_scope, \
                     created_generation \
              FROM relation \
-             WHERE kind = ?1 AND source_entity_id = ?2 AND target_entity_id = ?3 \
-               AND dispatch IS ?4",
-            params![key.kind.as_str(), source, target, key.dispatch],
+             WHERE kind = ?1 AND source_entity_id = ?2 AND target_entity_id = ?3",
+            params![key.kind.as_str(), source, target],
             raw_relation_row,
         )
         .optional()?;
@@ -524,8 +690,8 @@ pub(crate) fn delete_relation(
     };
     let changed = connection.execute(
         "DELETE FROM relation \
-         WHERE kind = ?1 AND source_entity_id = ?2 AND target_entity_id = ?3 AND dispatch IS ?4",
-        params![key.kind.as_str(), source, target, key.dispatch],
+         WHERE kind = ?1 AND source_entity_id = ?2 AND target_entity_id = ?3",
+        params![key.kind.as_str(), source, target],
     )?;
     Ok(changed == 1)
 }
@@ -579,7 +745,7 @@ fn relations_by(
     }
     // Deterministic, and it is the stored direction that orders the
     // result -- there is no second, mirrored row to interleave.
-    sql.push_str(" ORDER BY kind, source_entity_id, target_entity_id, dispatch");
+    sql.push_str(" ORDER BY kind, source_entity_id, target_entity_id");
 
     let mut statement = connection.prepare(&sql)?;
     let rows = match kind {
@@ -603,12 +769,23 @@ fn raw_relation_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawRelationRow>
 }
 
 fn decode_relation(connection: &Connection, raw: RawRelationRow) -> Result<Relation, GraphError> {
+    let target = endpoint_of(connection, raw.2)?;
+    // A row written before #17 task 2 could still hold NULL; migration 5
+    // normalizes those, so a NULL here means somebody wrote around this
+    // module rather than that the value is unknown.
+    let dispatch = Dispatch::parse(raw.3.as_deref().unwrap_or_default())?;
+    let derived = target_scope_of(&target);
+    if let Some(stored) = raw.4.as_deref() {
+        let stored = TargetScope::parse(stored)?;
+        if stored != derived {
+            return Err(GraphError::TargetScopeMismatch { stored, derived });
+        }
+    }
     Ok(Relation {
         kind: RelationKind::parse(&raw.0)?,
         source: endpoint_of(connection, raw.1)?,
-        target: endpoint_of(connection, raw.2)?,
-        dispatch: raw.3,
-        target_scope: raw.4,
+        target,
+        dispatch,
         created_generation: raw.5,
     })
 }
@@ -1083,8 +1260,7 @@ function helper(): number {
                 kind: RelationKind::Imports,
                 source,
                 target,
-                dispatch: None,
-                target_scope: None,
+                dispatch: Dispatch::Unknown,
                 created_generation: fixture.generation(),
             })
             .expect_err("the target was never ensured");
@@ -1131,8 +1307,7 @@ function helper(): number {
             kind: RelationKind::Calls,
             source: caller.clone(),
             target: callee.clone(),
-            dispatch: None,
-            target_scope: None,
+            dispatch: Dispatch::Unknown,
             created_generation: fixture.generation(),
         };
 
@@ -1181,7 +1356,6 @@ function helper(): number {
             kind: RelationKind::Calls,
             source: &caller,
             target: &callee,
-            dispatch: None,
         };
         assert_eq!(store.relation(&key).expect("get"), Some(edge));
         assert!(store.delete_relation(&key).expect("delete"));
@@ -1212,8 +1386,7 @@ function helper(): number {
                         kind,
                         source: source.clone(),
                         target: target.clone(),
-                        dispatch: None,
-                        target_scope: None,
+                        dispatch: Dispatch::Unknown,
                         created_generation: generation,
                     })
                     .expect("insert")
@@ -1259,8 +1432,7 @@ function helper(): number {
             kind: RelationKind::Calls,
             source: caller.clone(),
             target: callee.clone(),
-            dispatch: None,
-            target_scope: None,
+            dispatch: Dispatch::Unknown,
             created_generation: fixture.generation(),
         };
         {
@@ -1300,8 +1472,7 @@ function helper(): number {
                     kind: RelationKind::Calls,
                     source: caller.clone(),
                     target: callee,
-                    dispatch: None,
-                    target_scope: None,
+                    dispatch: Dispatch::Unknown,
                     created_generation: first.generation(),
                 })
                 .expect("insert")
@@ -1322,6 +1493,315 @@ function helper(): number {
     }
 
     #[test]
+    fn a_new_edge_never_stores_a_null_axis_and_derives_its_scope() {
+        let fixture = Fixture::create("canonical-axes");
+        let store = fixture.store();
+        let source = GraphEndpoint::Symbol(fixture.symbol("src/app.ts", "App.run"));
+        let internal = GraphEndpoint::Symbol(fixture.symbol("src/app.ts", "helper"));
+        let package = GraphEndpoint::External(external());
+        let variable = GraphEndpoint::Domain(domain());
+        for endpoint in [&source, &internal, &package, &variable] {
+            store.ensure_entity(endpoint).expect("ensure");
+        }
+        for (kind, target, dispatch) in [
+            (RelationKind::Calls, &internal, Dispatch::Static),
+            (RelationKind::References, &package, Dispatch::Unknown),
+            (RelationKind::UsesType, &variable, Dispatch::Dynamic),
+        ] {
+            assert!(
+                store
+                    .insert_relation(&Relation {
+                        kind,
+                        source: source.clone(),
+                        target: target.clone(),
+                        dispatch,
+                        created_generation: fixture.generation(),
+                    })
+                    .expect("insert")
+            );
+        }
+
+        // No NULL survives a write, whatever the extractor knew.
+        let nulls: i64 = store
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM relation WHERE dispatch IS NULL OR target_scope IS NULL",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count");
+        assert_eq!(nulls, 0, "\"not known\" is UNKNOWN, not NULL");
+
+        // The scope is the target's, not the caller's.
+        let scopes: Vec<(String, String)> = {
+            let mut statement = store
+                .connection()
+                .prepare("SELECT kind, target_scope FROM relation ORDER BY kind")
+                .expect("prepare");
+            let rows = statement
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .expect("query");
+            rows.map(|row| row.expect("row")).collect()
+        };
+        assert_eq!(
+            scopes,
+            vec![
+                ("CALLS".to_owned(), "INTERNAL".to_owned()),
+                ("REFERENCES".to_owned(), "EXTERNAL".to_owned()),
+                ("USES_TYPE".to_owned(), "INTERNAL".to_owned()),
+            ],
+            "an external package is EXTERNAL; a Resource, Symbol or domain entity is INTERNAL"
+        );
+        assert_eq!(target_scope_of(&package), TargetScope::External);
+        assert_eq!(target_scope_of(&variable), TargetScope::Internal);
+        assert_eq!(
+            store
+                .relations_from(&source, Some(RelationKind::Calls))
+                .expect("from")[0]
+                .dispatch,
+            Dispatch::Static,
+            "the dispatch an extractor did establish is preserved"
+        );
+    }
+
+    #[test]
+    fn dispatch_is_an_attribute_and_never_a_second_edge() {
+        let fixture = Fixture::create("identity");
+        let store = fixture.store();
+        let source = GraphEndpoint::Symbol(fixture.symbol("src/app.ts", "App.run"));
+        let target = GraphEndpoint::Symbol(fixture.symbol("src/app.ts", "helper"));
+        store.ensure_entity(&source).expect("ensure");
+        store.ensure_entity(&target).expect("ensure");
+        let edge = |dispatch| Relation {
+            kind: RelationKind::Calls,
+            source: source.clone(),
+            target: target.clone(),
+            dispatch,
+            created_generation: fixture.generation(),
+        };
+
+        assert!(
+            store
+                .insert_relation(&edge(Dispatch::Unknown))
+                .expect("insert")
+        );
+        // The same logical edge, seen again with more known about how it
+        // binds. That is one fact, not two rows.
+        assert!(
+            !store
+                .insert_relation(&edge(Dispatch::Static))
+                .expect("insert")
+        );
+        assert!(
+            !store
+                .insert_relation(&edge(Dispatch::Dynamic))
+                .expect("insert")
+        );
+        assert_eq!(store.relation_count().expect("count"), 1);
+
+        // Runtime identity and the database agree: the key has no
+        // dispatch in it, and looking up by it finds the row whatever
+        // dispatch was offered.
+        let key = RelationKey {
+            kind: RelationKind::Calls,
+            source: &source,
+            target: &target,
+        };
+        assert_eq!(key, edge(Dispatch::Dynamic).key());
+        let stored = store.relation(&key).expect("get").expect("stored");
+        assert_eq!(stored.dispatch, Dispatch::Unknown);
+        assert_eq!(stored.resolution(), Resolution::Resolved);
+        assert_eq!(stored.target_scope(), TargetScope::Internal);
+    }
+
+    #[test]
+    fn a_legacy_null_row_is_normalized_by_migration_rather_than_read_as_unknown() {
+        let fixture = Fixture::create("backfill");
+        let store = fixture.store();
+        let source = GraphEndpoint::Symbol(fixture.symbol("src/app.ts", "App.run"));
+        let internal = GraphEndpoint::Symbol(fixture.symbol("src/app.ts", "helper"));
+        let package = GraphEndpoint::External(external());
+        for endpoint in [&source, &internal, &package] {
+            store.ensure_entity(endpoint).expect("ensure");
+        }
+        let source_id = entity_id(store.connection(), &source)
+            .expect("lookup")
+            .expect("ensured");
+        let internal_id = entity_id(store.connection(), &internal)
+            .expect("lookup")
+            .expect("ensured");
+        let external_id = entity_id(store.connection(), &package)
+            .expect("lookup")
+            .expect("ensured");
+        let generation = fixture.generation();
+
+        // Rows as a pre-task-2 writer could have left them: NULL axes,
+        // and two rows for one logical edge because NULL never collided.
+        store
+            .connection()
+            .execute_batch(&format!(
+                "DROP INDEX idx_relation_identity; \
+                 DROP INDEX idx_relation_unique_null_dispatch; \
+                 INSERT INTO relation \
+                   (kind, source_entity_id, target_entity_id, dispatch, target_scope, \
+                    created_generation) \
+                 VALUES ('CALLS', {source_id}, {internal_id}, NULL, NULL, {generation}), \
+                        ('CALLS', {source_id}, {internal_id}, NULL, NULL, {generation}), \
+                        ('IMPORTS', {source_id}, {external_id}, NULL, NULL, {generation});"
+            ))
+            .expect("legacy rows");
+
+        // Exactly what migration 5 does, replayed on those rows.
+        store
+            .connection()
+            .execute_batch(crate::schema::index::INDEX_MIGRATIONS[4].sql)
+            .expect("backfill");
+
+        let calls = store
+            .relation(&RelationKey {
+                kind: RelationKind::Calls,
+                source: &source,
+                target: &internal,
+            })
+            .expect("get")
+            .expect("one row survived");
+        assert_eq!(calls.dispatch, Dispatch::Unknown);
+        assert_eq!(calls.target_scope(), TargetScope::Internal);
+        let imports = store
+            .relation(&RelationKey {
+                kind: RelationKind::Imports,
+                source: &source,
+                target: &package,
+            })
+            .expect("get")
+            .expect("stored");
+        assert_eq!(imports.target_scope(), TargetScope::External);
+        assert_eq!(
+            store.relation_count().expect("count"),
+            2,
+            "the duplicate that only NULL made possible is gone"
+        );
+
+        let stored: Vec<(String, String)> = {
+            let mut statement = store
+                .connection()
+                .prepare("SELECT dispatch, target_scope FROM relation")
+                .expect("prepare");
+            let rows = statement
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .expect("query");
+            rows.map(|row| row.expect("row")).collect()
+        };
+        assert_eq!(
+            stored,
+            vec![
+                ("UNKNOWN".to_owned(), "INTERNAL".to_owned()),
+                ("UNKNOWN".to_owned(), "EXTERNAL".to_owned()),
+            ],
+            "the backfilled scope comes from what each target actually is"
+        );
+    }
+
+    #[test]
+    fn a_resolution_context_is_reused_by_its_evidence_and_stores_no_config_body() {
+        let fixture = Fixture::create("resolution-context");
+        let store = fixture.store();
+        let generation = fixture.generation();
+        let context = ResolutionContext {
+            language: "TYPESCRIPT".to_owned(),
+            scope_key: "tsconfig.json".to_owned(),
+            config_fingerprint: "sha256:config".to_owned(),
+            dependency_fingerprint: "sha256:deps".to_owned(),
+            environment_fingerprint: "sha256:env".to_owned(),
+            module_resolution_fingerprint: "sha256:module".to_owned(),
+            backend_snapshot_token: None,
+        };
+
+        let key = store
+            .ensure_resolution_context(&context, generation)
+            .expect("ensure");
+        let again = store
+            .ensure_resolution_context(&context, generation)
+            .expect("ensure again");
+        assert_eq!(key, again);
+        assert_eq!(
+            store.resolution_context_count().expect("count"),
+            1,
+            "the same evidence is the same context"
+        );
+        assert_eq!(
+            store.resolution_context(&key).expect("read"),
+            Some(context.clone())
+        );
+
+        // A moved dependency fingerprint is a different context, not the
+        // same one updated in place.
+        let bumped = ResolutionContext {
+            dependency_fingerprint: "sha256:deps-2".to_owned(),
+            ..context.clone()
+        };
+        let bumped_key = store
+            .ensure_resolution_context(&bumped, generation)
+            .expect("ensure");
+        assert_ne!(bumped_key, key);
+        assert_eq!(store.resolution_context_count().expect("count"), 2);
+        assert_eq!(
+            store.resolution_context(&key).expect("read"),
+            Some(context),
+            "and the original is untouched"
+        );
+    }
+
+    #[test]
+    fn a_relation_row_is_only_ever_a_resolved_edge() {
+        let fixture = Fixture::create("resolved-only");
+        let store = fixture.store();
+        let source = GraphEndpoint::Symbol(fixture.symbol("src/app.ts", "App.run"));
+        let target = GraphEndpoint::Symbol(fixture.symbol("src/app.ts", "helper"));
+        store.ensure_entity(&source).expect("ensure");
+        store.ensure_entity(&target).expect("ensure");
+        let edge = Relation {
+            kind: RelationKind::Calls,
+            source,
+            target,
+            dispatch: Dispatch::Unknown,
+            created_generation: fixture.generation(),
+        };
+        assert!(store.insert_relation(&edge).expect("insert"));
+
+        assert_eq!(edge.resolution(), Resolution::Resolved);
+        // A maybe belongs in the tables that model a maybe. This tier
+        // writes neither, and offers no way to store a relation that
+        // means anything but RESOLVED.
+        for table in ["unresolved_reference", "relation_candidate"] {
+            let count: i64 = store
+                .connection()
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
+                .expect("count");
+            assert_eq!(count, 0, "{table} is #17 task 7's, not this tier's");
+        }
+        // And there is no confidence column to compress the axes into.
+        let columns: Vec<String> = {
+            let mut statement = store
+                .connection()
+                .prepare("SELECT name FROM pragma_table_info('relation')")
+                .expect("prepare");
+            let rows = statement
+                .query_map([], |row| row.get::<_, String>(0))
+                .expect("query");
+            rows.map(|row| row.expect("row")).collect()
+        };
+        assert!(
+            !columns.iter().any(|column| column.contains("confidence")
+                || column.contains("score")
+                || column == "resolution"),
+            "five axes, no score: {columns:?}"
+        );
+    }
+
+    #[test]
     fn the_graph_stores_identity_and_never_source_text() {
         let fixture = Fixture::create("no-source");
         let store = fixture.store();
@@ -1337,8 +1817,7 @@ function helper(): number {
                     kind: RelationKind::Calls,
                     source: caller,
                     target: callee,
-                    dispatch: None,
-                    target_scope: None,
+                    dispatch: Dispatch::Unknown,
                     created_generation: fixture.generation(),
                 })
                 .expect("insert")

@@ -16,6 +16,7 @@ pub mod query;
 pub mod reconcile;
 pub mod refresh;
 pub mod registry;
+pub mod resolution;
 pub mod resource;
 pub mod scan;
 pub mod schema;
