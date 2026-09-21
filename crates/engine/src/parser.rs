@@ -449,16 +449,11 @@ impl ParseTree {
         }
     }
 
-    /// The backend tree, for an extractor inside this crate.
+    /// The backend tree, for an extractor inside this crate
+    /// ([`crate::extract`]).
     ///
     /// Crate-internal on purpose: this is the *only* door to the backend,
-    /// and the public model never exposes `tree_sitter` types. Nothing in
-    /// the crate walks a tree yet -- the Symbol extractor that will is #16
-    /// task 8 -- so outside tests this is currently unused by design.
-    #[allow(
-        dead_code,
-        reason = "the structural extractor (#16 task 8) is its caller"
-    )]
+    /// and the public model never exposes `tree_sitter` types.
     pub(crate) fn syntax_tree(&self) -> &Tree {
         &self.tree
     }

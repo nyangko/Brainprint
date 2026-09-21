@@ -93,6 +93,10 @@ define_stable_id!(
     ResourceId,
     "Stable identity for one project-owned resource across supported moves."
 );
+define_stable_id!(
+    SymbolId,
+    "Stable identity for one declared symbol across edits that do not redeclare it."
+);
 
 #[cfg(test)]
 mod tests {

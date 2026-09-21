@@ -354,6 +354,27 @@ fn apply_pending_migrations(
     Ok(schema_version)
 }
 
+/// A deterministic, length-prefixed fingerprint over named fields.
+///
+/// `tag` names the encoding so a stored value stays self-describing and
+/// the hash behind it can be swapped without becoming ambiguous. Field
+/// names and values are length-prefixed, so no value can be confused with
+/// a different field or a different boundary.
+pub(crate) fn fingerprint(tag: &str, fields: &[(&str, &str)]) -> String {
+    use sha2::{Digest, Sha256};
+
+    let mut hasher = Sha256::new();
+    for (name, value) in fields {
+        hasher.update(name.as_bytes());
+        hasher.update(b":");
+        hasher.update(value.len().to_string().as_bytes());
+        hasher.update(b":");
+        hasher.update(value.as_bytes());
+        hasher.update(b";");
+    }
+    format!("{tag}:{:x}", hasher.finalize())
+}
+
 pub(crate) fn now_millis_text() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
 

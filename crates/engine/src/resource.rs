@@ -198,7 +198,7 @@ impl ResourceState {
         }
     }
 
-    fn parse(raw: &str) -> Result<Self, ResourceError> {
+    pub(crate) fn parse(raw: &str) -> Result<Self, ResourceError> {
         match raw {
             "ACTIVE" => Ok(Self::Active),
             "DELETED" => Ok(Self::Deleted),
