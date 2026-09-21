@@ -37,12 +37,19 @@ impl Default for GlobalConfig {
 #[serde(deny_unknown_fields)]
 pub struct WorkspaceConfig {
     pub format_version: u32,
+    /// Additional directory names Resource discovery (#16 task 2) should
+    /// exclude, on top of its deterministic default list. Names only --
+    /// not path globs -- matching the same deterministic, non-glob rule
+    /// the default exclusion list uses.
+    #[serde(default)]
+    pub extra_excluded_directory_names: Vec<String>,
 }
 
 impl Default for WorkspaceConfig {
     fn default() -> Self {
         Self {
             format_version: CONFIG_FORMAT_VERSION,
+            extra_excluded_directory_names: Vec::new(),
         }
     }
 }
@@ -359,6 +366,37 @@ mod tests {
             bootstrap_workspace_config(&paths).expect_err("malformed config must be rejected");
 
         assert!(matches!(error, ConfigError::Decode { .. }));
+    }
+
+    #[test]
+    fn workspace_config_without_ignore_override_defaults_to_empty() {
+        // A config.toml written before #16 task 2 added this field must
+        // still load, defaulting to no extra exclusions.
+        let workspace = TestDir::create("legacy-workspace-config");
+        let paths = WorkspacePaths::from_root(workspace.path());
+        fs::create_dir_all(&paths.root).expect("config root should be created");
+        fs::write(&paths.config_file, "format_version = 1\n")
+            .expect("fixture config should be written");
+
+        let config = load_workspace_config(&paths).expect("legacy config should load");
+
+        assert!(config.extra_excluded_directory_names.is_empty());
+    }
+
+    #[test]
+    fn workspace_config_ignore_override_round_trips() {
+        let workspace = TestDir::create("ignore-override-config");
+        let paths = WorkspacePaths::from_root(workspace.path());
+        fs::create_dir_all(&paths.root).expect("config root should be created");
+        fs::write(
+            &paths.config_file,
+            "format_version = 1\nextra_excluded_directory_names = [\"vendor\"]\n",
+        )
+        .expect("fixture config should be written");
+
+        let config = load_workspace_config(&paths).expect("config should load");
+
+        assert_eq!(config.extra_excluded_directory_names, vec!["vendor"]);
     }
 
     #[test]
