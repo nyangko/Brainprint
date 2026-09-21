@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "id": "python-signature-impact",
+  "description": "Locate build_profile definition, direct callers, and related tests using basic filesystem/text exploration.",
+  "workspace": "fixtures/workspaces/python-signature-impact",
+  "variant": "basic-tools",
+  "query": "build_profile",
+  "include_extensions": [".py", ".toml"],
+  "expected_matches": [
+    "src/profile_app/profile.py",
+    "src/profile_app/service.py",
+    "src/profile_app/admin.py",
+    "tests/test_profile.py"
+  ]
+}

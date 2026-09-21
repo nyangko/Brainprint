@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 /// Version of the persisted benchmark result schema.
 pub const BENCHMARK_SCHEMA_VERSION: u32 = 1;
 
-/// Build identity copied into each benchmark result.
+/// Build identity copied into a Brainprint-backed benchmark result.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BenchmarkBuild {
     pub product: String,
@@ -47,7 +47,8 @@ pub struct BenchmarkResult {
     pub run_id: String,
     pub scenario_id: String,
     pub variant: String,
-    pub build: BenchmarkBuild,
+    /// `None` for non-Brainprint baselines.
+    pub build: Option<BenchmarkBuild>,
     pub started_at_unix_ms: Option<u64>,
     pub ended_at_unix_ms: Option<u64>,
     pub elapsed_ms: u64,
@@ -66,7 +67,7 @@ impl BenchmarkResult {
     }
 }
 
-/// Mutable recorder for one benchmark run.
+/// Mutable recorder for one Brainprint-backed benchmark run.
 #[derive(Debug)]
 pub struct BenchmarkRecorder {
     run_id: String,
@@ -153,7 +154,7 @@ impl BenchmarkRecorder {
             run_id: self.run_id,
             scenario_id: self.scenario_id,
             variant: self.variant,
-            build: self.build,
+            build: Some(self.build),
             started_at_unix_ms: self.started_at_unix_ms,
             ended_at_unix_ms: unix_time_ms(),
             elapsed_ms: duration_ms(self.started.elapsed()),
@@ -182,9 +183,10 @@ mod tests {
 
     #[test]
     fn unobserved_metrics_remain_unknown() {
-        let result = BenchmarkRecorder::new("run-1", "scenario-1", "baseline")
+        let result = BenchmarkRecorder::new("run-1", "scenario-1", "brainprint")
             .finish(true, None, None);
 
+        assert!(result.build.is_some());
         assert_eq!(result.metrics.tool_calls, None);
         assert_eq!(result.metrics.process_cpu_ms, None);
 
@@ -195,7 +197,7 @@ mod tests {
 
     #[test]
     fn recorder_accumulates_observed_counts() {
-        let mut recorder = BenchmarkRecorder::new("run-2", "scenario-1", "baseline");
+        let mut recorder = BenchmarkRecorder::new("run-2", "scenario-1", "brainprint");
         recorder.set_tool_calls(0);
         recorder.record_tool_call();
         recorder.record_source_read(100, 5, 20);

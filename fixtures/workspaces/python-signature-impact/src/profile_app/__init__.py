@@ -1,0 +1,1 @@
+"""Representative Python fixture package."""
