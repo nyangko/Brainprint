@@ -18,10 +18,11 @@ use std::path::Path;
 
 use crate::db::{self, DbKind, DbOpenError, Migration, OpenedDb};
 
-pub const INDEX_MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    name: "create_index_foundation_tables",
-    sql: "
+pub const INDEX_MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        name: "create_index_foundation_tables",
+        sql: "
         CREATE TABLE generation (
             id INTEGER PRIMARY KEY,
             generation_no INTEGER NOT NULL UNIQUE,
@@ -249,7 +250,14 @@ pub const INDEX_MIGRATIONS: &[Migration] = &[Migration {
             UNIQUE (unresolved_reference_id, target_entity_id)
         );
     ",
-}];
+    },
+    Migration {
+        version: 2,
+        name: "add_workspace_identity_binding",
+        sql: "ALTER TABLE db_meta ADD COLUMN project_uid BLOB; \
+              ALTER TABLE db_meta ADD COLUMN workspace_uid BLOB;",
+    },
+];
 
 /// Open (creating and migrating if needed) an `index.db` at `path`.
 pub fn open(path: &Path) -> Result<OpenedDb, DbOpenError> {
@@ -331,7 +339,7 @@ mod tests {
     fn fresh_rebuildable_index_db_can_be_created() {
         let dir = TestDir::create("fresh");
         let opened = open(&dir.db_path()).expect("fresh index.db should migrate");
-        assert_eq!(opened.schema_version, 1);
+        assert_eq!(opened.schema_version, 2);
     }
 
     #[test]
@@ -558,14 +566,14 @@ mod tests {
         open(&dir.db_path()).expect("first open should migrate");
         let reopened = open(&dir.db_path()).expect("reopen should be a no-op");
 
-        assert_eq!(reopened.schema_version, 1);
+        assert_eq!(reopened.schema_version, 2);
         let ledger_count: u32 = reopened
             .connection
             .query_row("SELECT COUNT(*) FROM schema_migration", [], |row| {
                 row.get(0)
             })
             .expect("ledger should be queryable");
-        assert_eq!(ledger_count, 1, "migration must not reapply on reopen");
+        assert_eq!(ledger_count, 2, "migration must not reapply on reopen");
     }
 
     #[test]

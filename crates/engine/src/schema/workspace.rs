@@ -15,10 +15,11 @@ use std::path::Path;
 
 use crate::db::{self, DbKind, DbOpenError, Migration, OpenedDb};
 
-pub const WORKSPACE_MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    name: "create_workspace_operational_tables",
-    sql: "
+pub const WORKSPACE_MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        name: "create_workspace_operational_tables",
+        sql: "
         CREATE TABLE workspace_state (
             id INTEGER PRIMARY KEY CHECK (id = 0),
             created_at TEXT NOT NULL,
@@ -90,7 +91,14 @@ pub const WORKSPACE_MIGRATIONS: &[Migration] = &[Migration {
         );
         CREATE INDEX idx_work_handoff_work_item ON work_handoff (work_item_id);
     ",
-}];
+    },
+    Migration {
+        version: 2,
+        name: "add_workspace_identity_binding",
+        sql: "ALTER TABLE db_meta ADD COLUMN project_uid BLOB; \
+              ALTER TABLE db_meta ADD COLUMN workspace_uid BLOB;",
+    },
+];
 
 /// Open (creating and migrating if needed) a `workspace.db` at `path`.
 pub fn open(path: &Path) -> Result<OpenedDb, DbOpenError> {

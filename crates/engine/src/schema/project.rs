@@ -14,10 +14,11 @@ use std::path::Path;
 
 use crate::db::{self, DbKind, DbOpenError, Migration, OpenedDb};
 
-pub const PROJECT_MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    name: "create_project_knowledge_tables",
-    sql: "
+pub const PROJECT_MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        name: "create_project_knowledge_tables",
+        sql: "
         CREATE TABLE policy (
             id INTEGER PRIMARY KEY,
             uid BLOB NOT NULL UNIQUE,
@@ -92,7 +93,13 @@ pub const PROJECT_MIGRATIONS: &[Migration] = &[Migration {
             UNIQUE (state_key, scope_kind, scope_key)
         );
     ",
-}];
+    },
+    Migration {
+        version: 2,
+        name: "add_project_identity_binding",
+        sql: "ALTER TABLE db_meta ADD COLUMN project_uid BLOB;",
+    },
+];
 
 /// Open (creating and migrating if needed) a `project.db` at `path`.
 pub fn open(path: &Path) -> Result<OpenedDb, DbOpenError> {
@@ -156,7 +163,7 @@ mod tests {
     fn fresh_project_db_migrates_successfully() {
         let dir = TestDir::create("fresh");
         let opened = open(&dir.db_path()).expect("fresh project.db should migrate");
-        assert_eq!(opened.schema_version, 1);
+        assert_eq!(opened.schema_version, 2);
     }
 
     #[test]
@@ -271,7 +278,7 @@ mod tests {
         }
 
         let reopened = open(&dir.db_path()).expect("reopen should be a no-op migration-wise");
-        assert_eq!(reopened.schema_version, 1);
+        assert_eq!(reopened.schema_version, 2);
 
         let ledger_count: u32 = reopened
             .connection
@@ -279,7 +286,7 @@ mod tests {
                 row.get(0)
             })
             .expect("ledger should be queryable");
-        assert_eq!(ledger_count, 1, "migration must not reapply on reopen");
+        assert_eq!(ledger_count, 2, "migration must not reapply on reopen");
 
         let title: String = reopened
             .connection
