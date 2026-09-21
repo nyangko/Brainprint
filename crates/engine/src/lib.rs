@@ -9,6 +9,7 @@ pub mod extract;
 pub mod generation;
 pub mod graph;
 pub mod identity;
+pub mod imports;
 pub mod init;
 pub mod inspect;
 pub mod parser;

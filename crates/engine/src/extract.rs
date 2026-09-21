@@ -1134,7 +1134,7 @@ fn is_binding(kind: SymbolKind) -> bool {
 
 /// Every named child of `node` under `field`, since a Python import can
 /// name several things in one statement.
-fn children_by_field<'tree>(node: Node<'tree>, field: &str) -> Vec<Node<'tree>> {
+pub(crate) fn children_by_field<'tree>(node: Node<'tree>, field: &str) -> Vec<Node<'tree>> {
     let mut cursor = node.walk();
     let children: Vec<Node<'tree>> = node
         .children_by_field_name(field, &mut cursor)
@@ -1156,7 +1156,7 @@ fn descendants<'tree>(node: Node<'tree>, kind: &str) -> Vec<Node<'tree>> {
     found
 }
 
-fn span_of(node: Node<'_>) -> SourceSpan {
+pub(crate) fn span_of(node: Node<'_>) -> SourceSpan {
     SourceSpan {
         start_byte: node.start_byte(),
         end_byte: node.end_byte(),
