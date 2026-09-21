@@ -270,6 +270,20 @@ pub const INDEX_MIGRATIONS: &[Migration] = &[
         // component that has no such distinction to draw.
         sql: "ALTER TABLE component_state ADD COLUMN detail_state TEXT;",
     },
+    Migration {
+        version: 4,
+        name: "add_relation_null_dispatch_uniqueness",
+        // `relation`'s UNIQUE (kind, source, target, dispatch) is the
+        // intended identity of an edge, but SQLite treats NULLs as
+        // distinct, so it does not constrain the rows that matter most:
+        // an edge whose dispatch is not yet known (#17 task 2 owns that
+        // vocabulary). Without this, the same CALLS edge could be stored
+        // twice. A partial unique index covers exactly that case and
+        // changes nothing for rows that do carry a dispatch.
+        sql: "CREATE UNIQUE INDEX idx_relation_unique_null_dispatch \
+              ON relation (kind, source_entity_id, target_entity_id) \
+              WHERE dispatch IS NULL;",
+    },
 ];
 
 /// Open (creating and migrating if needed) an `index.db` at `path`.
@@ -352,7 +366,7 @@ mod tests {
     fn fresh_rebuildable_index_db_can_be_created() {
         let dir = TestDir::create("fresh");
         let opened = open(&dir.db_path()).expect("fresh index.db should migrate");
-        assert_eq!(opened.schema_version, 3);
+        assert_eq!(opened.schema_version, 4);
     }
 
     #[test]
@@ -579,14 +593,14 @@ mod tests {
         open(&dir.db_path()).expect("first open should migrate");
         let reopened = open(&dir.db_path()).expect("reopen should be a no-op");
 
-        assert_eq!(reopened.schema_version, 3);
+        assert_eq!(reopened.schema_version, 4);
         let ledger_count: u32 = reopened
             .connection
             .query_row("SELECT COUNT(*) FROM schema_migration", [], |row| {
                 row.get(0)
             })
             .expect("ledger should be queryable");
-        assert_eq!(ledger_count, 3, "migration must not reapply on reopen");
+        assert_eq!(ledger_count, 4, "migration must not reapply on reopen");
     }
 
     #[test]

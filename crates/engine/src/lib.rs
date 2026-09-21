@@ -6,6 +6,7 @@ pub mod db;
 pub mod discovery;
 pub mod extract;
 pub mod generation;
+pub mod graph;
 pub mod identity;
 pub mod init;
 pub mod inspect;
