@@ -1,0 +1,12 @@
+[package]
+name = "brainprint-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "brainprint"
+path = "src/main.rs"
+
+[dependencies]
+brainprint-core = { path = "../core" }
