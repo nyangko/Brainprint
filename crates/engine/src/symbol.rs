@@ -1499,9 +1499,14 @@ export function top(): number { return 1 }
         let profile_id = store.ensure_profile(&extraction.profile).expect("profile");
         let symbols = assign_ids(&[], &extraction, &resource, profile_id);
 
+        // The baseline scan already published this file's structure
+        // (#16 task 14), so what a rollback must restore is that set.
+        let baseline = store.list_for_resource(resource.id).expect("list");
+        assert!(!baseline.is_empty());
+
         // The caller owns the transaction, which is what lets #16 task 9
         // commit Occurrence rows alongside these Symbols. Dropping it must
-        // take the Symbols with it.
+        // take the replacement with it.
         let transaction = store
             .connection()
             .unchecked_transaction()
@@ -1511,11 +1516,9 @@ export function top(): number { return 1 }
             .expect("replace");
         drop(transaction);
 
-        assert!(
-            store
-                .list_for_resource(resource.id)
-                .expect("list")
-                .is_empty(),
+        assert_eq!(
+            store.list_for_resource(resource.id).expect("list"),
+            baseline,
             "the replacement belonged to the caller's transaction"
         );
     }
@@ -1643,6 +1646,12 @@ export function top(): number { return 1 }
         let extraction = extraction_of(dialect, SOURCE);
         let profile_id = store.ensure_profile(&extraction.profile).expect("profile");
         let symbols = assign_ids(&[], &extraction, &resource, profile_id);
+        // What the baseline scan published, which a refused publication
+        // must leave exactly as it is.
+        let baseline_symbols = store.list_for_resource(resource.id).expect("list");
+        let baseline_occurrences = store
+            .list_occurrences_for_resource(resource.id)
+            .expect("list");
 
         // A generation that is merely BUILDING is not something evidence
         // may be attached to.
@@ -1660,18 +1669,16 @@ export function top(): number { return 1 }
             .expect_err("a non-stable generation must be refused");
 
         assert!(matches!(error, SymbolError::GenerationNotStable { .. }));
-        assert!(
-            store
-                .list_for_resource(resource.id)
-                .expect("list")
-                .is_empty(),
+        assert_eq!(
+            store.list_for_resource(resource.id).expect("list"),
+            baseline_symbols,
             "the refused publication wrote no Symbols either"
         );
-        assert!(
+        assert_eq!(
             store
                 .list_occurrences_for_resource(resource.id)
-                .expect("list")
-                .is_empty()
+                .expect("list"),
+            baseline_occurrences
         );
 
         // The stable one is accepted.

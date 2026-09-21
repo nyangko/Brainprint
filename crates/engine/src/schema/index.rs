@@ -257,6 +257,19 @@ pub const INDEX_MIGRATIONS: &[Migration] = &[
         sql: "ALTER TABLE db_meta ADD COLUMN project_uid BLOB; \
               ALTER TABLE db_meta ADD COLUMN workspace_uid BLOB;",
     },
+    Migration {
+        version: 3,
+        name: "add_component_detail_state",
+        // A component's own state, alongside the two axes every component
+        // shares (#16 task 14). `processing_state`/`freshness_state` say
+        // whether work is outstanding and whether the rows are current;
+        // they cannot say that a Resource's structure is PARTIAL because
+        // the file does not parse, or UNSUPPORTED because no grammar
+        // covers it. Those are not errors, so hiding them in
+        // `last_error_code` would make every reader guess. NULL for a
+        // component that has no such distinction to draw.
+        sql: "ALTER TABLE component_state ADD COLUMN detail_state TEXT;",
+    },
 ];
 
 /// Open (creating and migrating if needed) an `index.db` at `path`.
@@ -339,7 +352,7 @@ mod tests {
     fn fresh_rebuildable_index_db_can_be_created() {
         let dir = TestDir::create("fresh");
         let opened = open(&dir.db_path()).expect("fresh index.db should migrate");
-        assert_eq!(opened.schema_version, 2);
+        assert_eq!(opened.schema_version, 3);
     }
 
     #[test]
@@ -566,14 +579,14 @@ mod tests {
         open(&dir.db_path()).expect("first open should migrate");
         let reopened = open(&dir.db_path()).expect("reopen should be a no-op");
 
-        assert_eq!(reopened.schema_version, 2);
+        assert_eq!(reopened.schema_version, 3);
         let ledger_count: u32 = reopened
             .connection
             .query_row("SELECT COUNT(*) FROM schema_migration", [], |row| {
                 row.get(0)
             })
             .expect("ledger should be queryable");
-        assert_eq!(ledger_count, 2, "migration must not reapply on reopen");
+        assert_eq!(ledger_count, 3, "migration must not reapply on reopen");
     }
 
     #[test]

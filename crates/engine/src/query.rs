@@ -37,7 +37,7 @@
 //! nothing in this task needs them, and reading a CALL_SITE as a call to
 //! *something* is exactly the inference I3 owns.
 
-use std::{error::Error, fmt, path::Path};
+use std::{collections::HashMap, error::Error, fmt, path::Path};
 
 use brainprint_core::{ResourceId, SymbolId};
 use rusqlite::{Connection, OptionalExtension, ToSql, params_from_iter};
@@ -48,6 +48,7 @@ use crate::{
     parser::{self, StructuralCapability},
     resource::{self, Resource, ResourceError, ResourceKind, ResourceLanguage, ResourceRole},
     schema,
+    structural::{self, StructuralState},
     symbol::{self, Symbol, SymbolError, SymbolKind},
 };
 
@@ -95,17 +96,30 @@ pub enum ResultSource {
 }
 
 /// How much of a Resource the structural index actually covers.
+///
+/// Derived from the Resource's persisted structural state (#16 task 14)
+/// when it has one, and from its dialect otherwise -- a Resource nothing
+/// has analyzed yet is still known to be unsupported or container-only by
+/// its extension alone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StructuralCoverage {
     /// Whole-file structural analysis applies: the Symbol set for this
     /// Resource is the file's declarations.
     Complete,
+    /// The current bytes do not parse cleanly, so what is stored is the
+    /// last valid structure rather than the current one. Zero Symbols
+    /// here says nothing about the file.
+    Partial,
     /// Only the container's own structure is indexed (a Svelte component).
     /// Zero Symbols here says nothing about what the embedded script
     /// declares -- claiming otherwise is the false zero #16 forbids.
     ContainerOnly,
     /// No structural parser covers this Resource at all.
     Unsupported,
+    /// A generated artifact with no mapping back to its original. Its
+    /// declarations are deliberately not published as source Symbols, so
+    /// zero results here is a statement about the mapping.
+    GeneratedUnmapped,
 }
 
 impl StructuralCoverage {
@@ -137,6 +151,13 @@ pub struct Located<T> {
     /// Every current match, deterministically ordered. Never narrowed to
     /// one by guessing.
     pub candidates: Vec<T>,
+    /// Matches that describe an *older* revision of their Resource: the
+    /// last valid structure of a file that no longer parses (#16 task
+    /// 14). Kept as labelled evidence, deliberately in their own list --
+    /// mixing them into `candidates` would present a stale span as a
+    /// current one. Always empty for a Resource locate, whose rows are
+    /// either current or a tombstone.
+    pub last_valid: Vec<T>,
     /// Whether the selector identified a thing exactly (an id, a full
     /// path, a full qualified name) rather than searching for one.
     pub exact_selector: bool,
@@ -302,6 +323,10 @@ pub enum QueryError {
     UnknownResource {
         resource_id: ResourceId,
     },
+    /// A stored structural state could not be decoded.
+    Structural {
+        detail: String,
+    },
 }
 
 impl fmt::Display for QueryError {
@@ -315,6 +340,9 @@ impl fmt::Display for QueryError {
             Self::UnknownResource { resource_id } => {
                 write!(formatter, "no resource row for {resource_id}")
             }
+            Self::Structural { detail } => {
+                write!(formatter, "structural state failed: {detail}")
+            }
         }
     }
 }
@@ -327,7 +355,7 @@ impl Error for QueryError {
             Self::Resource(source) => Some(source),
             Self::Symbol(source) => Some(source),
             Self::Component(source) => Some(source),
-            Self::UnknownResource { .. } => None,
+            Self::UnknownResource { .. } | Self::Structural { .. } => None,
         }
     }
 }
@@ -516,6 +544,9 @@ impl QueryIndex {
 
         Ok(Located {
             candidates,
+            // A Resource row is current or a tombstone; there is no older
+            // revision of it to keep alongside.
+            last_valid: Vec::new(),
             exact_selector: matches!(locator, ResourceLocator::Id(_) | ResourceLocator::Path(_)),
             truncated,
             currentness: self.currentness()?,
@@ -537,10 +568,10 @@ impl QueryIndex {
     ) -> Result<Located<SymbolCandidate>, QueryError> {
         let limit = query.limit.unwrap_or(DEFAULT_CANDIDATE_LIMIT);
         let mut sql = format!(
-            "SELECT {}, r.path_rel, r.kind {} WHERE {}",
+            "SELECT {}, {RESOURCE_COLUMNS} {} WHERE {}",
             symbol::SYMBOL_COLUMNS,
             symbol::SYMBOL_FROM,
-            CURRENT_SYMBOL_PREDICATE,
+            ACTIVE_RESOURCE_PREDICATE,
         );
         let mut values: Vec<Box<dyn ToSql>> = Vec::new();
 
@@ -597,23 +628,36 @@ impl QueryIndex {
             params_from_iter(values.iter().map(AsRef::as_ref)),
             symbol_candidate_row,
         )?;
+        let states = self.structural_states()?;
         let mut candidates = Vec::new();
+        let mut last_valid = Vec::new();
         let mut truncated = false;
         for row in rows {
-            let (raw, path_rel, kind) = row?;
+            let (raw, path_rel, kind, resource_revision, resource_uid) = row?;
             if candidates.len() == limit {
                 truncated = true;
                 break;
             }
-            candidates.push(SymbolCandidate {
-                symbol: symbol::decode_symbol(raw)?,
-                coverage: coverage_of(&path_rel, &kind),
+            let symbol = symbol::decode_symbol(raw)?;
+            // A Symbol extracted from an older revision is not a current
+            // locator. It is still the last thing this file was known to
+            // declare, so it is kept -- in the other list.
+            let current = symbol.resource_revision == resource_revision;
+            let candidate = SymbolCandidate {
+                coverage: coverage_from(&states, &resource_uid, &path_rel, &kind),
+                symbol,
                 path_rel,
-            });
+            };
+            if current {
+                candidates.push(candidate);
+            } else {
+                last_valid.push(candidate);
+            }
         }
 
         Ok(Located {
             candidates,
+            last_valid,
             exact_selector: query.selector.is_exact(),
             truncated,
             currentness: self.currentness()?,
@@ -637,7 +681,7 @@ impl QueryIndex {
         };
         let offset = i64::try_from(byte_offset).unwrap_or(i64::MAX);
         let sql = format!(
-            "SELECT {}, r.path_rel, r.kind {} \
+            "SELECT {}, {RESOURCE_COLUMNS} {} \
              WHERE {CURRENT_SYMBOL_PREDICATE} AND r.uid = ? \
              AND s.start_byte <= ? AND s.end_byte > ? \
              ORDER BY (s.end_byte - s.start_byte), s.start_byte DESC, s.uid \
@@ -654,9 +698,9 @@ impl QueryIndex {
             )
             .optional()?;
 
-        let coverage = coverage_of(&resource.path_rel, resource.kind.as_str());
+        let coverage = self.coverage_for(&resource)?;
         let containing = found
-            .map(|(raw, path_rel, _)| {
+            .map(|(raw, path_rel, ..)| {
                 Ok::<_, QueryError>(SymbolCandidate {
                     symbol: symbol::decode_symbol(raw)?,
                     path_rel,
@@ -689,6 +733,30 @@ impl QueryIndex {
         Ok(raw.map(resource::decode_resource).transpose()?)
     }
 
+    /// Every Resource's persisted structural state, keyed by scope key.
+    /// One query, so a search does not ask per candidate.
+    fn structural_states(&self) -> Result<HashMap<String, StructuralState>, QueryError> {
+        Ok(structural::read_all(&self.connection)
+            .map_err(|error| QueryError::Structural {
+                detail: error.to_string(),
+            })?
+            .into_iter()
+            .map(|(key, state)| (key, state.state))
+            .collect())
+    }
+
+    /// One Resource's coverage, from its persisted structural state when
+    /// it has one.
+    fn coverage_for(&self, resource: &Resource) -> Result<StructuralCoverage, QueryError> {
+        let states = self.structural_states()?;
+        Ok(coverage_from(
+            &states,
+            &resource.id.to_bytes(),
+            &resource.path_rel,
+            resource.kind.as_str(),
+        ))
+    }
+
     /// Every Resource in `scope` the structural index does not fully
     /// cover. Only language-classified files are reported: a `.md` file is
     /// not partial structural coverage, it is simply not code.
@@ -718,10 +786,16 @@ impl QueryIndex {
             params_from_iter(values.iter().map(AsRef::as_ref)),
             resource::raw_resource_from_row,
         )?;
+        let states = self.structural_states()?;
         let mut notes = Vec::new();
         for raw in rows {
             let resource = resource::decode_resource(raw?)?;
-            let coverage = coverage_of(&resource.path_rel, resource.kind.as_str());
+            let coverage = coverage_from(
+                &states,
+                &resource.id.to_bytes(),
+                &resource.path_rel,
+                resource.kind.as_str(),
+            );
             if !coverage.is_complete() {
                 notes.push(CoverageNote {
                     resource_id: resource.id,
@@ -739,12 +813,46 @@ impl QueryIndex {
 const CURRENT_SYMBOL_PREDICATE: &str =
     "r.state = 'ACTIVE' AND s.resource_revision = r.resource_revision";
 
-type SymbolCandidateRow = (symbol::RawSymbolRow, String, String);
+/// A DELETED Resource's Symbols are never returned at all -- not as a
+/// candidate, and not as last-valid evidence. The revision comparison is
+/// then made in Rust, so a stale row can be *labelled* rather than
+/// dropped (#16 task 14).
+const ACTIVE_RESOURCE_PREDICATE: &str = "r.state = 'ACTIVE'";
+
+/// A Symbol row plus the columns appended after `SYMBOL_COLUMNS`: its
+/// Resource's path, kind, current revision, and stable id.
+type SymbolCandidateRow = (symbol::RawSymbolRow, String, String, String, Vec<u8>);
+
+const RESOURCE_COLUMNS: &str = "r.path_rel, r.kind, r.resource_revision, r.uid";
 
 fn symbol_candidate_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SymbolCandidateRow> {
     let raw = symbol::raw_symbol_row(row)?;
-    // The two columns appended after `SYMBOL_COLUMNS`.
-    Ok((raw, row.get(17)?, row.get(18)?))
+    Ok((raw, row.get(17)?, row.get(18)?, row.get(19)?, row.get(20)?))
+}
+
+/// A Resource's coverage: what the structural index recorded about it
+/// (#16 task 14) if anything, and otherwise what its extension implies.
+///
+/// The recorded state is preferred because it is the only thing that can
+/// distinguish "this file parses and declares nothing" from "this file
+/// stopped parsing and what is stored is last-valid".
+fn coverage_from(
+    states: &HashMap<String, StructuralState>,
+    resource_uid: &[u8],
+    path_rel: &str,
+    kind: &str,
+) -> StructuralCoverage {
+    let key = ResourceId::from_bytes(resource_uid.try_into().unwrap_or([0; 16])).to_string();
+    match states.get(&key) {
+        Some(StructuralState::Complete) => StructuralCoverage::Complete,
+        Some(StructuralState::Partial) => StructuralCoverage::Partial,
+        Some(StructuralState::ContainerOnly) => StructuralCoverage::ContainerOnly,
+        Some(StructuralState::Unsupported | StructuralState::Unavailable) => {
+            StructuralCoverage::Unsupported
+        }
+        Some(StructuralState::GeneratedUnmapped) => StructuralCoverage::GeneratedUnmapped,
+        None => coverage_of(path_rel, kind),
+    }
 }
 
 /// The structural coverage a path's extension implies. Deterministic and

@@ -22,7 +22,15 @@ use rusqlite::{Connection, OptionalExtension, params};
 use crate::db;
 
 pub const RESOURCE_INDEX: &str = "RESOURCE_INDEX";
+/// The per-Resource structural index component (#16 task 14): whether one
+/// Resource's Symbols and Occurrences are current, partial, unsupported,
+/// or merely the last valid ones. Scoped by `ResourceId`, so a file that
+/// does not parse says so about itself instead of about the Workspace.
+pub const STRUCTURAL_INDEX: &str = "STRUCTURAL_INDEX";
 pub const WORKSPACE_SCOPE_KIND: &str = "WORKSPACE";
+/// Scope kind for a component that describes one Resource. The scope key
+/// is that Resource's stable id.
+pub const RESOURCE_SCOPE_KIND: &str = "RESOURCE";
 /// The component covers the whole Workspace rather than one path, and the
 /// column is NOT NULL.
 pub const WORKSPACE_SCOPE_KEY: &str = "*";
@@ -162,48 +170,183 @@ impl From<rusqlite::Error> for ComponentError {
     }
 }
 
+/// One `component_state` row, whatever component it describes.
+///
+/// `detail_state` is the component's own vocabulary, which the two shared
+/// axes cannot express (#16 task 14). The component that writes it owns
+/// its meaning; this module only stores it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ComponentRow {
+    pub basis_workspace_revision: String,
+    pub stable_generation_id: Option<i64>,
+    pub processing_state: ProcessingState,
+    pub freshness_state: FreshnessState,
+    pub last_error_code: Option<String>,
+    pub detail_state: Option<String>,
+}
+
+const COMPONENT_COLUMNS: &str = "basis_workspace_revision, stable_generation_id, \
+                                 processing_state, freshness_state, last_error_code, \
+                                 detail_state";
+
 /// `component_state`'s columns as stored, before vocabulary decoding.
-type RawComponentRow = (String, Option<i64>, String, String, Option<String>);
+type RawComponentRow = (
+    String,
+    Option<i64>,
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+);
+
+fn raw_component_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawComponentRow> {
+    Ok((
+        row.get(0)?,
+        row.get(1)?,
+        row.get(2)?,
+        row.get(3)?,
+        row.get(4)?,
+        row.get(5)?,
+    ))
+}
+
+fn decode_component(raw: RawComponentRow) -> Result<ComponentRow, ComponentError> {
+    Ok(ComponentRow {
+        basis_workspace_revision: raw.0,
+        stable_generation_id: raw.1,
+        processing_state: ProcessingState::parse(&raw.2)?,
+        freshness_state: FreshnessState::parse(&raw.3)?,
+        last_error_code: raw.4,
+        detail_state: raw.5,
+    })
+}
+
+/// Read one component's row, or `None` if it has never been written.
+pub(crate) fn read_scoped(
+    connection: &Connection,
+    component_kind: &str,
+    scope_kind: &str,
+    scope_key: &str,
+) -> Result<Option<ComponentRow>, ComponentError> {
+    connection
+        .query_row(
+            &format!(
+                "SELECT {COMPONENT_COLUMNS} FROM component_state \
+                 WHERE component_kind = ?1 AND scope_kind = ?2 AND scope_key = ?3"
+            ),
+            params![component_kind, scope_kind, scope_key],
+            raw_component_row,
+        )
+        .optional()?
+        .map(decode_component)
+        .transpose()
+}
+
+/// Every row of one component kind at one scope kind, keyed by scope key.
+/// One query instead of one per Resource, for a reader that needs the
+/// structural state of a whole query scope at once.
+pub(crate) fn read_all_scoped(
+    connection: &Connection,
+    component_kind: &str,
+    scope_kind: &str,
+) -> Result<Vec<(String, ComponentRow)>, ComponentError> {
+    let mut statement = connection.prepare(&format!(
+        "SELECT scope_key, {COMPONENT_COLUMNS} FROM component_state \
+         WHERE component_kind = ?1 AND scope_kind = ?2 ORDER BY scope_key"
+    ))?;
+    let rows = statement.query_map(params![component_kind, scope_kind], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            (
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+                row.get(5)?,
+                row.get(6)?,
+            ),
+        ))
+    })?;
+    rows.map(|row| {
+        let (scope_key, raw) = row?;
+        Ok((scope_key, decode_component(raw)?))
+    })
+    .collect()
+}
+
+/// Write one component's row, replacing whatever it held.
+///
+/// Unlike [`mark_dirty`], this is a full statement of the component's
+/// state: every field is the caller's, because the caller is the component
+/// and has just established all of them together.
+pub(crate) fn write_scoped(
+    connection: &Connection,
+    component_kind: &str,
+    scope_kind: &str,
+    scope_key: &str,
+    state: &ComponentRow,
+) -> Result<(), ComponentError> {
+    connection.execute(
+        "INSERT INTO component_state \
+         (component_kind, scope_kind, scope_key, basis_workspace_revision, \
+          stable_generation_id, processing_state, freshness_state, last_error_code, \
+          detail_state, updated_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10) \
+         ON CONFLICT (component_kind, scope_kind, scope_key) DO UPDATE SET \
+         basis_workspace_revision = excluded.basis_workspace_revision, \
+         stable_generation_id = excluded.stable_generation_id, \
+         processing_state = excluded.processing_state, \
+         freshness_state = excluded.freshness_state, \
+         last_error_code = excluded.last_error_code, \
+         detail_state = excluded.detail_state, \
+         updated_at = excluded.updated_at",
+        params![
+            component_kind,
+            scope_kind,
+            scope_key,
+            state.basis_workspace_revision,
+            state.stable_generation_id,
+            state.processing_state.as_str(),
+            state.freshness_state.as_str(),
+            state.last_error_code,
+            state.detail_state,
+            db::now_millis_text(),
+        ],
+    )?;
+    Ok(())
+}
+
+/// Forget one component's row entirely -- for a scope that no longer
+/// exists, such as a DELETED Resource's structure.
+pub(crate) fn delete_scoped(
+    connection: &Connection,
+    component_kind: &str,
+    scope_kind: &str,
+    scope_key: &str,
+) -> Result<(), ComponentError> {
+    connection.execute(
+        "DELETE FROM component_state \
+         WHERE component_kind = ?1 AND scope_kind = ?2 AND scope_key = ?3",
+        params![component_kind, scope_kind, scope_key],
+    )?;
+    Ok(())
+}
 
 /// Read the `RESOURCE_INDEX` row, or `None` if it has never been written.
 pub(crate) fn read(connection: &Connection) -> Result<Option<ResourceIndexState>, ComponentError> {
-    let raw: Option<RawComponentRow> = connection
-        .query_row(
-            "SELECT basis_workspace_revision, stable_generation_id, processing_state, \
-                    freshness_state, last_error_code \
-             FROM component_state \
-             WHERE component_kind = ?1 AND scope_kind = ?2 AND scope_key = ?3",
-            params![RESOURCE_INDEX, WORKSPACE_SCOPE_KIND, WORKSPACE_SCOPE_KEY],
-            |row| {
-                Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                    row.get(4)?,
-                ))
-            },
-        )
-        .optional()?;
-
-    raw.map(
-        |(
-            basis_workspace_revision,
-            stable_generation_id,
-            processing_state,
-            freshness_state,
-            last_error_code,
-        )| {
-            Ok(ResourceIndexState {
-                basis_workspace_revision,
-                stable_generation_id,
-                processing_state: ProcessingState::parse(&processing_state)?,
-                freshness_state: FreshnessState::parse(&freshness_state)?,
-                last_error_code,
-            })
-        },
-    )
-    .transpose()
+    Ok(read_scoped(
+        connection,
+        RESOURCE_INDEX,
+        WORKSPACE_SCOPE_KIND,
+        WORKSPACE_SCOPE_KEY,
+    )?
+    .map(|row| ResourceIndexState {
+        basis_workspace_revision: row.basis_workspace_revision,
+        stable_generation_id: row.stable_generation_id,
+        processing_state: row.processing_state,
+        freshness_state: row.freshness_state,
+        last_error_code: row.last_error_code,
+    }))
 }
 
 /// READY/CURRENT against `generation_id`, which just published this

@@ -56,7 +56,10 @@ use crate::{
     discovery::{self, DiscoveryError},
     identity,
     parser::{SourcePoint, SourceSpan},
-    query::{Currentness, Located, NotCurrentReason, QueryError, QueryIndex, ResourceLocator},
+    query::{
+        Currentness, Located, NotCurrentReason, QueryError, QueryIndex, ResourceLocator,
+        StructuralCoverage,
+    },
     resource::ResourceKind,
 };
 
@@ -123,9 +126,12 @@ impl fmt::Display for QueryStatus {
 /// 4. An exact selector matched more than once: ambiguous by definition.
 ///    (A *search* returning many results is simply found.)
 /// 5. Any candidate at all: found.
-/// 6. Zero candidates with some of the scope structurally uncovered:
+/// 6. Zero current candidates, but a Resource in scope is PARTIAL or has
+///    last-valid Symbols: its structure is owed a re-analysis, so this is
+///    `Refreshing` -- and emphatically not a "no".
+/// 7. Zero candidates with some of the scope structurally uncovered:
 ///    unsupported, never "not found".
-/// 7. Zero candidates over a complete, current scope: the one honest
+/// 8. Zero candidates over a complete, current scope: the one honest
 ///    `NotFound`.
 #[must_use]
 pub fn structured_status<T>(located: &Located<T>) -> QueryStatus {
@@ -146,6 +152,18 @@ pub fn structured_status<T>(located: &Located<T>) -> QueryStatus {
     }
     if !located.candidates.is_empty() {
         return QueryStatus::Found;
+    }
+    // Last-valid Symbols are evidence that this scope *did* declare
+    // something and that its current structure is pending (#16 task 14).
+    // Answering "not found" here would be the false zero in its purest
+    // form: the file is still there, and so are its declarations.
+    if !located.last_valid.is_empty()
+        || located
+            .incomplete_coverage
+            .iter()
+            .any(|note| note.coverage == StructuralCoverage::Partial)
+    {
+        return QueryStatus::Refreshing;
     }
     if located.incomplete_coverage.is_empty() {
         QueryStatus::NotFound

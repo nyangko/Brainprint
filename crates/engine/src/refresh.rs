@@ -58,13 +58,12 @@ use crate::{
     component,
     config::WorkspaceConfig,
     discovery::{self, DiscoveredResource},
-    extract::{self, Extraction},
     generation::{self, GenerationError, GenerationRecord},
     identity::{self, ObservationMode, ObservedResource, ResourceChange},
-    parser::{self, ParseError, ParseStatus, ParserRegistry, SourceBasis},
     resource::{Resource, ResourceError, ResourceStore},
     scan::{self, ScanError},
-    schema, symbol,
+    schema,
+    structural::{self, StructuralOutcome},
     watch::{self, JournalEntry, WatchEventKind, WatcherContinuity},
 };
 
@@ -111,8 +110,11 @@ pub struct RefreshPublication {
     /// The Workspace revision this publication established.
     pub workspace_revision: String,
     pub generation: GenerationRecord,
-    pub symbols: usize,
-    pub occurrences: usize,
+    /// What the structural index could establish for this Resource:
+    /// COMPLETE, PARTIAL (last-valid kept), CONTAINER_ONLY, UNSUPPORTED,
+    /// or UNAVAILABLE. A publication happens either way -- the Resource
+    /// change is real -- and this says what it means structurally.
+    pub structure: StructuralOutcome,
 }
 
 /// Why the fast path handed the situation to reconcile. Each variant is a
@@ -139,17 +141,6 @@ pub enum DeferReason {
     /// Kind, role, or language changed: this is no longer the same kind of
     /// Resource, and its structural treatment may differ.
     ClassificationChanged { path_rel: String },
-    /// No Tier-1 structural dialect covers the target, so there is no
-    /// structural result to publish. The Resource change itself is left
-    /// for reconcile rather than published half-analyzed.
-    NotStructuralSource { path_rel: String },
-    /// The parse did not accept the whole file (an incomplete edit, or a
-    /// container-only dialect). The previously accepted structure is kept
-    /// exactly as it was.
-    ExtractionNotAccepted {
-        path_rel: String,
-        parse_status: ParseStatus,
-    },
     /// The single-Resource comparison produced something other than a
     /// modification of the same identity.
     IdentityNotContinuous { path_rel: String },
@@ -172,8 +163,6 @@ pub enum ObsoleteReason {
 #[derive(Debug)]
 pub enum RefreshError {
     Scan(ScanError),
-    Symbol(symbol::SymbolError),
-    Parse(ParseError),
     /// The Resource row did not describe the published bytes after the
     /// update was applied. A bug, not a race: rolled back.
     InvariantViolated {
@@ -191,8 +180,6 @@ impl std::fmt::Display for RefreshError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Scan(source) => write!(formatter, "{source}"),
-            Self::Symbol(source) => write!(formatter, "structural write failed: {source}"),
-            Self::Parse(source) => write!(formatter, "parse failed: {source}"),
             Self::InvariantViolated { detail } => write!(
                 formatter,
                 "resource invariant violated, so the targeted publication was rolled back: \
@@ -206,8 +193,6 @@ impl std::error::Error for RefreshError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Scan(source) => Some(source),
-            Self::Symbol(source) => Some(source),
-            Self::Parse(source) => Some(source),
             Self::InvariantViolated { .. } => None,
         }
     }
@@ -216,18 +201,6 @@ impl std::error::Error for RefreshError {
 impl From<ScanError> for RefreshError {
     fn from(source: ScanError) -> Self {
         Self::Scan(source)
-    }
-}
-
-impl From<symbol::SymbolError> for RefreshError {
-    fn from(source: symbol::SymbolError) -> Self {
-        Self::Symbol(source)
-    }
-}
-
-impl From<ParseError> for RefreshError {
-    fn from(source: ParseError) -> Self {
-        Self::Parse(source)
     }
 }
 
@@ -348,15 +321,7 @@ impl TargetedRefresh {
             }
             [ResourceChange::Update(updated)] => {
                 let updated = updated.clone();
-                self.refresh_changed(
-                    workspace_root,
-                    config,
-                    &input,
-                    &target,
-                    &updated,
-                    &observed,
-                    &bytes,
-                )
+                self.refresh_changed(workspace_root, config, &input, &target, &updated, &observed)
             }
             _ => Ok(RefreshOutcome::Deferred(
                 DeferReason::IdentityNotContinuous {
@@ -445,35 +410,7 @@ impl TargetedRefresh {
         target: &Target,
         updated: &Resource,
         observed: &ObservedResource,
-        bytes: &[u8],
     ) -> Result<RefreshOutcome, RefreshError> {
-        // The structural result comes from the verified bytes, and only a
-        // whole-file COMPLETE parse may replace anything.
-        let dialect = match parser::dialect_for_resource(updated) {
-            Ok(dialect) => dialect,
-            Err(_) => {
-                return Ok(RefreshOutcome::Deferred(DeferReason::NotStructuralSource {
-                    path_rel: updated.path_rel.clone(),
-                }));
-            }
-        };
-        // ponytail: a fresh parse of one file. An incremental reparse
-        // needs a retained tree plus an exact SourceEdit, and neither
-        // exists to be trusted here -- building that cache is its own
-        // task, with its own benchmark.
-        let tree = ParserRegistry::new().parse(dialect, bytes, SourceBasis::of(updated))?;
-        let extraction = extract::extract(&tree, bytes);
-        if !extraction.is_accepted() {
-            // Nothing is replaced and nothing is deleted: the previously
-            // accepted Symbols and Occurrences stay exactly as they are.
-            return Ok(RefreshOutcome::Deferred(
-                DeferReason::ExtractionNotAccepted {
-                    path_rel: updated.path_rel.clone(),
-                    parse_status: tree.status(),
-                },
-            ));
-        }
-
         let (change_seq, revision) =
             next_workspace_revision(input.change_seq + 1, &input.workspace_revision);
         let building = generation::begin_generation(self.connection(), &revision)?;
@@ -491,7 +428,6 @@ impl TargetedRefresh {
             target,
             updated,
             observed,
-            &extraction,
         ) {
             Ok(outcome) => Ok(outcome),
             Err(error) => {
@@ -520,7 +456,6 @@ impl TargetedRefresh {
         target: &Target,
         updated: &Resource,
         observed: &ObservedResource,
-        extraction: &Extraction,
     ) -> Result<RefreshOutcome, RefreshError> {
         let transaction = self.resources.transaction()?;
 
@@ -558,22 +493,24 @@ impl TargetedRefresh {
         self.resources.update_resource(updated)?;
         verify_target_row(&self.resources, updated, observed)?;
 
-        // 5-6. Symbol continuity against the previous set, then the
-        //      Resource-owned replacement of Symbols and Occurrences in
-        //      one write.
-        let profile_id = symbol::ensure_profile(&transaction, &extraction.profile)?;
-        let previous = symbol::list_for_resource(&transaction, updated.id)?;
-        let symbols = extract::assign_ids(&previous, extraction, updated, profile_id);
-        let occurrences =
-            extract::resolve_occurrences(extraction, &symbols, updated, profile_id, building.id);
-        symbol::replace_structure_in_publication(
+        // 5-6. Parse the verified bytes, carry Symbol identity across
+        //      the edit, and replace Symbols and Occurrences in one
+        //      write -- the same shared path the baseline scan and
+        //      reconcile publish through (#16 task 14).
+        //
+        //      A parse that is not COMPLETE does not stop the
+        //      publication any more: the Resource's new revision and
+        //      content hash are facts about the current filesystem, and
+        //      withholding them would leave the Workspace permanently
+        //      refreshing over one half-typed file. What it does is
+        //      leave the accepted Symbols in place as the last valid
+        //      ones and record the Resource as PARTIAL.
+        let structure = structural::publish_resource(
             &transaction,
             &grant,
             &publication.revision,
-            updated.id,
-            &updated.resource_revision,
-            &symbols,
-            &occurrences,
+            workspace_root,
+            updated,
         )?;
 
         // 7-9. The candidates this generation accounts for, the component
@@ -589,8 +526,7 @@ impl TargetedRefresh {
             resource_revision: updated.resource_revision.clone(),
             workspace_revision: publication.revision.clone(),
             generation: published,
-            symbols: symbols.len(),
-            occurrences: occurrences.len(),
+            structure,
         }))
     }
 
@@ -854,9 +790,9 @@ mod tests {
         component::{FreshnessState, ProcessingState},
         generation::GenerationState,
         inspect::SourceReader,
-        parser::dialect_for_resource,
         resource::ResourceState,
         scan::BaselineScan,
+        structural::StructuralState,
         symbol::{Occurrence, Symbol, SymbolStore},
         watch::{JournalState, RawWatchEvent, WatchIngest},
     };
@@ -944,47 +880,13 @@ def run():
             self.root.join(rel)
         }
 
-        /// Publish the Resource baseline, then the structural index of
-        /// every supported file against the stable generation.
+        /// Publish the baseline, which since #16 task 14 includes the
+        /// structural index of every supported source file.
         fn index(&self) {
             let engine = BaselineScan::open(&self.db_path()).expect("index.db");
             engine
                 .run_initial_scan(&self.root, &WorkspaceConfig::default(), BASELINE_REVISION)
                 .expect("baseline scan");
-            drop(engine);
-
-            let store = SymbolStore::open(&self.db_path()).expect("index.db");
-            let generation = generation::current_stable(store.connection())
-                .expect("stable")
-                .expect("the baseline published one")
-                .id;
-            for rel in ["src/app.ts", "lib.py"] {
-                let resource = self.resource(rel);
-                let source = std::fs::read(self.path(rel)).expect("current source");
-                let dialect = dialect_for_resource(&resource).expect("a supported dialect");
-                let tree = ParserRegistry::new()
-                    .parse(dialect, &source, SourceBasis::of(&resource))
-                    .expect("parse");
-                let extraction = extract::extract(&tree, &source);
-                let profile_id = store.ensure_profile(&extraction.profile).expect("profile");
-                let symbols = extract::assign_ids(&[], &extraction, &resource, profile_id);
-                let occurrences = extract::resolve_occurrences(
-                    &extraction,
-                    &symbols,
-                    &resource,
-                    profile_id,
-                    generation,
-                );
-                store
-                    .replace_structure(
-                        resource.id,
-                        &resource.resource_revision,
-                        generation,
-                        &symbols,
-                        &occurrences,
-                    )
-                    .expect("replace");
-            }
         }
 
         fn resource(&self, rel: &str) -> Resource {
@@ -1269,8 +1171,11 @@ def run():
                 .all(|occurrence| occurrence.resource_revision
                     == fixture.resource("src/app.ts").resource_revision)
         );
-        assert_eq!(published.occurrences, occurrences.len());
-        assert_eq!(published.symbols, fixture.symbols("src/app.ts").len());
+        assert_eq!(published.structure.occurrences, occurrences.len());
+        assert_eq!(
+            published.structure.symbols,
+            fixture.symbols("src/app.ts").len()
+        );
     }
 
     #[test]
@@ -1330,8 +1235,6 @@ def run():
             ObservationMode::Verified,
         )
         .expect("observe");
-        let bytes = std::fs::read(fixture.path("src/app.ts")).expect("read");
-
         fixture.modify("src/app.ts", APP_TS_STRUCTURAL_EDIT);
 
         let changes = identity::plan_changes(
@@ -1344,15 +1247,7 @@ def run():
             panic!("expected a single update, got {changes:?}");
         };
         let outcome = engine
-            .refresh_changed(
-                &fixture.root,
-                &config,
-                &input,
-                &target,
-                updated,
-                &observed,
-                &bytes,
-            )
+            .refresh_changed(&fixture.root, &config, &input, &target, updated, &observed)
             .expect("an obsolete refresh is a normal outcome, not an error");
 
         assert!(
@@ -1489,7 +1384,7 @@ def run():
     }
 
     #[test]
-    fn an_incomplete_parse_keeps_the_previously_accepted_structure() {
+    fn an_incomplete_parse_publishes_the_resource_and_keeps_the_last_valid_structure() {
         let fixture = Fixture::create("partial-parse");
         fixture.index();
         let before_symbols = fixture.by_qualified_name("src/app.ts");
@@ -1501,32 +1396,71 @@ def run():
 
         let outcome = fixture.run();
 
-        assert!(
-            matches!(
-                outcome,
-                RefreshOutcome::Deferred(DeferReason::ExtractionNotAccepted {
-                    parse_status: ParseStatus::Partial,
-                    ..
-                })
-            ),
-            "unexpected outcome: {outcome:?}"
-        );
+        let published = outcome.published().expect("the Resource change is real");
+        assert_eq!(published.structure.state, StructuralState::Partial);
+        assert_eq!(published.structure.symbols, 0);
+
+        // The Resource moved on; the structure did not.
+        let resource = fixture.resource("src/app.ts");
+        assert_eq!(resource.resource_revision, "2");
         assert_eq!(
             fixture.by_qualified_name("src/app.ts"),
             before_symbols,
             "a broken edit never blanks a file's structure"
         );
         assert_eq!(fixture.occurrences("src/app.ts").len(), before_occurrences);
+        assert!(
+            fixture
+                .symbols("src/app.ts")
+                .iter()
+                .all(|symbol| symbol.resource_revision == "1"),
+            "and the last-valid Symbols keep the revision they were extracted from"
+        );
+
+        let structure = structural::read(
+            ResourceStore::open(&fixture.db_path())
+                .expect("index.db")
+                .connection(),
+            resource.id,
+        )
+        .expect("structural state")
+        .expect("recorded");
+        assert_eq!(structure.state, StructuralState::Partial);
+        assert!(structure.has_last_valid());
+        assert_eq!(structure.freshness_state, FreshnessState::Dirty);
+
+        // One unparseable file does not make the Workspace refreshing
+        // forever: the input change is published and RESOURCE_INDEX is
+        // current again.
         let after = fixture.state();
-        assert_eq!(after.change_seq, before.change_seq);
-        assert_eq!(after.stable_generation, before.stable_generation);
-        assert_eq!(after.freshness, FreshnessState::Dirty);
+        assert_eq!(after.change_seq, before.change_seq + 1);
+        assert_eq!(after.freshness, FreshnessState::Current);
         assert!(
             after
                 .journal
                 .iter()
-                .all(|(_, state, _)| *state == JournalState::Pending)
+                .all(|(_, state, _)| *state == JournalState::Applied)
         );
+        // A read of a last-valid Symbol is refused, and says why.
+        let reader = SourceReader::open(&fixture.db_path(), &fixture.root).expect("reader");
+        let stale = fixture
+            .symbols("src/app.ts")
+            .into_iter()
+            .find(|symbol| symbol.qualified_name == "App.run")
+            .expect("App.run");
+        let failure = reader
+            .inspect_symbol(stale.id)
+            .expect_err("a last-valid span must not be sliced out of current source");
+        assert!(matches!(
+            failure,
+            crate::inspect::ReadError::SymbolNotCurrent { .. }
+        ));
+        let metadata = reader
+            .inspect_symbol_metadata(stale.id)
+            .expect("metadata is still answerable");
+        assert!(!metadata.is_current);
+        assert_eq!(metadata.resource_revision, "2");
+        assert_eq!(metadata.structural_state, Some(StructuralState::Partial));
     }
 
     #[test]
@@ -1558,7 +1492,7 @@ def run():
             .expect("drop trigger");
         drop(engine);
         assert!(
-            matches!(error, RefreshError::Symbol(_)),
+            matches!(error, RefreshError::Scan(ScanError::Symbol(_))),
             "unexpected: {error}"
         );
 

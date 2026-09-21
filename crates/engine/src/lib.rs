@@ -19,6 +19,7 @@ pub mod resource;
 pub mod scan;
 pub mod schema;
 pub mod search;
+pub mod structural;
 pub mod symbol;
 pub mod telemetry;
 pub mod watch;

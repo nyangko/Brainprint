@@ -64,7 +64,7 @@ use crate::{
     identity::{self, MoveEvidence, ObservedResource, ResourceChange},
     resource::{ResourceError, ResourceStore},
     scan::{self, ScanError},
-    schema,
+    schema, structural,
     watch::{self, JournalEntry, WatcherContinuity},
 };
 
@@ -283,10 +283,29 @@ impl Reconcile {
         generation::advance_change_seq(&transaction, *change_seq, revision)?;
 
         // Still BUILDING, and its basis is the revision just established.
-        let building = generation::check_publishable(&transaction, generation_id)?;
+        // The grant is what lets this transaction's Occurrences name the
+        // generation it is about to publish (#16 task 13/14).
+        let (building, grant) = generation::grant_publication(&transaction, generation_id)?;
 
         identity::apply_in_transaction(&self.resources, changes)?;
         scan::verify_resource_invariants(&self.resources, observed)?;
+
+        // Structural recovery, for the Resources whose input actually
+        // changed and no others: a bulk reconcile is not a reason to
+        // re-parse a file nothing happened to (#16 task 14).
+        let reanalyze: Vec<_> = changes
+            .iter()
+            .filter_map(changed_resource)
+            .cloned()
+            .collect();
+        scan::publish_structure(&transaction, &grant, revision, workspace_root, &reanalyze)?;
+        for change in changes {
+            if let ResourceChange::Delete { id, .. } = change {
+                // A tombstone has no structure to be current, last-valid,
+                // or anything else.
+                structural::clear(&transaction, *id)?;
+            }
+        }
 
         component::mark_current(&transaction, revision, generation_id)?;
         watch::mark_applied(&transaction, input.journal_seq, Some(generation_id))?;
@@ -432,6 +451,21 @@ struct Publication {
     generation_id: i64,
     change_seq: i64,
     revision: String,
+}
+
+/// The Resource a planned decision re-analyzes, if it re-analyzes one.
+///
+/// A create or an update (which is also how an evidenced move arrives,
+/// carrying its *new* path) changed the file's structural input. A
+/// metadata refresh or an unchanged Resource did not, and re-parsing it
+/// would be work with a known-identical answer.
+fn changed_resource(change: &ResourceChange) -> Option<&crate::resource::Resource> {
+    match change {
+        ResourceChange::Create(resource) | ResourceChange::Update(resource) => Some(resource),
+        ResourceChange::MetadataRefresh { .. }
+        | ResourceChange::Unchanged { .. }
+        | ResourceChange::Delete { .. } => None,
+    }
 }
 
 /// Whether a planned decision is an actual input change -- the only kind

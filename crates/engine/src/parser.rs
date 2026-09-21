@@ -1141,7 +1141,14 @@ mod tests {
         let after = fs::read(&db_path).expect("index.db bytes");
         assert_eq!(after, before, "parsing must not write a single byte");
         // And the source it parsed is still nowhere in the database.
-        for needle in ["class Thing", "IShape", "fn value", "className"] {
+        // Declaration *headers* are stored deliberately (#16 task 8's
+        // `Symbol.signature`), so the needles here are bodies -- the
+        // thing no table may mirror.
+        for needle in [
+            "return self.value",
+            "return a + b",
+            "public int Value => 1;",
+        ] {
             assert!(
                 !after
                     .windows(needle.len())

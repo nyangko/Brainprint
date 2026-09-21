@@ -49,8 +49,10 @@ use crate::{
     discovery::{self, DiscoveryError},
     generation::{self, GenerationError, GenerationRecord},
     identity::{self, IdentityError, ObservationMode, ObservedResource, ResourceChange},
-    resource::{self, ResourceError, ResourceStore},
-    schema,
+    parser::ParseError,
+    resource::{self, Resource, ResourceError, ResourceState, ResourceStore},
+    schema, structural,
+    symbol::SymbolError,
     watch::WatchError,
 };
 
@@ -81,6 +83,11 @@ pub enum ScanError {
     /// Reading or updating the `change_journal` failed, or a stored row
     /// held a value outside the watcher's closed vocabulary.
     Journal(WatchError),
+    /// A structural write failed (#16 task 14).
+    Symbol(SymbolError),
+    /// The current bytes of a Resource could not be parsed at all --
+    /// distinct from a parse that merely came back PARTIAL.
+    Parse(ParseError),
     /// The Workspace changed while the scan was running, so the candidate
     /// snapshot no longer describes the current filesystem. Retryable --
     /// by an explicit caller decision, never automatically.
@@ -127,6 +134,8 @@ impl fmt::Display for ScanError {
             Self::Store(source) => write!(formatter, "resource store failed: {source}"),
             Self::Component(source) => write!(formatter, "component state failed: {source}"),
             Self::Journal(source) => write!(formatter, "change journal failed: {source}"),
+            Self::Symbol(source) => write!(formatter, "structural write failed: {source}"),
+            Self::Parse(source) => write!(formatter, "parse failed: {source}"),
             Self::InputChanged { detail } => write!(
                 formatter,
                 "workspace input changed during the scan, so nothing was published: {detail}"
@@ -148,6 +157,8 @@ impl Error for ScanError {
             Self::Store(source) => Some(source),
             Self::Component(source) => Some(source),
             Self::Journal(source) => Some(source),
+            Self::Symbol(source) => Some(source),
+            Self::Parse(source) => Some(source),
             Self::InputChanged { .. } | Self::InvariantViolated { .. } => None,
         }
     }
@@ -186,6 +197,18 @@ impl From<ComponentError> for ScanError {
 impl From<WatchError> for ScanError {
     fn from(source: WatchError) -> Self {
         Self::Journal(source)
+    }
+}
+
+impl From<SymbolError> for ScanError {
+    fn from(source: SymbolError) -> Self {
+        Self::Symbol(source)
+    }
+}
+
+impl From<ParseError> for ScanError {
+    fn from(source: ParseError) -> Self {
+        Self::Parse(source)
     }
 }
 
@@ -289,7 +312,7 @@ impl BaselineScan {
         let transaction = self.resources.transaction()?;
 
         // 1-2. Still BUILDING, and the basis still matches the clock.
-        let building = generation::check_publishable(&transaction, generation_id)?;
+        generation::check_publishable(&transaction, generation_id)?;
 
         // Input revalidation: the basis recheck above cannot see a
         // filesystem edit, so re-observe and compare.
@@ -304,7 +327,19 @@ impl BaselineScan {
         // 4. The Resource table now agrees with what was published.
         verify_resource_invariants(&self.resources, snapshot)?;
 
-        // 5-7. Component state, then STABLE, then the pointer swap.
+        // 5. The structural index for every supported source file, in
+        //    this same transaction: a Workspace that has Resources but no
+        //    Symbols is exactly the half-current state #16 task 14 closes.
+        let (building, grant) = generation::grant_publication(&transaction, generation_id)?;
+        publish_structure(
+            &transaction,
+            &grant,
+            &building.basis_workspace_revision,
+            workspace_root,
+            &self.resources.list_active()?,
+        )?;
+
+        // 6-8. Component state, then STABLE, then the pointer swap.
         component::mark_current(
             &transaction,
             &building.basis_workspace_revision,
@@ -355,6 +390,38 @@ impl BaselineScan {
     fn connection(&self) -> &Connection {
         self.resources.connection()
     }
+}
+
+/// Publish the structural index of every ACTIVE supported Resource in
+/// `resources`, inside the caller's publication transaction (#16 task
+/// 14).
+///
+/// Shared by the baseline scan (every Resource, because there is no
+/// structure yet) and reconcile (only the Resources whose input actually
+/// changed). A Resource whose parse is not complete keeps its previously
+/// accepted Symbols as the last valid ones, and is recorded as such
+/// rather than blanked or hidden.
+pub(crate) fn publish_structure(
+    connection: &Connection,
+    grant: &generation::PublicationGrant,
+    publication_revision: &str,
+    workspace_root: &Path,
+    resources: &[Resource],
+) -> Result<(), ScanError> {
+    for resource in resources {
+        if resource.state != ResourceState::Active || resource.kind != resource::ResourceKind::File
+        {
+            continue;
+        }
+        structural::publish_resource(
+            connection,
+            grant,
+            publication_revision,
+            workspace_root,
+            resource,
+        )?;
+    }
+    Ok(())
 }
 
 /// Post-apply checks on the Resource table itself: the ACTIVE set is

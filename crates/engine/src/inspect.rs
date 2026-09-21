@@ -63,6 +63,7 @@ use crate::{
     parser::SourceSpan,
     query::{Currentness, QueryError, QueryIndex, ResultSource, StructuralCoverage, coverage_of},
     resource::{self, Resource, ResourceKind, ResourceState},
+    structural::{self, StructuralState},
     symbol::{self, Symbol},
 };
 
@@ -116,6 +117,28 @@ pub struct SymbolInspection {
     pub coverage: StructuralCoverage,
     pub verification: SourceVerification,
     pub result_source: ResultSource,
+}
+
+/// One Symbol's metadata, with no source attached.
+///
+/// What this exists for is the case [`SourceReader::inspect_symbol`]
+/// refuses: a Symbol that describes an older revision of its Resource
+/// (#16 task 14). Slicing the current file at a last-valid span would
+/// produce convincing nonsense, so the source is withheld -- but saying
+/// nothing at all would hide that a last-valid structure exists.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SymbolMetadata {
+    pub symbol: Symbol,
+    pub path_rel: String,
+    /// The Resource's *current* revision, which may be newer than the
+    /// Symbol's own.
+    pub resource_revision: String,
+    /// Whether the Symbol describes that current revision. Only then can
+    /// its span be read.
+    pub is_current: bool,
+    /// The Resource's recorded structural state, if it has one.
+    pub structural_state: Option<StructuralState>,
+    pub coverage: StructuralCoverage,
 }
 
 /// Failure of a verified current-source read.
@@ -417,6 +440,37 @@ impl SourceReader {
             source,
             verification,
             result_source: ResultSource::StructuralIndex,
+        })
+    }
+
+    /// One Symbol's metadata and currentness, without reading a byte of
+    /// source.
+    ///
+    /// Answers for a last-valid Symbol too -- that is the point. It says
+    /// which revision the Symbol describes, which revision the Resource
+    /// is at, and what the structural index makes of the difference.
+    pub fn inspect_symbol_metadata(
+        &self,
+        symbol_id: SymbolId,
+    ) -> Result<SymbolMetadata, ReadError> {
+        let Some(symbol) = self.symbol_row(symbol_id)? else {
+            return Err(ReadError::UnknownSymbol { symbol_id });
+        };
+        let resource = self.readable_resource(symbol.resource_id)?;
+        let structural_state = structural::read(self.index.connection(), resource.id)
+            .map_err(|error| {
+                ReadError::Query(QueryError::Structural {
+                    detail: error.to_string(),
+                })
+            })?
+            .map(|state| state.state);
+        Ok(SymbolMetadata {
+            is_current: symbol.resource_revision == resource.resource_revision,
+            symbol,
+            path_rel: resource.path_rel.clone(),
+            resource_revision: resource.resource_revision,
+            structural_state,
+            coverage: coverage_of(&resource.path_rel, resource.kind.as_str()),
         })
     }
 
