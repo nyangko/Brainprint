@@ -10,6 +10,7 @@ pub mod identity;
 pub mod init;
 pub mod parser;
 pub mod paths;
+pub mod query;
 pub mod reconcile;
 pub mod registry;
 pub mod resource;

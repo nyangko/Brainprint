@@ -537,6 +537,19 @@ impl From<rusqlite::Error> for SymbolError {
     }
 }
 
+/// The `symbol` columns [`decode_symbol`] reads, in the order
+/// [`raw_symbol_row`] expects. A caller may append further columns after
+/// these -- their indices start where this list ends.
+pub(crate) const SYMBOL_COLUMNS: &str = "s.uid, r.uid, p.uid, s.kind, s.name, s.qualified_name, s.signature, \
+     s.visibility, s.exported, s.start_byte, s.end_byte, s.start_line, \
+     s.start_col, s.end_line, s.end_col, s.resource_revision, s.analysis_profile_id";
+
+/// The joins [`SYMBOL_COLUMNS`] needs: the owning Resource (`r`) and the
+/// parent Symbol (`p`), if any.
+pub(crate) const SYMBOL_FROM: &str = "FROM symbol s \
+     JOIN resource r ON r.id = s.resource_id \
+     LEFT JOIN symbol p ON p.id = s.parent_symbol_id";
+
 /// Typed access to one Workspace's `symbol` and `analysis_profile` tables.
 pub struct SymbolStore {
     connection: Connection,
@@ -614,17 +627,11 @@ impl SymbolStore {
 
     /// One Resource's Symbols, in source order.
     pub fn list_for_resource(&self, resource_id: ResourceId) -> Result<Vec<Symbol>, SymbolError> {
-        let mut statement = self.connection.prepare(
-            "SELECT s.uid, r.uid, p.uid, s.kind, s.name, s.qualified_name, s.signature, \
-                    s.visibility, s.exported, s.start_byte, s.end_byte, s.start_line, \
-                    s.start_col, s.end_line, s.end_col, s.resource_revision, \
-                    s.analysis_profile_id \
-             FROM symbol s \
-             JOIN resource r ON r.id = s.resource_id \
-             LEFT JOIN symbol p ON p.id = s.parent_symbol_id \
+        let mut statement = self.connection.prepare(&format!(
+            "SELECT {SYMBOL_COLUMNS} {SYMBOL_FROM} \
              WHERE r.uid = ?1 \
              ORDER BY s.start_byte, s.end_byte DESC, s.name",
-        )?;
+        ))?;
         let rows = statement.query_map(params![resource_id.to_bytes().to_vec()], raw_symbol_row)?;
         rows.map(|raw| decode_symbol(raw?)).collect()
     }
@@ -924,7 +931,7 @@ impl SymbolStore {
     }
 }
 
-type RawSymbolRow = (
+pub(crate) type RawSymbolRow = (
     Vec<u8>,
     Vec<u8>,
     Option<Vec<u8>>,
@@ -944,7 +951,7 @@ type RawSymbolRow = (
     i64,
 );
 
-fn raw_symbol_row(row: &Row<'_>) -> rusqlite::Result<RawSymbolRow> {
+pub(crate) fn raw_symbol_row(row: &Row<'_>) -> rusqlite::Result<RawSymbolRow> {
     Ok((
         row.get(0)?,
         row.get(1)?,
@@ -966,7 +973,7 @@ fn raw_symbol_row(row: &Row<'_>) -> rusqlite::Result<RawSymbolRow> {
     ))
 }
 
-fn decode_symbol(raw: RawSymbolRow) -> Result<Symbol, SymbolError> {
+pub(crate) fn decode_symbol(raw: RawSymbolRow) -> Result<Symbol, SymbolError> {
     Ok(Symbol {
         id: SymbolId::from_bytes(stable_bytes(&raw.0, "symbol.uid")),
         resource_id: ResourceId::from_bytes(stable_bytes(&raw.1, "resource.uid")),

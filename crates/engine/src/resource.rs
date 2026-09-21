@@ -56,7 +56,8 @@ pub enum ResourceKind {
 }
 
 impl ResourceKind {
-    fn as_str(self) -> &'static str {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::File => "FILE",
             Self::Directory => "DIRECTORY",
@@ -322,7 +323,7 @@ impl From<rusqlite::Error> for ResourceError {
     }
 }
 
-const SELECT_RESOURCE_SQL: &str = "
+pub(crate) const SELECT_RESOURCE_SQL: &str = "
     SELECT r.uid, r.path_rel, r.path_key, r.kind, r.role, r.language, r.size, \
            r.mtime_ns, r.fingerprint, r.content_hash, r.state, r.resource_revision, \
            r.generated_kind, c.uid \
@@ -562,7 +563,7 @@ impl ResourceStore {
 }
 
 /// Raw column values as stored, before closed-vocabulary decoding.
-struct RawResourceRow {
+pub(crate) struct RawResourceRow {
     uid: Vec<u8>,
     path_rel: String,
     path_key: String,
@@ -579,7 +580,7 @@ struct RawResourceRow {
     container_uid: Option<Vec<u8>>,
 }
 
-fn raw_resource_from_row(row: &Row<'_>) -> rusqlite::Result<RawResourceRow> {
+pub(crate) fn raw_resource_from_row(row: &Row<'_>) -> rusqlite::Result<RawResourceRow> {
     Ok(RawResourceRow {
         uid: row.get(0)?,
         path_rel: row.get(1)?,
@@ -598,7 +599,7 @@ fn raw_resource_from_row(row: &Row<'_>) -> rusqlite::Result<RawResourceRow> {
     })
 }
 
-fn decode_resource(raw: RawResourceRow) -> Result<Resource, ResourceError> {
+pub(crate) fn decode_resource(raw: RawResourceRow) -> Result<Resource, ResourceError> {
     Ok(Resource {
         id: resource_id_from_blob(raw.uid),
         path_rel: raw.path_rel,
