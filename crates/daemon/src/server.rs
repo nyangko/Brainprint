@@ -82,11 +82,21 @@ impl Server {
 
         let listener = match bind_listener(&endpoint) {
             Ok(listener) => listener,
-            Err(source) if source.kind() == io::ErrorKind::AddrInUse => {
-                // The lock was free, but a socket artifact is still here --
-                // e.g. a crash that dropped the lock file (or never wrote
-                // one) but left the socket behind. One more stale-recovery
-                // pass before giving up.
+            // Unix: a second `bind()` on an already-present socket path
+            // fails with `AddrInUse`. Windows: `first_pipe_instance(true)`
+            // on an already-claimed pipe name fails with
+            // `PermissionDenied` (`ERROR_ACCESS_DENIED`), not an
+            // `AddrInUse`-equivalent -- both mean the same thing here
+            // ("this endpoint name is already actively claimed"), so both
+            // get the same one-shot stale-recovery pass.
+            Err(source)
+                if source.kind() == io::ErrorKind::AddrInUse
+                    || (cfg!(windows) && source.kind() == io::ErrorKind::PermissionDenied) =>
+            {
+                // The lock was free, but a socket/pipe artifact is still
+                // here -- e.g. a crash that dropped the lock file (or
+                // never wrote one) but left the endpoint behind. One more
+                // stale-recovery pass before giving up.
                 remove_stale_socket_artifact(&endpoint);
                 bind_listener(&endpoint)?
             }

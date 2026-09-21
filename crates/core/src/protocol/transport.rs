@@ -60,20 +60,25 @@ mod platform {
 mod platform {
     use std::io;
 
-    use tokio::net::windows::named_pipe::{
-        ClientOptions, NamedPipeClient, NamedPipeServer, ServerOptions,
+    use tokio::{
+        net::windows::named_pipe::{
+            ClientOptions, NamedPipeClient, NamedPipeServer, ServerOptions,
+        },
+        sync::mpsc,
     };
+
+    /// Windows named pipes have no accept-queue/backlog the way a Unix
+    /// socket's `listen()` does: a client connecting to a pipe name with
+    /// no instance currently waiting fails immediately with
+    /// `ERROR_PIPE_BUSY` rather than queuing. To let several clients
+    /// connect at once (#15 task 9/12: "여러 client 동시 접근"), this keeps
+    /// this many independent instances simultaneously waiting, each
+    /// replaced the moment it accepts a connection.
+    const CONCURRENT_INSTANCES: usize = 8;
 
     #[derive(Debug)]
     pub struct Listener {
-        pipe_name: String,
-        /// The instance created by [`Self::bind`] with `first_pipe_instance`,
-        /// held until the first [`Self::accept`] claims it. Named pipes are
-        /// instance-based (unlike a socket listener), so this is what keeps
-        /// the pipe name continuously claimed between bind and the first
-        /// accepted connection -- dropping it here instead would leave a
-        /// window where another process could bind the same name.
-        first_instance: Option<NamedPipeServer>,
+        accepted: mpsc::Receiver<io::Result<NamedPipeServer>>,
     }
     #[derive(Debug)]
     pub struct ServerConnection(NamedPipeServer);
@@ -81,33 +86,72 @@ mod platform {
     pub struct ClientConnection(NamedPipeClient);
 
     impl Listener {
-        /// Claim `pipe_name` as this daemon's endpoint.
+        /// Claim `pipe_name` as this daemon's endpoint, then keep
+        /// [`CONCURRENT_INSTANCES`] instances simultaneously waiting.
         ///
-        /// `first_pipe_instance(true)` mirrors Unix `bind`'s all-or-nothing
-        /// semantics: creation fails if another server already owns this
-        /// pipe name, live or stale, rather than silently joining an
-        /// existing instance pool.
+        /// The very first instance uses `first_pipe_instance(true)`,
+        /// mirroring Unix `bind`'s all-or-nothing semantics: creation
+        /// fails if another server already owns this pipe name, live or
+        /// stale, rather than silently joining an existing instance pool.
         pub fn bind(pipe_name: &str) -> io::Result<Self> {
-            let first_instance = ServerOptions::new()
+            let first = ServerOptions::new()
                 .first_pipe_instance(true)
                 .create(pipe_name)?;
-            Ok(Self {
-                pipe_name: pipe_name.to_owned(),
-                first_instance: Some(first_instance),
-            })
+
+            let (tx, rx) = mpsc::channel(CONCURRENT_INSTANCES);
+            spawn_instance_loop(first, pipe_name.to_owned(), tx.clone());
+            for _ in 1..CONCURRENT_INSTANCES {
+                // Best-effort pool fill: the first_pipe_instance() call
+                // above already proved the name is ours, so a failure
+                // creating one more spare instance just means slightly
+                // less concurrent headroom, not a bind failure.
+                if let Ok(instance) = ServerOptions::new().create(pipe_name) {
+                    spawn_instance_loop(instance, pipe_name.to_owned(), tx.clone());
+                }
+            }
+
+            Ok(Self { accepted: rx })
         }
 
         pub async fn accept(&mut self) -> io::Result<ServerConnection> {
-            // Named pipes are instance-based, not listener+accept: each
-            // accepted connection consumes one instance, so a fresh one is
-            // created for the *next* client before waiting on this one.
-            let server = match self.first_instance.take() {
-                Some(server) => server,
-                None => ServerOptions::new().create(&self.pipe_name)?,
-            };
-            server.connect().await?;
-            Ok(ServerConnection(server))
+            match self.accepted.recv().await {
+                Some(Ok(server)) => Ok(ServerConnection(server)),
+                Some(Err(error)) => Err(error),
+                None => Err(io::Error::other(
+                    "named pipe accept pool closed unexpectedly",
+                )),
+            }
         }
+    }
+
+    /// Waits for `instance` to accept one connection, immediately spawns
+    /// its replacement to keep the pool full, then hands the now-connected
+    /// instance to `tx` and loops on the replacement.
+    fn spawn_instance_loop(
+        mut instance: NamedPipeServer,
+        pipe_name: String,
+        tx: mpsc::Sender<io::Result<NamedPipeServer>>,
+    ) {
+        tokio::spawn(async move {
+            loop {
+                if let Err(error) = instance.connect().await {
+                    let _ = tx.send(Err(error)).await;
+                    return;
+                }
+
+                let replacement = match ServerOptions::new().create(&pipe_name) {
+                    Ok(replacement) => replacement,
+                    Err(error) => {
+                        let _ = tx.send(Err(error)).await;
+                        return;
+                    }
+                };
+                let connected = std::mem::replace(&mut instance, replacement);
+                if tx.send(Ok(connected)).await.is_err() {
+                    return; // Listener dropped; stop feeding the pool.
+                }
+            }
+        });
     }
 
     impl ClientConnection {
@@ -242,5 +286,142 @@ mod tests {
             .await
             .expect_err("connecting to a nonexistent socket must fail");
         assert_eq!(error.kind(), io::ErrorKind::NotFound);
+    }
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use std::{
+        io,
+        sync::atomic::{AtomicU64, Ordering},
+    };
+
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    use super::*;
+
+    static NEXT_PIPE: AtomicU64 = AtomicU64::new(0);
+
+    fn temp_pipe_name(label: &str) -> String {
+        let sequence = NEXT_PIPE.fetch_add(1, Ordering::Relaxed);
+        format!(
+            r"\\.\pipe\brainprint-transport-test-{label}-{}-{sequence}",
+            std::process::id()
+        )
+    }
+
+    #[tokio::test]
+    async fn accepted_connection_round_trips_bytes() {
+        let pipe_name = temp_pipe_name("roundtrip");
+        let mut listener = Listener::bind(&pipe_name).expect("bind should succeed");
+
+        let accept_task = tokio::spawn(async move {
+            let mut server_side = listener.accept().await.expect("accept should succeed");
+            let mut buf = [0_u8; 5];
+            server_side
+                .read_exact(&mut buf)
+                .await
+                .expect("server read should succeed");
+            server_side
+                .write_all(b"world")
+                .await
+                .expect("server write should succeed");
+            buf
+        });
+
+        let mut client_side = ClientConnection::connect(&pipe_name)
+            .await
+            .expect("connect should succeed");
+        client_side
+            .write_all(b"hello")
+            .await
+            .expect("client write should succeed");
+        let mut reply = [0_u8; 5];
+        client_side
+            .read_exact(&mut reply)
+            .await
+            .expect("client read should succeed");
+
+        let server_saw = accept_task.await.expect("accept task should not panic");
+        assert_eq!(&server_saw, b"hello");
+        assert_eq!(&reply, b"world");
+    }
+
+    #[tokio::test]
+    async fn binding_an_already_bound_pipe_name_fails_explicitly() {
+        let pipe_name = temp_pipe_name("already-bound");
+        let _first = Listener::bind(&pipe_name).expect("first bind should succeed");
+
+        let error = Listener::bind(&pipe_name).expect_err("second bind must fail");
+        // Windows has no AddrInUse-equivalent for named pipes:
+        // first_pipe_instance(true) against an already-claimed name fails
+        // with ERROR_ACCESS_DENIED, which maps to PermissionDenied.
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+    }
+
+    #[tokio::test]
+    async fn connecting_to_a_missing_endpoint_fails_explicitly() {
+        let pipe_name = temp_pipe_name("missing");
+
+        let error = ClientConnection::connect(&pipe_name)
+            .await
+            .expect_err("connecting to a nonexistent pipe must fail");
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
+    }
+
+    #[tokio::test]
+    async fn several_clients_can_connect_concurrently() {
+        // Regression for #15 task 12: a single waiting pipe instance meant
+        // any client beyond the first got ERROR_PIPE_BUSY immediately --
+        // Windows named pipes have no accept backlog the way a Unix
+        // socket's listen() does.
+        let pipe_name = temp_pipe_name("concurrent");
+        let mut listener = Listener::bind(&pipe_name).expect("bind should succeed");
+
+        let accept_task = tokio::spawn(async move {
+            for _ in 0_u8..5 {
+                let mut connection = listener.accept().await.expect("accept should succeed");
+                tokio::spawn(async move {
+                    let mut buf = [0_u8; 4];
+                    connection
+                        .read_exact(&mut buf)
+                        .await
+                        .expect("server read should succeed");
+                    connection
+                        .write_all(b"ack")
+                        .await
+                        .expect("server write should succeed");
+                });
+            }
+        });
+
+        let client_tasks: Vec<_> = (0_u8..5)
+            .map(|index| {
+                let pipe_name = pipe_name.clone();
+                tokio::spawn(async move {
+                    let mut client =
+                        ClientConnection::connect(&pipe_name)
+                            .await
+                            .unwrap_or_else(|error| {
+                                panic!("concurrent client {index} connect failed: {error}")
+                            });
+                    client
+                        .write_all(b"ping")
+                        .await
+                        .expect("client write should succeed");
+                    let mut reply = [0_u8; 3];
+                    client
+                        .read_exact(&mut reply)
+                        .await
+                        .expect("client read should succeed");
+                    assert_eq!(&reply, b"ack");
+                })
+            })
+            .collect();
+
+        for task in client_tasks {
+            task.await.expect("client task should not panic");
+        }
+        accept_task.await.expect("accept task should not panic");
     }
 }

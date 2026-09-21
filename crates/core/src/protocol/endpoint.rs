@@ -64,7 +64,7 @@ impl EndpointPaths {
             #[cfg(unix)]
             socket_path: unix_socket_path(&runtime_root),
             #[cfg(windows)]
-            pipe_name: windows_pipe_name(),
+            pipe_name: windows_pipe_name(&runtime_root),
             lock_path: runtime_root.join("daemon.lock"),
             runtime_root,
         }
@@ -105,22 +105,29 @@ fn unix_socket_path(runtime_root: &Path) -> PathBuf {
         .join("d.sock")
 }
 
-/// `\\.\pipe\brainprint-<user-identity-hash>` (#13 task 4 §5): scoped to
-/// the current interactive user so daemons for different users never
-/// collide on the machine-wide pipe namespace. Not a security boundary by
-/// itself -- pipe ACL (daemon-side bind) is what actually restricts
-/// access.
+/// `\\.\pipe\brainprint-<runtime-root-hash>` (#13 task 4 §5: "scoped to
+/// the current interactive user"). Derived from `runtime_root` rather
+/// than the raw username: in real usage `runtime_root` is itself already
+/// user-scoped (it comes from that user's own home/`$XDG_RUNTIME_DIR`),
+/// so this keeps the "one daemon per real user" property while also
+/// giving an isolated `EndpointPaths::from_runtime_root` call (e.g. a
+/// test's own scratch root) its own distinct pipe name -- unlike hashing
+/// the username alone, which would collide every isolated instance for
+/// the same OS account onto one pipe (Windows named pipes have no
+/// filesystem path of their own to derive uniqueness from the way a Unix
+/// socket naturally does).
 #[cfg(windows)]
-fn windows_pipe_name() -> String {
-    let user = std::env::var("USERNAME").unwrap_or_else(|_| "unknown-user".to_owned());
-    format!(r"\\.\pipe\brainprint-{:016x}", fnv1a_hash(&user))
+fn windows_pipe_name(runtime_root: &std::path::Path) -> String {
+    format!(
+        r"\\.\pipe\brainprint-{:016x}",
+        fnv1a_hash(&runtime_root.to_string_lossy())
+    )
 }
 
 /// Dependency-free change/identity hash, deliberately duplicated from the
 /// same tiny FNV-1a routine in `brainprint-engine`'s migration checksum
 /// (`crates/engine/src/db/migration.rs`) rather than shared across the
 /// crate boundary for a one-off, non-cryptographic use.
-#[cfg_attr(windows, allow(dead_code))]
 fn fnv1a_hash(text: &str) -> u64 {
     const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
     const PRIME: u64 = 0x0000_0100_0000_01b3;
