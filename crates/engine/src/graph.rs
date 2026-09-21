@@ -1158,15 +1158,18 @@ mod tests {
 
     static NEXT_TEMP_DIR: AtomicU64 = AtomicU64::new(0);
 
+    /// Deliberately relation-free: these tests are about the storage
+    /// primitives, so the fixture states no import, call, or type use
+    /// for the lifecycle (#17 task 13) to publish behind their backs.
     const APP_TS: &str = "\
 export class App {
   run(): number {
-    return helper()
+    return 41
   }
 }
 
 function helper(): number {
-  return 41
+  return 42
 }
 ";
 

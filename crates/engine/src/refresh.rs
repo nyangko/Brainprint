@@ -59,6 +59,7 @@ use crate::{
     config::WorkspaceConfig,
     discovery::{self, DiscoveredResource},
     generation::{self, GenerationError, GenerationRecord},
+    graph_lifecycle,
     identity::{self, ObservationMode, ObservedResource, ResourceChange},
     resource::{Resource, ResourceError, ResourceStore},
     scan::{self, ScanError},
@@ -489,9 +490,20 @@ impl TargetedRefresh {
         let (building, grant) =
             generation::grant_publication(&transaction, publication.generation_id)?;
 
-        // 4. The Resource itself.
+        // 4. The Resource itself. The inventory is fingerprinted on
+        //    either side of the write, because a path move is the one
+        //    thing that can change what an *unresolved* import resolves
+        //    to without any file's content changing (#17 task 13).
+        let inventory_before = graph_lifecycle::inventory_fingerprint(&transaction)?;
         self.resources.update_resource(updated)?;
         verify_target_row(&self.resources, updated, observed)?;
+        let inventory_changed =
+            graph_lifecycle::inventory_fingerprint(&transaction)? != inventory_before;
+
+        // The relation work is decided here, while the graph still holds
+        // the edges the republication below is about to take apart.
+        let plan =
+            graph_lifecycle::plan_publication(&transaction, &[updated.id], &[], inventory_changed)?;
 
         // 5-6. Parse the verified bytes, carry Symbol identity across
         //      the edit, and replace Symbols and Occurrences in one
@@ -511,6 +523,17 @@ impl TargetedRefresh {
             &publication.revision,
             workspace_root,
             updated,
+        )?;
+
+        // 6b. The relation layer on the same generation: this file's
+        //     own evidence, and a re-resolution of whatever resolved
+        //     into it. Nothing else in the Workspace is re-extracted.
+        graph_lifecycle::publish_relations(
+            &transaction,
+            &grant,
+            &publication.revision,
+            workspace_root,
+            &plan,
         )?;
 
         // 7-9. The candidates this generation accounts for, the component

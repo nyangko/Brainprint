@@ -27,6 +27,13 @@ pub const RESOURCE_INDEX: &str = "RESOURCE_INDEX";
 /// or merely the last valid ones. Scoped by `ResourceId`, so a file that
 /// does not parse says so about itself instead of about the Workspace.
 pub const STRUCTURAL_INDEX: &str = "STRUCTURAL_INDEX";
+/// The per-Resource relation component (#17 task 13): whether one
+/// Resource's Relations, unresolved references and candidates are
+/// current for its indexed revision, or need revalidating because
+/// something they resolved into moved. Scoped by `ResourceId`, so a
+/// file whose target changed says so about itself and not about the
+/// Workspace.
+pub const RELATION_INDEX: &str = "RELATION_INDEX";
 pub const WORKSPACE_SCOPE_KIND: &str = "WORKSPACE";
 /// Scope kind for a component that describes one Resource. The scope key
 /// is that Resource's stable id.

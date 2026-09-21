@@ -608,7 +608,30 @@ export function other(obj: Thing): number {
                     "workspace-rev-1",
                 )
                 .expect("baseline scan");
+            fixture.reset_graph();
             fixture
+        }
+
+        /// Start from an empty relation layer.
+        ///
+        /// The baseline scan now publishes relations itself (#17 task
+        /// 13); these tests are about the primitives underneath it, so
+        /// they clear what it wrote and build their own evidence. The
+        /// Resources, Symbols and Occurrences it published stay exactly
+        /// where they are -- those are what the evidence anchors to.
+        fn reset_graph(&self) {
+            let store = GraphStore::open(&self.db_path()).expect("index.db");
+            let connection = store.connection();
+            for statement in [
+                "DELETE FROM relation_candidate",
+                "DELETE FROM unresolved_reference",
+                "UPDATE occurrence SET relation_id = NULL, resolution_context_id = NULL",
+                "DELETE FROM relation",
+                "DELETE FROM graph_entity",
+                "DELETE FROM component_state WHERE component_kind = 'RELATION_INDEX'",
+            ] {
+                connection.execute(statement, []).expect("reset");
+            }
         }
 
         fn db_path(&self) -> PathBuf {

@@ -61,6 +61,7 @@ use crate::{
     component::{self, ResourceIndexState},
     config::WorkspaceConfig,
     generation::{self, GenerationError, GenerationRecord},
+    graph_lifecycle,
     identity::{self, MoveEvidence, ObservedResource, ResourceChange},
     resource::{ResourceError, ResourceStore},
     scan::{self, ScanError},
@@ -287,8 +288,11 @@ impl Reconcile {
         // generation it is about to publish (#16 task 13/14).
         let (building, grant) = generation::grant_publication(&transaction, generation_id)?;
 
+        let inventory_before = graph_lifecycle::inventory_fingerprint(&transaction)?;
         identity::apply_in_transaction(&self.resources, changes)?;
         scan::verify_resource_invariants(&self.resources, observed)?;
+        let inventory_changed =
+            graph_lifecycle::inventory_fingerprint(&transaction)? != inventory_before;
 
         // Structural recovery, for the Resources whose input actually
         // changed and no others: a bulk reconcile is not a reason to
@@ -298,14 +302,35 @@ impl Reconcile {
             .filter_map(changed_resource)
             .cloned()
             .collect();
+        let deleted: Vec<brainprint_core::ResourceId> = changes
+            .iter()
+            .filter_map(|change| match change {
+                ResourceChange::Delete { id, .. } => Some(*id),
+                _ => None,
+            })
+            .collect();
+
+        // Decided before anything comes apart: who resolved into what
+        // is about to change or disappear (#17 task 13).
+        let plan = graph_lifecycle::plan_publication(
+            &transaction,
+            &reanalyze
+                .iter()
+                .map(|resource| resource.id)
+                .collect::<Vec<_>>(),
+            &deleted,
+            inventory_changed,
+        )?;
+
         scan::publish_structure(&transaction, &grant, revision, workspace_root, &reanalyze)?;
-        for change in changes {
-            if let ResourceChange::Delete { id, .. } = change {
-                // A tombstone has no structure to be current, last-valid,
-                // or anything else.
-                structural::clear(&transaction, *id)?;
-            }
+        for id in &deleted {
+            // A tombstone has no structure to be current, last-valid,
+            // or anything else -- and no relations either. What pointed
+            // at it is revalidated below rather than left resolved.
+            graph_lifecycle::clear_resource_graph(&transaction, *id)?;
+            structural::clear(&transaction, *id)?;
         }
+        graph_lifecycle::publish_relations(&transaction, &grant, revision, workspace_root, &plan)?;
 
         component::mark_current(&transaction, revision, generation_id)?;
         watch::mark_applied(&transaction, input.journal_seq, Some(generation_id))?;

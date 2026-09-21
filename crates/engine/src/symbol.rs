@@ -832,16 +832,19 @@ pub(crate) fn replace_in_transaction(
     // caller earlier: the point is that nothing moved in between.
     let (local_resource_id, ..) = publishable_resource(connection, resource_id, basis_revision)?;
 
+    clear_occurrence_dependents(connection, local_resource_id)?;
     connection.execute(
         "DELETE FROM occurrence WHERE resource_id = ?1",
         params![local_resource_id],
     )?;
-    connection.execute(
-        "DELETE FROM symbol WHERE resource_id = ?1",
-        params![local_resource_id],
-    )?;
 
-    // Parents are inserted before their children, so a child's
+    // A Symbol whose identity survived the edit keeps its *row*, not
+    // just its `SymbolId` (#17 task 13): the graph points at these rows,
+    // and deleting and re-inserting a declaration that never went away
+    // would take every relation into it with them.
+    let existing = local_symbol_rows(connection, local_resource_id)?;
+
+    // Parents are written before their children, so a child's
     // parent_symbol_id always resolves. The extractor emits in tree
     // order, which already satisfies that.
     let mut local_ids: HashMap<SymbolId, i64> = HashMap::new();
@@ -853,37 +856,122 @@ pub(crate) fn replace_in_transaction(
                 parent,
             })?),
         };
-        connection.execute(
-            "INSERT INTO symbol \
-             (uid, resource_id, parent_symbol_id, kind, name, qualified_name, signature, \
-              visibility, exported, start_byte, end_byte, start_line, start_col, end_line, \
-              end_col, resource_revision, analysis_profile_id) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, \
-                     ?16, ?17)",
-            params![
-                symbol.id.to_bytes().to_vec(),
-                local_resource_id,
-                parent_local,
-                symbol.kind.as_str(),
-                symbol.name,
-                symbol.qualified_name,
-                symbol.signature,
-                symbol.visibility.as_str(),
-                i64::from(symbol.exported),
-                i64::try_from(symbol.span.start_byte).unwrap_or(i64::MAX),
-                i64::try_from(symbol.span.end_byte).unwrap_or(i64::MAX),
-                i64::try_from(symbol.span.start.line).unwrap_or(i64::MAX),
-                i64::try_from(symbol.span.start.column).unwrap_or(i64::MAX),
-                i64::try_from(symbol.span.end.line).unwrap_or(i64::MAX),
-                i64::try_from(symbol.span.end.column).unwrap_or(i64::MAX),
-                symbol.resource_revision,
-                symbol.analysis_profile_id,
-            ],
-        )?;
-        local_ids.insert(symbol.id, connection.last_insert_rowid());
+        let values = params![
+            symbol.id.to_bytes().to_vec(),
+            local_resource_id,
+            parent_local,
+            symbol.kind.as_str(),
+            symbol.name,
+            symbol.qualified_name,
+            symbol.signature,
+            symbol.visibility.as_str(),
+            i64::from(symbol.exported),
+            i64::try_from(symbol.span.start_byte).unwrap_or(i64::MAX),
+            i64::try_from(symbol.span.end_byte).unwrap_or(i64::MAX),
+            i64::try_from(symbol.span.start.line).unwrap_or(i64::MAX),
+            i64::try_from(symbol.span.start.column).unwrap_or(i64::MAX),
+            i64::try_from(symbol.span.end.line).unwrap_or(i64::MAX),
+            i64::try_from(symbol.span.end.column).unwrap_or(i64::MAX),
+            symbol.resource_revision,
+            symbol.analysis_profile_id,
+        ];
+        match existing.iter().find(|(id, _)| *id == symbol.id) {
+            Some((_, local)) => {
+                connection.execute(
+                    "UPDATE symbol SET uid = ?1, resource_id = ?2, parent_symbol_id = ?3, \
+                            kind = ?4, name = ?5, qualified_name = ?6, signature = ?7, \
+                            visibility = ?8, exported = ?9, start_byte = ?10, end_byte = ?11, \
+                            start_line = ?12, start_col = ?13, end_line = ?14, end_col = ?15, \
+                            resource_revision = ?16, analysis_profile_id = ?17 \
+                     WHERE id = ?18",
+                    rusqlite::params_from_iter(
+                        values
+                            .iter()
+                            .map(|value| *value as &dyn rusqlite::ToSql)
+                            .chain(std::iter::once(local as &dyn rusqlite::ToSql)),
+                    ),
+                )?;
+                local_ids.insert(symbol.id, *local);
+            }
+            None => {
+                connection.execute(
+                    "INSERT INTO symbol \
+                     (uid, resource_id, parent_symbol_id, kind, name, qualified_name, signature, \
+                      visibility, exported, start_byte, end_byte, start_line, start_col, \
+                      end_line, end_col, resource_revision, analysis_profile_id) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, \
+                             ?16, ?17)",
+                    values,
+                )?;
+                local_ids.insert(symbol.id, connection.last_insert_rowid());
+            }
+        }
+    }
+
+    // Only now the declarations that are actually gone. Written after
+    // the upserts, so an inconsistent incoming set is refused before
+    // anything is deleted -- and children first, because a parent still
+    // has rows pointing at it.
+    let incoming: Vec<SymbolId> = symbols.iter().map(|symbol| symbol.id).collect();
+    let mut vanished: Vec<i64> = existing
+        .iter()
+        .filter(|(id, _)| !incoming.contains(id))
+        .map(|(_, local)| *local)
+        .collect();
+    vanished.sort_unstable_by(|left, right| right.cmp(left));
+    for local in vanished {
+        connection.execute("DELETE FROM symbol WHERE id = ?1", params![local])?;
     }
 
     Ok(local_ids)
+}
+
+/// Remove what is anchored to a Resource's Occurrences before those
+/// Occurrences are deleted.
+///
+/// The unresolved references of #17 task 7 point at Occurrence rows, so
+/// replacing a Resource's structure has to take them with it. The
+/// relation layer's own bookkeeping -- which canonical edges lose their
+/// last evidence -- belongs to `graph_lifecycle`, which runs before this
+/// (#17 task 13); this is only the foreign key that this delete owns.
+fn clear_occurrence_dependents(
+    connection: &Connection,
+    local_resource_id: i64,
+) -> Result<(), SymbolError> {
+    connection.execute(
+        "DELETE FROM relation_candidate WHERE unresolved_reference_id IN \
+         (SELECT unresolved_reference.id FROM unresolved_reference \
+          JOIN occurrence ON occurrence.id = unresolved_reference.occurrence_id \
+          WHERE occurrence.resource_id = ?1)",
+        params![local_resource_id],
+    )?;
+    connection.execute(
+        "DELETE FROM unresolved_reference WHERE occurrence_id IN \
+         (SELECT id FROM occurrence WHERE resource_id = ?1)",
+        params![local_resource_id],
+    )?;
+    Ok(())
+}
+
+/// This Resource's stored Symbols, as `(stable id, row id)`.
+pub(crate) fn local_symbol_rows(
+    connection: &Connection,
+    local_resource_id: i64,
+) -> Result<Vec<(SymbolId, i64)>, SymbolError> {
+    let mut statement =
+        connection.prepare("SELECT uid, id FROM symbol WHERE resource_id = ?1 ORDER BY id")?;
+    let rows = statement.query_map(params![local_resource_id], |row| {
+        Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, i64>(1)?))
+    })?;
+    let mut found = Vec::new();
+    for row in rows {
+        let (uid, local) = row?;
+        found.push((
+            SymbolId::from_bytes(stable_bytes(&uid, "symbol.uid")),
+            local,
+        ));
+    }
+    Ok(found)
 }
 
 pub(crate) fn replace_occurrences_in_transaction(
@@ -956,6 +1044,7 @@ fn insert_occurrences(
     symbol_rows: &HashMap<SymbolId, i64>,
     occurrences: &[Occurrence],
 ) -> Result<(), SymbolError> {
+    clear_occurrence_dependents(connection, local_resource_id)?;
     connection.execute(
         "DELETE FROM occurrence WHERE resource_id = ?1",
         params![local_resource_id],
@@ -1871,7 +1960,16 @@ export function top(): number { return 1 }
         drop(store);
 
         let bytes = fs::read(fixture.db_path()).expect("index.db bytes");
-        for needle in ["secretHelper", "./m", "return"] {
+        // Source *text* is what must not be there. A name is identity,
+        // not a body: the Symbol table has always stored declaration
+        // names, and since #17 task 7 an unresolved reference stores the
+        // name it looked for and the module it looked in. What no row
+        // may hold is the source around them.
+        for needle in [
+            "return secretHelper()",
+            "export function top",
+            "import { secretHelper }",
+        ] {
             assert!(
                 !bytes
                     .windows(needle.len())

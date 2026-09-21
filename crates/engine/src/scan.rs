@@ -48,6 +48,7 @@ use crate::{
     config::WorkspaceConfig,
     discovery::{self, DiscoveryError},
     generation::{self, GenerationError, GenerationRecord},
+    graph_lifecycle,
     identity::{self, IdentityError, ObservationMode, ObservedResource, ResourceChange},
     parser::ParseError,
     resource::{self, Resource, ResourceError, ResourceState, ResourceStore},
@@ -331,12 +332,34 @@ impl BaselineScan {
         //    this same transaction: a Workspace that has Resources but no
         //    Symbols is exactly the half-current state #16 task 14 closes.
         let (building, grant) = generation::grant_publication(&transaction, generation_id)?;
+        let active = self.resources.list_active()?;
         publish_structure(
             &transaction,
             &grant,
             &building.basis_workspace_revision,
             workspace_root,
-            &self.resources.list_active()?,
+            &active,
+        )?;
+
+        // 5b. And the relation layer on the same generation, in the same
+        //     transaction (#17 task 13). Resources and Symbols that are
+        //     READY while their supported Relations are silently absent
+        //     is the same half-current state, one layer up.
+        let plan = graph_lifecycle::plan_publication(
+            &transaction,
+            &active
+                .iter()
+                .map(|resource| resource.id)
+                .collect::<Vec<_>>(),
+            &[],
+            true,
+        )?;
+        graph_lifecycle::publish_relations(
+            &transaction,
+            &grant,
+            &building.basis_workspace_revision,
+            workspace_root,
+            &plan,
         )?;
 
         // 6-8. Component state, then STABLE, then the pointer swap.

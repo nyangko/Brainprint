@@ -734,17 +734,33 @@ fn the_representative_scenario_needs_no_repeated_broad_search() {
         hits.scope.is_complete(),
         "the whole scope was searched once"
     );
-    // Textual evidence stays textual: no Relation row is invented.
+    // Textual evidence stays textual: the fallback itself invents no
+    // graph row. (The Relations the structural lifecycle publishes are
+    // #17's; what this tier must not do is *derive* one from a text
+    // match.)
     let store = workspace.store();
-    for table in ["relation", "unresolved_reference", "graph_entity"] {
-        let count: i64 = store
-            .connection()
-            .query_row(&format!("SELECT count(*) FROM {table}"), [], |row| {
-                row.get(0)
+    let counts = |label: &str| -> Vec<(String, i64)> {
+        ["relation", "unresolved_reference", "graph_entity"]
+            .iter()
+            .map(|table| {
+                let count: i64 = store
+                    .connection()
+                    .query_row(&format!("SELECT count(*) FROM {table}"), [], |row| {
+                        row.get(0)
+                    })
+                    .unwrap_or_else(|error| panic!("count {table} {label}: {error}"));
+                ((*table).to_owned(), count)
             })
-            .expect("count");
-        assert_eq!(count, 0, "{table} belongs to I3, not to this tier");
-    }
+            .collect()
+    };
+    let before = counts("before");
+    searcher
+        .search(&TextSearch {
+            reason: FallbackReason::NonStructuralTarget,
+            ..TextSearch::explicit(TextPattern::Literal("build_profile"))
+        })
+        .expect("text fallback");
+    assert_eq!(before, counts("after"), "a text match is not a Relation");
 }
 
 fn copy_tree(from: &Path, to: &Path) {

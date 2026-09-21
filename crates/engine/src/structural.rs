@@ -47,7 +47,7 @@ use crate::{
     component::{self, ComponentRow, FreshnessState, ProcessingState},
     extract,
     generation::PublicationGrant,
-    identity,
+    graph_lifecycle, identity,
     parser::{self, ParserRegistry, SourceBasis, StructuralCapability},
     resource::{Resource, ResourceKind, ResourceRole},
     scan::ScanError,
@@ -416,6 +416,11 @@ pub(crate) fn publish_resource(
     let symbols = extract::assign_ids(&previous, &extraction, resource, profile_id);
     let occurrences =
         extract::resolve_occurrences(&extraction, &symbols, resource, profile_id, generation_id);
+    // The relation layer this republication invalidates comes apart
+    // first: its gaps are anchored to Occurrences that are about to go,
+    // and the entities of declarations that no longer exist cannot
+    // outlive their Symbol rows (#17 task 13).
+    graph_lifecycle::detach_before_structure(connection, resource.id, &symbols)?;
     symbol::replace_structure_in_publication(
         connection,
         grant,

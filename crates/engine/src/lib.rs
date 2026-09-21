@@ -11,6 +11,7 @@ pub mod extract;
 pub mod gaps;
 pub mod generation;
 pub mod graph;
+pub mod graph_lifecycle;
 pub mod identity;
 pub mod impact;
 pub mod imports;
