@@ -91,6 +91,14 @@ impl DaemonGuard {
         let child = Command::new(daemon_bin())
             .env("HOME", home)
             .env("USERPROFILE", home)
+            // Real `brainprintd` resolves its home via
+            // `GlobalPaths::discover()`, which -- correctly, for real
+            // single-daemon-per-user usage -- still prefers
+            // `$XDG_RUNTIME_DIR` over the resolved home. Left set, every
+            // test process on a CI runner that exports it (common on
+            // Linux) would collide on the one real session runtime
+            // directory instead of this test's isolated scratch `home`.
+            .env_remove("XDG_RUNTIME_DIR")
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
             .spawn()
@@ -111,6 +119,7 @@ fn run_cli(home: &Path, args: &[&str]) -> Output {
         .args(args)
         .env("HOME", home)
         .env("USERPROFILE", home)
+        .env_remove("XDG_RUNTIME_DIR")
         .output()
         .expect("brainprint should run")
 }
