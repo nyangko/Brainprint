@@ -5,6 +5,7 @@ pub mod component;
 pub mod config;
 pub mod db;
 pub mod discovery;
+pub mod domain;
 pub mod evidence;
 pub mod extract;
 pub mod gaps;

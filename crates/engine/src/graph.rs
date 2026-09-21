@@ -68,7 +68,8 @@ use crate::{
     schema,
 };
 
-/// The P0 canonical relation kinds (#17 "Relation 의미").
+/// The canonical relation kinds: the P0 set (#17 "Relation 의미") plus
+/// the two cheap domain relations of task 12.
 ///
 /// A closed vocabulary: an unrecognized stored value is a decode error,
 /// never a silent fallback. Reverse kinds are deliberately absent --
@@ -82,6 +83,12 @@ pub enum RelationKind {
     Implements,
     Overrides,
     UsesType,
+    /// A source endpoint reads an environment variable by a statically
+    /// known key (#17 task 12). "This code uses key X" -- never that
+    /// the variable is defined or has a value.
+    UsesEnv,
+    /// The same, for an explicit configuration key.
+    UsesConfig,
 }
 
 impl RelationKind {
@@ -95,6 +102,8 @@ impl RelationKind {
             Self::Implements => "IMPLEMENTS",
             Self::Overrides => "OVERRIDES",
             Self::UsesType => "USES_TYPE",
+            Self::UsesEnv => "USES_ENV",
+            Self::UsesConfig => "USES_CONFIG",
         }
     }
 
@@ -107,6 +116,8 @@ impl RelationKind {
             "IMPLEMENTS" => Ok(Self::Implements),
             "OVERRIDES" => Ok(Self::Overrides),
             "USES_TYPE" => Ok(Self::UsesType),
+            "USES_ENV" => Ok(Self::UsesEnv),
+            "USES_CONFIG" => Ok(Self::UsesConfig),
             other => Err(GraphError::UnknownRelationKind {
                 raw: other.to_owned(),
             }),

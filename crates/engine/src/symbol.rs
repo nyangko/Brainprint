@@ -267,6 +267,13 @@ pub enum OccurrenceKind {
     /// (#17 task 6). Again a narrow set, not an index of every type
     /// token: only the positions whose relation the syntax settles.
     TypeSite,
+    /// The key literal of a recognized environment or configuration
+    /// access (#17 task 12): the `"DATABASE_URL"` in
+    /// `os.getenv("DATABASE_URL")`, or the `DATABASE_URL` in
+    /// `process.env.DATABASE_URL`. Only where the surrounding syntax
+    /// establishes that the literal *is* the key -- a string that looks
+    /// like one is not evidence.
+    KeySite,
 }
 
 impl OccurrenceKind {
@@ -278,6 +285,7 @@ impl OccurrenceKind {
             Self::CallSite => "CALL_SITE",
             Self::ReferenceSite => "REFERENCE_SITE",
             Self::TypeSite => "TYPE_SITE",
+            Self::KeySite => "KEY_SITE",
         }
     }
 
@@ -295,6 +303,7 @@ impl OccurrenceKind {
             "CALL_SITE" => Ok(Self::CallSite),
             "REFERENCE_SITE" => Ok(Self::ReferenceSite),
             "TYPE_SITE" => Ok(Self::TypeSite),
+            "KEY_SITE" => Ok(Self::KeySite),
             other => Err(SymbolError::UnknownOccurrenceKind {
                 raw: other.to_owned(),
             }),
