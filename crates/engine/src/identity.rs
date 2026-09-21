@@ -327,7 +327,18 @@ pub fn plan_changes(
 /// updates (which include evidenced moves), then creates.
 pub fn apply(store: &ResourceStore, changes: &[ResourceChange]) -> Result<(), IdentityError> {
     let transaction = store.transaction()?;
+    apply_in_transaction(store, changes)?;
+    transaction.commit().map_err(ResourceError::from)?;
+    Ok(())
+}
 
+/// [`apply`]'s writes without the transaction, for a caller that already
+/// owns one on the same connection and must commit other `index.db` rows
+/// alongside them (#16 task 4's atomic baseline publication).
+pub fn apply_in_transaction(
+    store: &ResourceStore,
+    changes: &[ResourceChange],
+) -> Result<(), IdentityError> {
     for change in changes {
         if let ResourceChange::Delete {
             id,
@@ -358,7 +369,6 @@ pub fn apply(store: &ResourceStore, changes: &[ResourceChange]) -> Result<(), Id
         }
     }
 
-    transaction.commit().map_err(ResourceError::from)?;
     Ok(())
 }
 

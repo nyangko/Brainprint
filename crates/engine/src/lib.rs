@@ -9,5 +9,6 @@ pub mod init;
 pub mod paths;
 pub mod registry;
 pub mod resource;
+pub mod scan;
 pub mod schema;
 pub mod telemetry;

@@ -217,28 +217,13 @@ impl GenerationStore {
     /// Create `workspace_clock`'s single row if it does not already exist.
     /// Idempotent: an existing row is left untouched.
     pub fn bootstrap_clock(&self, initial_workspace_revision: &str) -> Result<(), GenerationError> {
-        self.connection.execute(
-            "INSERT OR IGNORE INTO workspace_clock \
-             (id, current_workspace_revision, stable_generation_id, \
-              last_change_seq, last_reconcile_seq, last_full_reconcile_at, \
-              watcher_continuity_state) \
-             VALUES (0, ?1, NULL, 0, 0, NULL, ?2)",
-            params![initial_workspace_revision, WATCHER_CONTINUITY_UNINITIALIZED],
-        )?;
-        Ok(())
+        bootstrap_clock(&self.connection, initial_workspace_revision)
     }
 
     /// Read the current Workspace input revision, or `None` if the clock
     /// has not been bootstrapped yet.
     pub fn current_workspace_revision(&self) -> Result<Option<String>, GenerationError> {
-        self.connection
-            .query_row(
-                "SELECT current_workspace_revision FROM workspace_clock WHERE id = 0",
-                [],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(GenerationError::from)
+        current_workspace_revision(&self.connection)
     }
 
     /// Explicitly set the current Workspace input revision. This is the
@@ -260,34 +245,7 @@ impl GenerationStore {
         &self,
         basis_workspace_revision: &str,
     ) -> Result<GenerationRecord, GenerationError> {
-        let now = db::now_millis_text();
-        let generation_no: i64 = self.connection.query_row(
-            "SELECT COALESCE(MAX(generation_no), 0) + 1 FROM generation",
-            [],
-            |row| row.get(0),
-        )?;
-        self.connection.execute(
-            "INSERT INTO generation \
-             (generation_no, basis_workspace_revision, state, created_at) \
-             VALUES (?1, ?2, ?3, ?4)",
-            params![
-                generation_no,
-                basis_workspace_revision,
-                GenerationState::Building.as_str(),
-                now
-            ],
-        )?;
-        let id = self.connection.last_insert_rowid();
-
-        Ok(GenerationRecord {
-            id,
-            generation_no,
-            basis_workspace_revision: basis_workspace_revision.to_owned(),
-            state: GenerationState::Building,
-            created_at: now,
-            published_at: None,
-            aborted_reason: None,
-        })
+        begin_generation(&self.connection, basis_workspace_revision)
     }
 
     /// Look up a generation by its row id.
@@ -306,25 +264,7 @@ impl GenerationStore {
         generation_id: i64,
         reason: &str,
     ) -> Result<GenerationRecord, GenerationError> {
-        let generation = query_generation(&self.connection, generation_id)?
-            .ok_or(GenerationError::UnknownGeneration { generation_id })?;
-        if generation.state != GenerationState::Building {
-            return Err(GenerationError::NotBuilding {
-                generation_id,
-                state: generation.state,
-            });
-        }
-
-        self.connection.execute(
-            "UPDATE generation SET state = ?1, aborted_reason = ?2 WHERE id = ?3",
-            params![GenerationState::Aborted.as_str(), reason, generation_id],
-        )?;
-
-        Ok(GenerationRecord {
-            state: GenerationState::Aborted,
-            aborted_reason: Some(reason.to_owned()),
-            ..generation
-        })
+        abort_generation(&self.connection, generation_id, reason)
     }
 
     /// Abort every `BUILDING` generation left over from a previous process
@@ -374,60 +314,27 @@ impl GenerationStore {
     ) -> Result<GenerationRecord, GenerationError> {
         let tx = self.connection.transaction()?;
 
-        let generation = query_generation(&tx, generation_id)?
-            .ok_or(GenerationError::UnknownGeneration { generation_id })?;
-        if generation.state != GenerationState::Building {
-            return Err(GenerationError::NotBuilding {
+        let generation = match check_publishable(&tx, generation_id) {
+            Ok(generation) => generation,
+            Err(GenerationError::ObsoleteBasisRevision {
                 generation_id,
-                state: generation.state,
-            });
-        }
-
-        let current_revision: Option<String> = tx
-            .query_row(
-                "SELECT current_workspace_revision FROM workspace_clock WHERE id = 0",
-                [],
-                |row| row.get(0),
-            )
-            .optional()?;
-        let Some(current_revision) = current_revision else {
-            return Err(GenerationError::ClockNotBootstrapped);
+                basis,
+                current,
+            }) => {
+                abort_obsolete(&tx, generation_id, &basis, &current)?;
+                tx.commit()?;
+                return Err(GenerationError::ObsoleteBasisRevision {
+                    generation_id,
+                    basis,
+                    current,
+                });
+            }
+            Err(other) => return Err(other),
         };
 
-        if current_revision != generation.basis_workspace_revision {
-            let reason = format!(
-                "basis workspace revision {} no longer matches current workspace revision {current_revision}",
-                generation.basis_workspace_revision
-            );
-            tx.execute(
-                "UPDATE generation SET state = ?1, aborted_reason = ?2 WHERE id = ?3",
-                params![GenerationState::Aborted.as_str(), reason, generation_id],
-            )?;
-            tx.commit()?;
-            return Err(GenerationError::ObsoleteBasisRevision {
-                generation_id,
-                basis: generation.basis_workspace_revision,
-                current: current_revision,
-            });
-        }
-
-        let now = db::now_millis_text();
-        tx.execute(
-            "UPDATE generation SET state = ?1, published_at = ?2 WHERE id = ?3",
-            params![GenerationState::Stable.as_str(), now, generation_id],
-        )?;
-        tx.execute(
-            "UPDATE workspace_clock SET stable_generation_id = ?1 WHERE id = 0",
-            params![generation_id],
-        )?;
-
+        let published = finish_publish_stable(&tx, &generation)?;
         tx.commit()?;
-
-        Ok(GenerationRecord {
-            state: GenerationState::Stable,
-            published_at: Some(now),
-            ..generation
-        })
+        Ok(published)
     }
 
     /// Read the current stable generation, or `None` if none has been
@@ -436,34 +343,206 @@ impl GenerationStore {
     /// is an invariant violation and this returns an error rather than
     /// exposing it as current (#15 task 8 DoD).
     pub fn current_stable(&self) -> Result<Option<GenerationRecord>, GenerationError> {
-        let stable_id: Option<i64> = self
-            .connection
-            .query_row(
-                "SELECT stable_generation_id FROM workspace_clock WHERE id = 0",
-                [],
-                |row| row.get(0),
-            )
-            .optional()?
-            .flatten();
-
-        let Some(stable_id) = stable_id else {
-            return Ok(None);
-        };
-
-        let generation = query_generation(&self.connection, stable_id)?.ok_or(
-            GenerationError::UnknownGeneration {
-                generation_id: stable_id,
-            },
-        )?;
-        if generation.state != GenerationState::Stable {
-            return Err(GenerationError::StableInvariantViolated {
-                generation_id: stable_id,
-                state: generation.state,
-            });
-        }
-
-        Ok(Some(generation))
+        current_stable(&self.connection)
     }
+}
+
+// The `&Connection` primitives below are what [`GenerationStore`]'s methods
+// are built from. They exist so a caller that must commit *other* rows in
+// the same transaction as a publication -- #16 task 4's Resource baseline
+// scan -- can reuse this exact logic inside its own transaction instead of
+// re-implementing the publication contract (#16 task 4: "기존
+// `GenerationStore::publish_stable` 로직을 복제하지 말고").
+
+pub(crate) fn bootstrap_clock(
+    connection: &Connection,
+    initial_workspace_revision: &str,
+) -> Result<(), GenerationError> {
+    connection.execute(
+        "INSERT OR IGNORE INTO workspace_clock \
+         (id, current_workspace_revision, stable_generation_id, \
+          last_change_seq, last_reconcile_seq, last_full_reconcile_at, \
+          watcher_continuity_state) \
+         VALUES (0, ?1, NULL, 0, 0, NULL, ?2)",
+        params![initial_workspace_revision, WATCHER_CONTINUITY_UNINITIALIZED],
+    )?;
+    Ok(())
+}
+
+pub(crate) fn current_workspace_revision(
+    connection: &Connection,
+) -> Result<Option<String>, GenerationError> {
+    connection
+        .query_row(
+            "SELECT current_workspace_revision FROM workspace_clock WHERE id = 0",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(GenerationError::from)
+}
+
+pub(crate) fn begin_generation(
+    connection: &Connection,
+    basis_workspace_revision: &str,
+) -> Result<GenerationRecord, GenerationError> {
+    let now = db::now_millis_text();
+    let generation_no: i64 = connection.query_row(
+        "SELECT COALESCE(MAX(generation_no), 0) + 1 FROM generation",
+        [],
+        |row| row.get(0),
+    )?;
+    connection.execute(
+        "INSERT INTO generation \
+         (generation_no, basis_workspace_revision, state, created_at) \
+         VALUES (?1, ?2, ?3, ?4)",
+        params![
+            generation_no,
+            basis_workspace_revision,
+            GenerationState::Building.as_str(),
+            now
+        ],
+    )?;
+
+    Ok(GenerationRecord {
+        id: connection.last_insert_rowid(),
+        generation_no,
+        basis_workspace_revision: basis_workspace_revision.to_owned(),
+        state: GenerationState::Building,
+        created_at: now,
+        published_at: None,
+        aborted_reason: None,
+    })
+}
+
+pub(crate) fn abort_generation(
+    connection: &Connection,
+    generation_id: i64,
+    reason: &str,
+) -> Result<GenerationRecord, GenerationError> {
+    let generation = query_generation(connection, generation_id)?
+        .ok_or(GenerationError::UnknownGeneration { generation_id })?;
+    if generation.state != GenerationState::Building {
+        return Err(GenerationError::NotBuilding {
+            generation_id,
+            state: generation.state,
+        });
+    }
+
+    connection.execute(
+        "UPDATE generation SET state = ?1, aborted_reason = ?2 WHERE id = ?3",
+        params![GenerationState::Aborted.as_str(), reason, generation_id],
+    )?;
+
+    Ok(GenerationRecord {
+        state: GenerationState::Aborted,
+        aborted_reason: Some(reason.to_owned()),
+        ..generation
+    })
+}
+
+/// Steps 1-2 of the publication contract: the generation is still
+/// `BUILDING` and its `basis_workspace_revision` still matches the clock.
+/// Writes nothing -- an obsolete basis is reported as
+/// [`GenerationError::ObsoleteBasisRevision`] so the caller decides whether
+/// its own transaction can carry the abort or has to roll back first.
+pub(crate) fn check_publishable(
+    connection: &Connection,
+    generation_id: i64,
+) -> Result<GenerationRecord, GenerationError> {
+    let generation = query_generation(connection, generation_id)?
+        .ok_or(GenerationError::UnknownGeneration { generation_id })?;
+    if generation.state != GenerationState::Building {
+        return Err(GenerationError::NotBuilding {
+            generation_id,
+            state: generation.state,
+        });
+    }
+
+    let Some(current) = current_workspace_revision(connection)? else {
+        return Err(GenerationError::ClockNotBootstrapped);
+    };
+    if current != generation.basis_workspace_revision {
+        return Err(GenerationError::ObsoleteBasisRevision {
+            generation_id,
+            basis: generation.basis_workspace_revision,
+            current,
+        });
+    }
+
+    Ok(generation)
+}
+
+/// The obsolete-basis abort, worded identically wherever it is written.
+pub(crate) fn abort_obsolete(
+    connection: &Connection,
+    generation_id: i64,
+    basis: &str,
+    current: &str,
+) -> Result<(), GenerationError> {
+    let reason = format!(
+        "basis workspace revision {basis} no longer matches current workspace revision {current}"
+    );
+    connection.execute(
+        "UPDATE generation SET state = ?1, aborted_reason = ?2 WHERE id = ?3",
+        params![GenerationState::Aborted.as_str(), reason, generation_id],
+    )?;
+    Ok(())
+}
+
+/// The final two writes of the publication contract: `generation` →
+/// `STABLE` and the `stable_generation_id` swap. Must run in the same
+/// transaction as everything else the generation publishes, after
+/// [`check_publishable`].
+pub(crate) fn finish_publish_stable(
+    connection: &Connection,
+    generation: &GenerationRecord,
+) -> Result<GenerationRecord, GenerationError> {
+    let now = db::now_millis_text();
+    connection.execute(
+        "UPDATE generation SET state = ?1, published_at = ?2 WHERE id = ?3",
+        params![GenerationState::Stable.as_str(), now, generation.id],
+    )?;
+    connection.execute(
+        "UPDATE workspace_clock SET stable_generation_id = ?1 WHERE id = 0",
+        params![generation.id],
+    )?;
+
+    Ok(GenerationRecord {
+        state: GenerationState::Stable,
+        published_at: Some(now),
+        ..generation.clone()
+    })
+}
+
+pub(crate) fn current_stable(
+    connection: &Connection,
+) -> Result<Option<GenerationRecord>, GenerationError> {
+    let stable_id: Option<i64> = connection
+        .query_row(
+            "SELECT stable_generation_id FROM workspace_clock WHERE id = 0",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?
+        .flatten();
+
+    let Some(stable_id) = stable_id else {
+        return Ok(None);
+    };
+
+    let generation =
+        query_generation(connection, stable_id)?.ok_or(GenerationError::UnknownGeneration {
+            generation_id: stable_id,
+        })?;
+    if generation.state != GenerationState::Stable {
+        return Err(GenerationError::StableInvariantViolated {
+            generation_id: stable_id,
+            state: generation.state,
+        });
+    }
+
+    Ok(Some(generation))
 }
 
 fn query_generation(

@@ -541,6 +541,14 @@ impl ResourceStore {
         Ok(self.connection.unchecked_transaction()?)
     }
 
+    /// This store's `index.db` connection, so a caller that must write
+    /// *other* `index.db` tables in the same transaction as a Resource
+    /// apply -- #16 task 4's baseline publication -- can do so on one
+    /// connection. Crate-internal: the connection is not public API.
+    pub(crate) fn connection(&self) -> &Connection {
+        &self.connection
+    }
+
     fn local_id(&self, id: ResourceId) -> Result<Option<i64>, ResourceError> {
         self.connection
             .query_row(
