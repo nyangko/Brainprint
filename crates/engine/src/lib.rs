@@ -22,6 +22,7 @@ pub mod query;
 pub mod reconcile;
 pub mod refresh;
 pub mod registry;
+pub mod related_tests;
 pub mod relations;
 pub mod resolution;
 pub mod resource;

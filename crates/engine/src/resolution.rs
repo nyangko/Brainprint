@@ -229,6 +229,30 @@ pub fn freshness_of(
     }
 }
 
+/// The weaker of two [`Support`] values.
+///
+/// One definition, shared by every aggregate that has to answer "how
+/// well covered is all of this" (#17 tasks 8 and 11): the weakest part
+/// decides, because a whole is not better covered than its worst piece.
+#[must_use]
+pub(crate) const fn weaker_support(left: Support, right: Support) -> Support {
+    match (left, right) {
+        (Support::Unsupported, _) | (_, Support::Unsupported) => Support::Unsupported,
+        (Support::Partial, _) | (_, Support::Partial) => Support::Partial,
+        _ => Support::Supported,
+    }
+}
+
+/// The weaker of two [`Freshness`] values, on the same principle.
+#[must_use]
+pub(crate) const fn weaker_freshness(left: Freshness, right: Freshness) -> Freshness {
+    match (left, right) {
+        (Freshness::Stale, _) | (_, Freshness::Stale) => Freshness::Stale,
+        (Freshness::Dirty, _) | (_, Freshness::Dirty) => Freshness::Dirty,
+        _ => Freshness::Fresh,
+    }
+}
+
 /// What a resolution depended on, beyond the source file itself.
 ///
 /// Two Workspaces -- or one Workspace before and after a dependency

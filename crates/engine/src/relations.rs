@@ -58,7 +58,10 @@ use crate::{
     gaps::{GapError, IntendedRelation, UnresolvedReason},
     graph::{self, GraphEndpoint, GraphError, Relation, RelationKind},
     parser::{SourcePoint, SourceSpan},
-    resolution::{Dispatch, Freshness, Resolution, Support, TargetScope, freshness_of, support_of},
+    resolution::{
+        Dispatch, Freshness, Resolution, Support, TargetScope, freshness_of, support_of,
+        weaker_freshness, weaker_support,
+    },
     schema, structural,
     symbol::{OccurrenceKind, SymbolError},
 };
@@ -849,22 +852,6 @@ fn result_order(result: &RelationResult) -> ResultOrder {
         graph::endpoint_sort_key(&result.source),
         graph::endpoint_sort_key(&result.target),
     )
-}
-
-const fn weaker_support(left: Support, right: Support) -> Support {
-    match (left, right) {
-        (Support::Unsupported, _) | (_, Support::Unsupported) => Support::Unsupported,
-        (Support::Partial, _) | (_, Support::Partial) => Support::Partial,
-        _ => Support::Supported,
-    }
-}
-
-const fn weaker_freshness(left: Freshness, right: Freshness) -> Freshness {
-    match (left, right) {
-        (Freshness::Stale, _) | (_, Freshness::Stale) => Freshness::Stale,
-        (Freshness::Dirty, _) | (_, Freshness::Dirty) => Freshness::Dirty,
-        _ => Freshness::Fresh,
-    }
 }
 
 fn resource_id_of(uid: &[u8]) -> ResourceId {

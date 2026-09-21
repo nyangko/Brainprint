@@ -110,6 +110,13 @@ impl ResourceRole {
         }
     }
 
+    /// Decode a stored role. For a reader outside this module that
+    /// must respect the Resource model's classification rather than
+    /// make its own (#17 task 11).
+    pub fn parse_public(raw: &str) -> Result<Self, ResourceError> {
+        Self::parse(raw)
+    }
+
     fn parse(raw: &str) -> Result<Self, ResourceError> {
         match raw {
             "SOURCE" => Ok(Self::Source),
