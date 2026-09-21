@@ -1,10 +1,6 @@
 //! Stable identities shared across Brainprint storage and protocol boundaries.
 
-use std::{
-    error::Error,
-    fmt,
-    str::FromStr,
-};
+use std::{error::Error, fmt, str::FromStr};
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use uuid::Uuid;
@@ -109,7 +105,10 @@ mod tests {
         let resource_id = ResourceId::new();
 
         assert_eq!(ProjectId::from_bytes(project_id.to_bytes()), project_id);
-        assert_eq!(WorkspaceId::from_bytes(workspace_id.to_bytes()), workspace_id);
+        assert_eq!(
+            WorkspaceId::from_bytes(workspace_id.to_bytes()),
+            workspace_id
+        );
         assert_eq!(ResourceId::from_bytes(resource_id.to_bytes()), resource_id);
     }
 
@@ -119,10 +118,7 @@ mod tests {
             .parse()
             .expect("known UUID should parse");
 
-        assert_eq!(
-            id.to_string(),
-            "550e8400-e29b-41d4-a716-446655440000"
-        );
+        assert_eq!(id.to_string(), "550e8400-e29b-41d4-a716-446655440000");
 
         let json = serde_json::to_string(&id).expect("ID should serialize");
         assert_eq!(json, "\"550e8400-e29b-41d4-a716-446655440000\"");
