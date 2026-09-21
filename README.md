@@ -200,7 +200,7 @@ The goal is to stop making every new agent rediscover **how this project is supp
 
 0.1.0 already targets a practical baseline for Python, TypeScript/JavaScript, React, Svelte, C#, and Rust.
 
-1.3 expands semantic depth and ecosystem understanding: additional languages, framework adapters, ORM/database relations, routes, events, queues, cache/config semantics, and cross-project relations where evidence is reliable.
+0.4.0 expands semantic depth and ecosystem understanding: additional languages, framework adapters, ORM/database relations, routes, events, queues, cache/config semantics, and cross-project relations where evidence is reliable.
 
 ### 0.5.0 — Persona & Role Awareness
 
