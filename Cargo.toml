@@ -11,3 +11,17 @@ resolver = "3"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
+repository = "https://github.com/nyangko/Brainprint"
+
+[workspace.dependencies]
+brainprint-core = { path = "crates/core" }
+brainprint-engine = { path = "crates/engine" }
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+correctness = "deny"
+suspicious = "deny"
+perf = "warn"

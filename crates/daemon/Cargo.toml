@@ -3,11 +3,15 @@ name = "brainprint-daemon"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+repository.workspace = true
 
 [[bin]]
 name = "brainprintd"
 path = "src/main.rs"
 
 [dependencies]
-brainprint-core = { path = "../core" }
-brainprint-engine = { path = "../engine" }
+brainprint-core.workspace = true
+brainprint-engine.workspace = true
+
+[lints]
+workspace = true

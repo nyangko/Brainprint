@@ -3,6 +3,10 @@ name = "brainprint-engine"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+repository.workspace = true
 
 [dependencies]
-brainprint-core = { path = "../core" }
+brainprint-core.workspace = true
+
+[lints]
+workspace = true
