@@ -1,0 +1,74 @@
+name: I0 smoke
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Generate Cargo.lock
+        run: cargo generate-lockfile
+
+      - name: Format check
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace --locked
+
+      - name: Build
+        run: cargo build --workspace --locked
+
+      - name: CLI and daemon smoke
+        run: |
+          ./target/debug/brainprint --version
+          ./target/debug/brainprint --help
+          ./target/debug/brainprintd --version
+          ./target/debug/brainprintd --help
+
+      - name: Baseline smoke
+        run: |
+          python3 scripts/benchmark_baseline.py \
+            --scenario benchmarks/scenarios/python-signature-impact.json \
+            --output benchmarks/reports/ci.jsonl
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          path = Path("benchmarks/reports/ci.jsonl")
+          rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+          assert len(rows) == 1
+          row = rows[0]
+          assert row["success"] is True
+          assert row["build"] is None
+          assert row["metrics"]["tool_calls"] > 0
+          assert row["metrics"]["source_read_bytes"] > 0
+          assert row["metrics"]["duplicate_read_bytes"] > 0
+          PY
+
+      - name: Upload I0 artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: i0-smoke-artifacts
+          path: |
+            Cargo.lock
+            benchmarks/reports/ci.jsonl
+          retention-days: 7
