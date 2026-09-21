@@ -27,10 +27,14 @@
 //!   its own structural inputs only -- child edits never ripple into a
 //!   parent directory's revision.
 //!
-//! mtime/size are still recorded, as a *cheap metadata fast path*: when
-//! both match the persisted row and a content hash is already on record,
-//! [`observe`] reuses it. Any uncertainty -- differing size, differing
-//! mtime, or a missing recorded hash -- re-reads and re-hashes the content.
+//! mtime/size are recorded as a *cheap metadata fast path*, but that path
+//! is never the only one available: [`observe`] takes an explicit
+//! [`ObservationMode`]. [`ObservationMode::Fast`] may reuse a recorded
+//! content hash when size and mtime both still match (the watcher's latency
+//! path); [`ObservationMode::Verified`] always re-hashes a file's current
+//! bytes (the initial scan / reconcile correctness path), so a write that
+//! happens to preserve size and mtime is still caught. Metadata alone never
+//! settles currentness.
 //!
 //! ## Identity
 //!
@@ -184,16 +188,40 @@ impl From<ResourceError> for IdentityError {
     }
 }
 
+/// How hard [`observe`] works to establish a file's current content (#16
+/// "watcher는 latency fast path, reconcile은 correctness path" /
+/// "mtime만으로 currentness를 확정하지 않는다").
+///
+/// This selects the *observation* effort only. The fingerprint, revision,
+/// and identity rules downstream are identical either way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ObservationMode {
+    /// Latency path: a file whose size *and* mtime still match the
+    /// persisted ACTIVE row may reuse that row's recorded content hash.
+    /// Cheap, and wrong exactly when a write preserves both size and
+    /// mtime -- which is why it must never be the only path available.
+    /// For targeted watcher refreshes (#16 task 5).
+    Fast,
+    /// Correctness path: every FILE's current bytes are hashed, whatever
+    /// the metadata says. For the initial scan and reconcile (#16 task
+    /// 4/6). A DIRECTORY is unaffected -- it has no content of its own and
+    /// still never hashes its children.
+    Verified,
+}
+
 /// Read the filesystem facts for one discovered entry under
 /// `workspace_root`.
 ///
-/// `previous` enables the cheap metadata fast path: when the persisted row
-/// agrees on both size and mtime *and* already carries a content hash, that
-/// hash is reused. Anything less certain re-hashes the actual bytes.
+/// `previous` is only consulted under [`ObservationMode::Fast`], where a
+/// persisted ACTIVE row agreeing on both size and mtime lets its recorded
+/// content hash be reused. Anything less certain -- and everything under
+/// [`ObservationMode::Verified`] -- re-reads and re-hashes the actual
+/// bytes.
 pub fn observe(
     workspace_root: &Path,
     discovered: &DiscoveredResource,
     previous: Option<&Resource>,
+    mode: ObservationMode,
 ) -> Result<ObservedResource, IdentityError> {
     let path = workspace_root.join(&discovered.path_rel);
     let metadata = fs::metadata(&path).map_err(|source| io_error(&path, source))?;
@@ -214,7 +242,8 @@ pub fn observe(
         ResourceKind::Directory => None,
         ResourceKind::File => {
             let reusable = previous.filter(|previous| {
-                previous.state == ResourceState::Active
+                mode == ObservationMode::Fast
+                    && previous.state == ResourceState::Active
                     && previous.size_bytes == size_bytes
                     && previous.mtime_ns == mtime_ns
             });
@@ -602,7 +631,11 @@ mod tests {
             fs::remove_file(self.root.join(rel)).expect("fixture file should be removable");
         }
 
-        fn observe_all(&self, store: &ResourceStore) -> Vec<ObservedResource> {
+        fn observe_all(
+            &self,
+            store: &ResourceStore,
+            mode: ObservationMode,
+        ) -> Vec<ObservedResource> {
             let discovered = enumerate_resources(&self.root, &WorkspaceConfig::default())
                 .expect("enumeration should succeed");
             discovered
@@ -611,22 +644,30 @@ mod tests {
                     let previous = store
                         .get_active_by_path_key(&entry.path_key)
                         .expect("lookup should succeed");
-                    observe(&self.root, entry, previous.as_ref()).expect("observe should succeed")
+                    observe(&self.root, entry, previous.as_ref(), mode)
+                        .expect("observe should succeed")
                 })
                 .collect()
         }
 
+        /// Default to the correctness path; the latency path is exercised
+        /// explicitly where it matters.
         fn sync(&self, store: &ResourceStore) -> Vec<ResourceChange> {
-            self.sync_with_moves(store, &[])
+            self.sync_with_moves(store, &[], ObservationMode::Verified)
+        }
+
+        fn sync_in(&self, store: &ResourceStore, mode: ObservationMode) -> Vec<ResourceChange> {
+            self.sync_with_moves(store, &[], mode)
         }
 
         fn sync_with_moves(
             &self,
             store: &ResourceStore,
             moves: &[MoveEvidence],
+            mode: ObservationMode,
         ) -> Vec<ResourceChange> {
             let active = store.list_active().expect("active list should succeed");
-            let observed = self.observe_all(store);
+            let observed = self.observe_all(store, mode);
             let changes = plan_changes(&active, &observed, moves).expect("planning should succeed");
             apply(store, &changes).expect("apply should succeed");
             changes
@@ -736,6 +777,86 @@ mod tests {
         assert_eq!(second.resource_revision, first.resource_revision);
         assert_eq!(second.fingerprint, first.fingerprint);
         assert_ne!(second.mtime_ns, first.mtime_ns);
+    }
+
+    /// Rewrites `rel` with equal-length content and restores the original
+    /// mtime, so the file is indistinguishable from its predecessor by
+    /// metadata alone -- exactly the case a metadata-only fast path misses.
+    fn overwrite_preserving_metadata(fixture: &Fixture, rel: &str, contents: &str) {
+        let path = fixture.root.join(rel);
+        let before = fs::metadata(&path).expect("metadata");
+        let mtime = before.modified().expect("mtime");
+        assert_eq!(
+            before.len(),
+            contents.len() as u64,
+            "this helper only makes sense for an equal-length rewrite"
+        );
+
+        fs::write(&path, contents).expect("rewrite");
+        fs::File::options()
+            .write(true)
+            .open(&path)
+            .expect("open")
+            .set_modified(mtime)
+            .expect("mtime should be restorable");
+
+        let after = fs::metadata(&path).expect("metadata");
+        assert_eq!(after.len(), before.len());
+        assert_eq!(after.modified().expect("mtime"), mtime);
+    }
+
+    #[test]
+    fn a_same_size_same_mtime_edit_is_fast_path_invisible_but_verified_catches_it() {
+        let fixture = Fixture::create("stealth-edit");
+        fixture.write("src/lib.rs", "fn main() { a() }");
+        let store = fixture.store();
+        fixture.sync(&store);
+        let before = active(&store, "src/lib.rs");
+
+        overwrite_preserving_metadata(&fixture, "src/lib.rs", "fn main() { b() }");
+
+        // Fast is allowed to reuse the recorded hash: that is the latency
+        // trade-off, and it is why it must not be the only path.
+        let fast = fixture.sync_in(&store, ObservationMode::Fast);
+        assert!(
+            fast.iter()
+                .all(|change| matches!(change, ResourceChange::Unchanged { .. })),
+            "the metadata fast path cannot see this edit, by construction"
+        );
+        assert_eq!(active(&store, "src/lib.rs"), before);
+
+        // Verified re-hashes the current bytes and catches it.
+        let verified = fixture.sync_in(&store, ObservationMode::Verified);
+        assert!(
+            verified
+                .iter()
+                .any(|change| matches!(change, ResourceChange::Update(_))),
+            "the correctness path must detect a metadata-identical edit"
+        );
+        let after = active(&store, "src/lib.rs");
+        assert_eq!(after.id, before.id);
+        assert_eq!(after.resource_revision, "2");
+        assert_ne!(after.fingerprint, before.fingerprint);
+        assert_ne!(after.content_hash, before.content_hash);
+    }
+
+    #[test]
+    fn verified_re_hashing_of_unchanged_content_keeps_the_revision() {
+        let fixture = Fixture::create("verified-noop");
+        fixture.write("src/lib.rs", "fn main() {}");
+        let store = fixture.store();
+        fixture.sync(&store);
+        let before = active(&store, "src/lib.rs");
+
+        // Re-hashing identical bytes is still a no-op: re-verification is
+        // not, by itself, a change.
+        touch_mtime(&fixture, "src/lib.rs");
+        fixture.sync_in(&store, ObservationMode::Verified);
+
+        let after = active(&store, "src/lib.rs");
+        assert_eq!(after.id, before.id);
+        assert_eq!(after.resource_revision, before.resource_revision);
+        assert_eq!(after.fingerprint, before.fingerprint);
     }
 
     #[test]
@@ -1003,6 +1124,7 @@ mod tests {
                 from_path_key: "src/lib.rs".to_owned(),
                 to_path_key: "src/renamed.rs".to_owned(),
             }],
+            ObservationMode::Verified,
         );
 
         let moved = active(&store, "src/renamed.rs");
@@ -1096,6 +1218,7 @@ mod tests {
                     to_path_key: "src/two.rs".to_owned(),
                 },
             ],
+            ObservationMode::Verified,
         );
 
         assert_ne!(active(&store, "src/one.rs").id, before.id);
@@ -1125,6 +1248,7 @@ mod tests {
                 from_path_key: "src/lib.rs".to_owned(),
                 to_path_key: "src/copy.rs".to_owned(),
             }],
+            ObservationMode::Verified,
         );
 
         assert_eq!(active(&store, "src/lib.rs").id, before.id);
