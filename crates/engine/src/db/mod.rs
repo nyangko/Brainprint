@@ -354,7 +354,7 @@ fn apply_pending_migrations(
     Ok(schema_version)
 }
 
-fn now_millis_text() -> String {
+pub(crate) fn now_millis_text() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     SystemTime::now()
