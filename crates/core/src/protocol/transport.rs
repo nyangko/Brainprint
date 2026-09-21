@@ -79,6 +79,14 @@ mod platform {
     #[derive(Debug)]
     pub struct Listener {
         accepted: mpsc::Receiver<io::Result<NamedPipeServer>>,
+        /// One per pool instance's `spawn_instance_loop` task. Aborted on
+        /// drop (see `Drop for Listener`) -- these are detached
+        /// `tokio::spawn`ed tasks, so simply dropping the channel receiver
+        /// does *not* stop a task currently blocked in
+        /// `instance.connect().await`, which would otherwise keep holding
+        /// that instance (and the pipe name) claimed indefinitely after
+        /// the `Listener` itself is gone.
+        instance_tasks: Vec<tokio::task::JoinHandle<()>>,
     }
     #[derive(Debug)]
     pub struct ServerConnection(NamedPipeServer);
@@ -99,18 +107,26 @@ mod platform {
                 .create(pipe_name)?;
 
             let (tx, rx) = mpsc::channel(CONCURRENT_INSTANCES);
-            spawn_instance_loop(first, pipe_name.to_owned(), tx.clone());
+            let mut instance_tasks =
+                vec![spawn_instance_loop(first, pipe_name.to_owned(), tx.clone())];
             for _ in 1..CONCURRENT_INSTANCES {
                 // Best-effort pool fill: the first_pipe_instance() call
                 // above already proved the name is ours, so a failure
                 // creating one more spare instance just means slightly
                 // less concurrent headroom, not a bind failure.
                 if let Ok(instance) = ServerOptions::new().create(pipe_name) {
-                    spawn_instance_loop(instance, pipe_name.to_owned(), tx.clone());
+                    instance_tasks.push(spawn_instance_loop(
+                        instance,
+                        pipe_name.to_owned(),
+                        tx.clone(),
+                    ));
                 }
             }
 
-            Ok(Self { accepted: rx })
+            Ok(Self {
+                accepted: rx,
+                instance_tasks,
+            })
         }
 
         pub async fn accept(&mut self) -> io::Result<ServerConnection> {
@@ -124,14 +140,23 @@ mod platform {
         }
     }
 
+    impl Drop for Listener {
+        fn drop(&mut self) {
+            for task in &self.instance_tasks {
+                task.abort();
+            }
+        }
+    }
+
     /// Waits for `instance` to accept one connection, immediately spawns
     /// its replacement to keep the pool full, then hands the now-connected
-    /// instance to `tx` and loops on the replacement.
+    /// instance to `tx` and loops on the replacement. Returns the task's
+    /// handle so `Listener` can abort it on drop.
     fn spawn_instance_loop(
         mut instance: NamedPipeServer,
         pipe_name: String,
         tx: mpsc::Sender<io::Result<NamedPipeServer>>,
-    ) {
+    ) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
             loop {
                 if let Err(error) = instance.connect().await {
@@ -151,7 +176,7 @@ mod platform {
                     return; // Listener dropped; stop feeding the pool.
                 }
             }
-        });
+        })
     }
 
     impl ClientConnection {
