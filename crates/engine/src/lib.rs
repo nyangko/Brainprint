@@ -11,6 +11,7 @@ pub mod gaps;
 pub mod generation;
 pub mod graph;
 pub mod identity;
+pub mod impact;
 pub mod imports;
 pub mod init;
 pub mod inspect;
