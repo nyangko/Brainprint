@@ -75,15 +75,29 @@ impl fmt::Display for ConfigError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::MissingParent { path } => {
-                write!(formatter, "configuration path has no parent: {}", path.display())
+                write!(
+                    formatter,
+                    "configuration path has no parent: {}",
+                    path.display()
+                )
             }
             Self::Io { path, source } => {
-                write!(formatter, "configuration I/O failed at {}: {source}", path.display())
+                write!(
+                    formatter,
+                    "configuration I/O failed at {}: {source}",
+                    path.display()
+                )
             }
             Self::Decode { path, source } => {
-                write!(formatter, "invalid configuration at {}: {source}", path.display())
+                write!(
+                    formatter,
+                    "invalid configuration at {}: {source}",
+                    path.display()
+                )
             }
-            Self::Encode { source } => write!(formatter, "failed to encode configuration: {source}"),
+            Self::Encode { source } => {
+                write!(formatter, "failed to encode configuration: {source}")
+            }
             Self::UnsupportedFormat {
                 path,
                 found,
@@ -155,10 +169,9 @@ where
     let config = T::default();
     validate_format(path, &config)?;
 
-    let mut encoded = toml::to_string_pretty(&config)
-        .map_err(|source| ConfigError::Encode {
-            source: Box::new(source),
-        })?;
+    let mut encoded = toml::to_string_pretty(&config).map_err(|source| ConfigError::Encode {
+        source: Box::new(source),
+    })?;
     if !encoded.ends_with('\n') {
         encoded.push('\n');
     }
@@ -229,8 +242,7 @@ where
 #[cfg(test)]
 mod tests {
     use std::{
-        env,
-        process,
+        env, process,
         sync::atomic::{AtomicU64, Ordering},
     };
 
@@ -243,10 +255,8 @@ mod tests {
     impl TestDir {
         fn create(label: &str) -> Self {
             let sequence = NEXT_TEMP_DIR.fetch_add(1, Ordering::Relaxed);
-            let path = env::temp_dir().join(format!(
-                "brainprint-{label}-{}-{sequence}",
-                process::id()
-            ));
+            let path =
+                env::temp_dir().join(format!("brainprint-{label}-{}-{sequence}", process::id()));
             fs::create_dir_all(&path).expect("test directory should be created");
             Self(path)
         }
@@ -283,8 +293,7 @@ mod tests {
         let workspace = TestDir::create("workspace-config");
         let paths = WorkspacePaths::from_root(workspace.path());
 
-        let config =
-            bootstrap_workspace_config(&paths).expect("workspace config should bootstrap");
+        let config = bootstrap_workspace_config(&paths).expect("workspace config should bootstrap");
 
         assert_eq!(config, WorkspaceConfig::default());
         assert!(paths.root.is_dir());
@@ -321,8 +330,7 @@ mod tests {
         let original = "format_version = 99\n";
         fs::write(&paths.config_file, original).expect("fixture config should be written");
 
-        let error =
-            bootstrap_workspace_config(&paths).expect_err("future config must be rejected");
+        let error = bootstrap_workspace_config(&paths).expect_err("future config must be rejected");
 
         assert!(matches!(
             error,
@@ -336,5 +344,30 @@ mod tests {
             fs::read_to_string(&paths.config_file).expect("config should remain readable"),
             original
         );
+    }
+
+    #[test]
+    fn malformed_config_is_rejected_as_decode_error() {
+        let workspace = TestDir::create("malformed-config");
+        let paths = WorkspacePaths::from_root(workspace.path());
+        fs::create_dir_all(&paths.root).expect("config root should be created");
+
+        fs::write(&paths.config_file, "not [ valid toml")
+            .expect("fixture config should be written");
+
+        let error =
+            bootstrap_workspace_config(&paths).expect_err("malformed config must be rejected");
+
+        assert!(matches!(error, ConfigError::Decode { .. }));
+    }
+
+    #[test]
+    fn missing_config_file_is_reported_as_io_error() {
+        let workspace = TestDir::create("missing-config");
+        let paths = WorkspacePaths::from_root(workspace.path());
+
+        let error = load_workspace_config(&paths).expect_err("missing config must be reported");
+
+        assert!(matches!(error, ConfigError::Io { .. }));
     }
 }
