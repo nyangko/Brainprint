@@ -537,6 +537,57 @@ pub(crate) fn check_publishable(
     Ok(generation)
 }
 
+/// Proof that a generation was found publishable *inside the caller's own
+/// open publication transaction* (#16 task 13).
+///
+/// It exists so that evidence which normally may only be attached to the
+/// current STABLE generation -- Occurrences (#16 task 9) -- can be written
+/// against the generation that is about to become stable in this very
+/// transaction, without opening a general "write evidence to any BUILDING
+/// generation" API. Its fields are private to this module, so the only way
+/// to hold one is to have called [`grant_publication`], which re-runs
+/// [`check_publishable`]: still BUILDING, and its basis still the current
+/// Workspace revision.
+///
+/// What the token cannot prove on its own is the last part of the
+/// contract: the holder must transition the generation to STABLE
+/// ([`finish_publish_stable`]) before committing, or roll the whole
+/// transaction back. A grant that is neither published nor rolled back
+/// would leave evidence on a BUILDING generation, which is what the
+/// STABLE-only rule exists to prevent.
+pub(crate) struct PublicationGrant {
+    generation_id: i64,
+    basis_workspace_revision: String,
+}
+
+impl PublicationGrant {
+    pub(crate) const fn generation_id(&self) -> i64 {
+        self.generation_id
+    }
+
+    /// The Workspace revision this publication is establishing.
+    pub(crate) fn basis_workspace_revision(&self) -> &str {
+        &self.basis_workspace_revision
+    }
+}
+
+/// [`check_publishable`], returning the grant token alongside the record.
+///
+/// `connection` must be the caller's open publication transaction: the
+/// checks are only worth anything if nothing can move between them and the
+/// writes they authorize.
+pub(crate) fn grant_publication(
+    connection: &Connection,
+    generation_id: i64,
+) -> Result<(GenerationRecord, PublicationGrant), GenerationError> {
+    let generation = check_publishable(connection, generation_id)?;
+    let grant = PublicationGrant {
+        generation_id: generation.id,
+        basis_workspace_revision: generation.basis_workspace_revision.clone(),
+    };
+    Ok((generation, grant))
+}
+
 /// The obsolete-basis abort, worded identically wherever it is written.
 pub(crate) fn abort_obsolete(
     connection: &Connection,

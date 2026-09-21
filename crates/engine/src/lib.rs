@@ -13,6 +13,7 @@ pub mod parser;
 pub mod paths;
 pub mod query;
 pub mod reconcile;
+pub mod refresh;
 pub mod registry;
 pub mod resource;
 pub mod scan;

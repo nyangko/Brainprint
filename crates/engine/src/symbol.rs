@@ -58,7 +58,7 @@ use rusqlite::{Connection, OptionalExtension, Row, params};
 
 use crate::{
     db::{self, DbOpenError},
-    generation::{self, GenerationError},
+    generation::{self, GenerationError, PublicationGrant},
     parser::{ParserDescriptor, SourcePoint, SourceSpan, StructuralCapability},
     resource::{ResourceError, ResourceLanguage, ResourceState},
     schema,
@@ -412,6 +412,13 @@ pub enum SymbolError {
         generation_id: i64,
         stable: Option<i64>,
     },
+    /// A publication grant was offered for a generation begun against a
+    /// different Workspace revision than the publication is establishing.
+    PublicationBasisMismatch {
+        generation_id: i64,
+        basis: String,
+        publication: String,
+    },
     /// An Occurrence named a containing Symbol that is not part of the
     /// Symbol set it was published with.
     UnknownContainingSymbol {
@@ -472,6 +479,14 @@ impl fmt::Display for SymbolError {
                 "generation {generation_id} is not the current stable generation ({}), so no \
                  evidence was attached to it",
                 stable.map_or_else(|| "none".to_owned(), |id| id.to_string())
+            ),
+            Self::PublicationBasisMismatch {
+                generation_id,
+                basis,
+                publication,
+            } => write!(
+                formatter,
+                "generation {generation_id} was begun against workspace revision {basis},                  not the {publication} this publication establishes"
             ),
             Self::UnknownContainingSymbol { symbol } => write!(
                 formatter,
@@ -578,30 +593,7 @@ impl SymbolStore {
     /// The row id of `profile`, inserting it only if this `index.db` has
     /// not seen that exact profile before.
     pub fn ensure_profile(&self, profile: &AnalysisProfile) -> Result<i64, SymbolError> {
-        if let Some(id) = self.profile_id(&profile.profile_key)? {
-            return Ok(id);
-        }
-        self.connection.execute(
-            "INSERT INTO analysis_profile \
-             (profile_key, language, analysis_mode, structural_backend, \
-              structural_backend_version, semantic_backend, semantic_backend_version, \
-              extractor_semantics_version, adapter_semantics_version, \
-              backend_compatibility_class, capability_fingerprint, created_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, NULL, NULL, ?6, ?7, ?8, ?9, ?10)",
-            params![
-                profile.profile_key,
-                profile.language.to_string(),
-                profile.analysis_mode,
-                profile.structural_backend,
-                profile.structural_backend_version,
-                profile.extractor_semantics_version,
-                profile.adapter_semantics_version,
-                profile.backend_compatibility_class,
-                profile.capability_fingerprint,
-                db::now_millis_text(),
-            ],
-        )?;
-        Ok(self.connection.last_insert_rowid())
+        ensure_profile(&self.connection, profile)
     }
 
     /// The row id of an already-stored profile key.
@@ -627,13 +619,7 @@ impl SymbolStore {
 
     /// One Resource's Symbols, in source order.
     pub fn list_for_resource(&self, resource_id: ResourceId) -> Result<Vec<Symbol>, SymbolError> {
-        let mut statement = self.connection.prepare(&format!(
-            "SELECT {SYMBOL_COLUMNS} {SYMBOL_FROM} \
-             WHERE r.uid = ?1 \
-             ORDER BY s.start_byte, s.end_byte DESC, s.name",
-        ))?;
-        let rows = statement.query_map(params![resource_id.to_bytes().to_vec()], raw_symbol_row)?;
-        rows.map(|raw| decode_symbol(raw?)).collect()
+        list_for_resource(&self.connection, resource_id)
     }
 
     /// Replace one Resource's entire Symbol set, in its own transaction.
@@ -700,63 +686,14 @@ impl SymbolStore {
         symbol_rows: &HashMap<SymbolId, i64>,
         occurrences: &[Occurrence],
     ) -> Result<(), SymbolError> {
-        let (local_resource_id, state, current_revision) = self.resource_row(resource_id)?;
-        if state != ResourceState::Active {
-            return Err(SymbolError::ResourceNotActive { resource_id, state });
-        }
-        if current_revision != basis_revision {
-            return Err(SymbolError::RevisionMismatch {
-                resource_id,
-                basis: basis_revision.to_owned(),
-                current: current_revision,
-            });
-        }
-        let stable = generation::current_stable(&self.connection)?.map(|generation| generation.id);
-        if stable != Some(generation_id) {
-            return Err(SymbolError::GenerationNotStable {
-                generation_id,
-                stable,
-            });
-        }
-
-        self.connection.execute(
-            "DELETE FROM occurrence WHERE resource_id = ?1",
-            params![local_resource_id],
-        )?;
-
-        for occurrence in occurrences {
-            let containing = match occurrence.containing_symbol_id {
-                None => None,
-                Some(symbol) => Some(
-                    *symbol_rows
-                        .get(&symbol)
-                        .ok_or(SymbolError::UnknownContainingSymbol { symbol })?,
-                ),
-            };
-            self.connection.execute(
-                "INSERT INTO occurrence \
-                 (resource_id, containing_symbol_id, kind, start_byte, end_byte, start_line, \
-                  start_col, end_line, end_col, relation_id, analysis_profile_id, \
-                  resolution_context_id, resource_revision, generation) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, ?10, NULL, ?11, ?12)",
-                params![
-                    local_resource_id,
-                    containing,
-                    occurrence.kind.as_str(),
-                    i64::try_from(occurrence.span.start_byte).unwrap_or(i64::MAX),
-                    i64::try_from(occurrence.span.end_byte).unwrap_or(i64::MAX),
-                    i64::try_from(occurrence.span.start.line).unwrap_or(i64::MAX),
-                    i64::try_from(occurrence.span.start.column).unwrap_or(i64::MAX),
-                    i64::try_from(occurrence.span.end.line).unwrap_or(i64::MAX),
-                    i64::try_from(occurrence.span.end.column).unwrap_or(i64::MAX),
-                    occurrence.analysis_profile_id,
-                    occurrence.resource_revision,
-                    occurrence.generation_id,
-                ],
-            )?;
-        }
-
-        Ok(())
+        replace_occurrences_in_transaction(
+            &self.connection,
+            resource_id,
+            basis_revision,
+            generation_id,
+            symbol_rows,
+            occurrences,
+        )
     }
 
     /// One Resource's Occurrence evidence, in source order.
@@ -764,63 +701,7 @@ impl SymbolStore {
         &self,
         resource_id: ResourceId,
     ) -> Result<Vec<Occurrence>, SymbolError> {
-        let mut statement = self.connection.prepare(
-            "SELECT r.uid, s.uid, o.kind, o.start_byte, o.end_byte, o.start_line, o.start_col, \
-                    o.end_line, o.end_col, o.relation_id, o.analysis_profile_id, \
-                    o.resolution_context_id, o.resource_revision, o.generation \
-             FROM occurrence o \
-             JOIN resource r ON r.id = o.resource_id \
-             LEFT JOIN symbol s ON s.id = o.containing_symbol_id \
-             WHERE r.uid = ?1 \
-             ORDER BY o.start_byte, o.end_byte, o.kind",
-        )?;
-        let rows = statement.query_map(params![resource_id.to_bytes().to_vec()], |row| {
-            Ok((
-                row.get::<_, Vec<u8>>(0)?,
-                row.get::<_, Option<Vec<u8>>>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, i64>(3)?,
-                row.get::<_, i64>(4)?,
-                row.get::<_, i64>(5)?,
-                row.get::<_, i64>(6)?,
-                row.get::<_, i64>(7)?,
-                row.get::<_, i64>(8)?,
-                row.get::<_, Option<i64>>(9)?,
-                row.get::<_, i64>(10)?,
-                row.get::<_, Option<i64>>(11)?,
-                row.get::<_, String>(12)?,
-                row.get::<_, i64>(13)?,
-            ))
-        })?;
-
-        rows.map(|raw| {
-            let raw = raw?;
-            Ok(Occurrence {
-                resource_id: ResourceId::from_bytes(stable_bytes(&raw.0, "resource.uid")),
-                containing_symbol_id: raw
-                    .1
-                    .map(|bytes| SymbolId::from_bytes(stable_bytes(&bytes, "symbol.uid"))),
-                kind: OccurrenceKind::parse(&raw.2)?,
-                span: SourceSpan {
-                    start_byte: usize::try_from(raw.3).unwrap_or(0),
-                    end_byte: usize::try_from(raw.4).unwrap_or(0),
-                    start: SourcePoint::new(
-                        usize::try_from(raw.5).unwrap_or(0),
-                        usize::try_from(raw.6).unwrap_or(0),
-                    ),
-                    end: SourcePoint::new(
-                        usize::try_from(raw.7).unwrap_or(0),
-                        usize::try_from(raw.8).unwrap_or(0),
-                    ),
-                },
-                relation_id: raw.9,
-                analysis_profile_id: raw.10,
-                resolution_context_id: raw.11,
-                resource_revision: raw.12,
-                generation_id: raw.13,
-            })
-        })
-        .collect()
+        list_occurrences_for_resource(&self.connection, resource_id)
     }
 
     /// [`Self::replace_for_resource`]'s writes without the transaction, for
@@ -843,92 +724,342 @@ impl SymbolStore {
         basis_revision: &str,
         symbols: &[Symbol],
     ) -> Result<HashMap<SymbolId, i64>, SymbolError> {
-        // Re-checked here, immediately before writing, rather than by the
-        // caller earlier: the point is that nothing moved in between.
-        let (local_resource_id, state, current_revision) = self.resource_row(resource_id)?;
-        if state != ResourceState::Active {
-            return Err(SymbolError::ResourceNotActive { resource_id, state });
-        }
-        if current_revision != basis_revision {
-            return Err(SymbolError::RevisionMismatch {
-                resource_id,
-                basis: basis_revision.to_owned(),
-                current: current_revision,
-            });
-        }
+        replace_in_transaction(&self.connection, resource_id, basis_revision, symbols)
+    }
+}
 
-        self.connection.execute(
-            "DELETE FROM occurrence WHERE resource_id = ?1",
-            params![local_resource_id],
+// The `&Connection` functions below are what [`SymbolStore`]'s methods are
+// built from, following the same pattern as `generation`, `watch`, and
+// `component`: a caller that must commit Resource rows, journal rows, and
+// a generation in the *same* transaction as these Symbols (#16 task 13's
+// targeted refresh) owns that connection, so it needs this logic as
+// functions rather than as methods on a store that owns one.
+
+pub(crate) fn ensure_profile(
+    connection: &Connection,
+    profile: &AnalysisProfile,
+) -> Result<i64, SymbolError> {
+    if let Some(id) = profile_id(connection, &profile.profile_key)? {
+        return Ok(id);
+    }
+    connection.execute(
+        "INSERT INTO analysis_profile \
+         (profile_key, language, analysis_mode, structural_backend, \
+          structural_backend_version, semantic_backend, semantic_backend_version, \
+          extractor_semantics_version, adapter_semantics_version, \
+          backend_compatibility_class, capability_fingerprint, created_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, NULL, NULL, ?6, ?7, ?8, ?9, ?10)",
+        params![
+            profile.profile_key,
+            profile.language.to_string(),
+            profile.analysis_mode,
+            profile.structural_backend,
+            profile.structural_backend_version,
+            profile.extractor_semantics_version,
+            profile.adapter_semantics_version,
+            profile.backend_compatibility_class,
+            profile.capability_fingerprint,
+            db::now_millis_text(),
+        ],
+    )?;
+    Ok(connection.last_insert_rowid())
+}
+
+pub(crate) fn profile_id(
+    connection: &Connection,
+    profile_key: &str,
+) -> Result<Option<i64>, SymbolError> {
+    Ok(connection
+        .query_row(
+            "SELECT id FROM analysis_profile WHERE profile_key = ?1",
+            params![profile_key],
+            |row| row.get(0),
+        )
+        .optional()?)
+}
+
+pub(crate) fn list_for_resource(
+    connection: &Connection,
+    resource_id: ResourceId,
+) -> Result<Vec<Symbol>, SymbolError> {
+    let mut statement = connection.prepare(&format!(
+        "SELECT {SYMBOL_COLUMNS} {SYMBOL_FROM} \
+         WHERE r.uid = ?1 \
+         ORDER BY s.start_byte, s.end_byte DESC, s.name",
+    ))?;
+    let rows = statement.query_map(params![resource_id.to_bytes().to_vec()], raw_symbol_row)?;
+    rows.map(|raw| decode_symbol(raw?)).collect()
+}
+
+pub(crate) fn replace_in_transaction(
+    connection: &Connection,
+    resource_id: ResourceId,
+    basis_revision: &str,
+    symbols: &[Symbol],
+) -> Result<HashMap<SymbolId, i64>, SymbolError> {
+    // Re-checked here, immediately before writing, rather than by the
+    // caller earlier: the point is that nothing moved in between.
+    let (local_resource_id, ..) = publishable_resource(connection, resource_id, basis_revision)?;
+
+    connection.execute(
+        "DELETE FROM occurrence WHERE resource_id = ?1",
+        params![local_resource_id],
+    )?;
+    connection.execute(
+        "DELETE FROM symbol WHERE resource_id = ?1",
+        params![local_resource_id],
+    )?;
+
+    // Parents are inserted before their children, so a child's
+    // parent_symbol_id always resolves. The extractor emits in tree
+    // order, which already satisfies that.
+    let mut local_ids: HashMap<SymbolId, i64> = HashMap::new();
+    for symbol in symbols {
+        let parent_local = match symbol.parent_id {
+            None => None,
+            Some(parent) => Some(*local_ids.get(&parent).ok_or(SymbolError::UnknownParent {
+                symbol: symbol.id,
+                parent,
+            })?),
+        };
+        connection.execute(
+            "INSERT INTO symbol \
+             (uid, resource_id, parent_symbol_id, kind, name, qualified_name, signature, \
+              visibility, exported, start_byte, end_byte, start_line, start_col, end_line, \
+              end_col, resource_revision, analysis_profile_id) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, \
+                     ?16, ?17)",
+            params![
+                symbol.id.to_bytes().to_vec(),
+                local_resource_id,
+                parent_local,
+                symbol.kind.as_str(),
+                symbol.name,
+                symbol.qualified_name,
+                symbol.signature,
+                symbol.visibility.as_str(),
+                i64::from(symbol.exported),
+                i64::try_from(symbol.span.start_byte).unwrap_or(i64::MAX),
+                i64::try_from(symbol.span.end_byte).unwrap_or(i64::MAX),
+                i64::try_from(symbol.span.start.line).unwrap_or(i64::MAX),
+                i64::try_from(symbol.span.start.column).unwrap_or(i64::MAX),
+                i64::try_from(symbol.span.end.line).unwrap_or(i64::MAX),
+                i64::try_from(symbol.span.end.column).unwrap_or(i64::MAX),
+                symbol.resource_revision,
+                symbol.analysis_profile_id,
+            ],
         )?;
-        self.connection.execute(
-            "DELETE FROM symbol WHERE resource_id = ?1",
-            params![local_resource_id],
-        )?;
-
-        // Parents are inserted before their children, so a child's
-        // parent_symbol_id always resolves. The extractor emits in tree
-        // order, which already satisfies that.
-        let mut local_ids: HashMap<SymbolId, i64> = HashMap::new();
-        for symbol in symbols {
-            let parent_local = match symbol.parent_id {
-                None => None,
-                Some(parent) => {
-                    Some(*local_ids.get(&parent).ok_or(SymbolError::UnknownParent {
-                        symbol: symbol.id,
-                        parent,
-                    })?)
-                }
-            };
-            self.connection.execute(
-                "INSERT INTO symbol \
-                 (uid, resource_id, parent_symbol_id, kind, name, qualified_name, signature, \
-                  visibility, exported, start_byte, end_byte, start_line, start_col, end_line, \
-                  end_col, resource_revision, analysis_profile_id) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, \
-                         ?16, ?17)",
-                params![
-                    symbol.id.to_bytes().to_vec(),
-                    local_resource_id,
-                    parent_local,
-                    symbol.kind.as_str(),
-                    symbol.name,
-                    symbol.qualified_name,
-                    symbol.signature,
-                    symbol.visibility.as_str(),
-                    i64::from(symbol.exported),
-                    i64::try_from(symbol.span.start_byte).unwrap_or(i64::MAX),
-                    i64::try_from(symbol.span.end_byte).unwrap_or(i64::MAX),
-                    i64::try_from(symbol.span.start.line).unwrap_or(i64::MAX),
-                    i64::try_from(symbol.span.start.column).unwrap_or(i64::MAX),
-                    i64::try_from(symbol.span.end.line).unwrap_or(i64::MAX),
-                    i64::try_from(symbol.span.end.column).unwrap_or(i64::MAX),
-                    symbol.resource_revision,
-                    symbol.analysis_profile_id,
-                ],
-            )?;
-            local_ids.insert(symbol.id, self.connection.last_insert_rowid());
-        }
-
-        Ok(local_ids)
+        local_ids.insert(symbol.id, connection.last_insert_rowid());
     }
 
-    fn resource_row(
-        &self,
-        resource_id: ResourceId,
-    ) -> Result<(i64, ResourceState, String), SymbolError> {
-        let row: Option<(i64, String, String)> = self
-            .connection
-            .query_row(
-                "SELECT id, state, resource_revision FROM resource WHERE uid = ?1",
-                params![resource_id.to_bytes().to_vec()],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )
-            .optional()?;
-        let (local_id, state, revision) =
-            row.ok_or(SymbolError::UnknownResource { resource_id })?;
-        Ok((local_id, ResourceState::parse(&state)?, revision))
+    Ok(local_ids)
+}
+
+pub(crate) fn replace_occurrences_in_transaction(
+    connection: &Connection,
+    resource_id: ResourceId,
+    basis_revision: &str,
+    generation_id: i64,
+    symbol_rows: &HashMap<SymbolId, i64>,
+    occurrences: &[Occurrence],
+) -> Result<(), SymbolError> {
+    let (local_resource_id, ..) = publishable_resource(connection, resource_id, basis_revision)?;
+    let stable = generation::current_stable(connection)?.map(|generation| generation.id);
+    if stable != Some(generation_id) {
+        return Err(SymbolError::GenerationNotStable {
+            generation_id,
+            stable,
+        });
     }
+
+    insert_occurrences(connection, local_resource_id, symbol_rows, occurrences)
+}
+
+/// Replace one Resource's whole structural result inside a *publication*
+/// transaction (#16 task 13).
+///
+/// The difference from [`SymbolStore::replace_structure`] is which
+/// generation the evidence may name. The standalone path insists on the
+/// generation that is currently STABLE, because outside a publication
+/// there is no other generation an Occurrence could honestly belong to.
+/// Inside one, the generation that will own this evidence is the one this
+/// transaction is about to publish -- BUILDING right now, STABLE before
+/// the commit.
+///
+/// [`PublicationGrant`] is what makes that a distinction rather than a
+/// loophole: it can only come from [`generation::grant_publication`] in the
+/// caller's open transaction, which re-checks that the generation is
+/// BUILDING and that its basis is the current Workspace revision.
+/// `publication_revision` is checked against that basis here, so evidence
+/// cannot be attached to a generation begun for some other revision. The
+/// caller must still finish the publication (STABLE plus the stable
+/// pointer swap) before committing. There is no general API for writing
+/// evidence against an arbitrary BUILDING or ABORTED generation, and this
+/// is not one.
+pub(crate) fn replace_structure_in_publication(
+    connection: &Connection,
+    grant: &PublicationGrant,
+    publication_revision: &str,
+    resource_id: ResourceId,
+    basis_revision: &str,
+    symbols: &[Symbol],
+    occurrences: &[Occurrence],
+) -> Result<(), SymbolError> {
+    if grant.basis_workspace_revision() != publication_revision {
+        return Err(SymbolError::PublicationBasisMismatch {
+            generation_id: grant.generation_id(),
+            basis: grant.basis_workspace_revision().to_owned(),
+            publication: publication_revision.to_owned(),
+        });
+    }
+    let symbol_rows = replace_in_transaction(connection, resource_id, basis_revision, symbols)?;
+    let (local_resource_id, ..) = publishable_resource(connection, resource_id, basis_revision)?;
+    insert_occurrences(connection, local_resource_id, &symbol_rows, occurrences)
+}
+
+/// The Occurrence write itself, shared by both paths above so that which
+/// generation may be named is the only thing that differs between them.
+fn insert_occurrences(
+    connection: &Connection,
+    local_resource_id: i64,
+    symbol_rows: &HashMap<SymbolId, i64>,
+    occurrences: &[Occurrence],
+) -> Result<(), SymbolError> {
+    connection.execute(
+        "DELETE FROM occurrence WHERE resource_id = ?1",
+        params![local_resource_id],
+    )?;
+
+    for occurrence in occurrences {
+        let containing = match occurrence.containing_symbol_id {
+            None => None,
+            Some(symbol) => Some(
+                *symbol_rows
+                    .get(&symbol)
+                    .ok_or(SymbolError::UnknownContainingSymbol { symbol })?,
+            ),
+        };
+        connection.execute(
+            "INSERT INTO occurrence \
+             (resource_id, containing_symbol_id, kind, start_byte, end_byte, start_line, \
+              start_col, end_line, end_col, relation_id, analysis_profile_id, \
+              resolution_context_id, resource_revision, generation) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, ?10, NULL, ?11, ?12)",
+            params![
+                local_resource_id,
+                containing,
+                occurrence.kind.as_str(),
+                i64::try_from(occurrence.span.start_byte).unwrap_or(i64::MAX),
+                i64::try_from(occurrence.span.end_byte).unwrap_or(i64::MAX),
+                i64::try_from(occurrence.span.start.line).unwrap_or(i64::MAX),
+                i64::try_from(occurrence.span.start.column).unwrap_or(i64::MAX),
+                i64::try_from(occurrence.span.end.line).unwrap_or(i64::MAX),
+                i64::try_from(occurrence.span.end.column).unwrap_or(i64::MAX),
+                occurrence.analysis_profile_id,
+                occurrence.resource_revision,
+                occurrence.generation_id,
+            ],
+        )?;
+    }
+
+    Ok(())
+}
+
+pub(crate) fn list_occurrences_for_resource(
+    connection: &Connection,
+    resource_id: ResourceId,
+) -> Result<Vec<Occurrence>, SymbolError> {
+    let mut statement = connection.prepare(
+        "SELECT o.kind, o.start_byte, o.end_byte, o.start_line, o.start_col, o.end_line, \
+                o.end_col, cs.uid, o.relation_id, o.analysis_profile_id, \
+                o.resolution_context_id, o.resource_revision, o.generation \
+         FROM occurrence o \
+         JOIN resource r ON r.id = o.resource_id \
+         LEFT JOIN symbol cs ON cs.id = o.containing_symbol_id \
+         WHERE r.uid = ?1 \
+         ORDER BY o.start_byte, o.end_byte",
+    )?;
+    let rows = statement.query_map(params![resource_id.to_bytes().to_vec()], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, i64>(2)?,
+            row.get::<_, i64>(3)?,
+            row.get::<_, i64>(4)?,
+            row.get::<_, i64>(5)?,
+            row.get::<_, i64>(6)?,
+            row.get::<_, Option<Vec<u8>>>(7)?,
+            row.get::<_, Option<i64>>(8)?,
+            row.get::<_, i64>(9)?,
+            row.get::<_, Option<i64>>(10)?,
+            row.get::<_, String>(11)?,
+            row.get::<_, i64>(12)?,
+        ))
+    })?;
+    rows.map(|row| {
+        let raw = row?;
+        Ok(Occurrence {
+            resource_id,
+            containing_symbol_id: raw
+                .7
+                .map(|bytes| SymbolId::from_bytes(stable_bytes(&bytes, "containing symbol.uid"))),
+            kind: OccurrenceKind::parse(&raw.0)?,
+            span: SourceSpan {
+                start_byte: usize::try_from(raw.1).unwrap_or(0),
+                end_byte: usize::try_from(raw.2).unwrap_or(0),
+                start: SourcePoint::new(
+                    usize::try_from(raw.3).unwrap_or(0),
+                    usize::try_from(raw.4).unwrap_or(0),
+                ),
+                end: SourcePoint::new(
+                    usize::try_from(raw.5).unwrap_or(0),
+                    usize::try_from(raw.6).unwrap_or(0),
+                ),
+            },
+            relation_id: raw.8,
+            analysis_profile_id: raw.9,
+            resolution_context_id: raw.10,
+            resource_revision: raw.11,
+            generation_id: raw.12,
+        })
+    })
+    .collect()
+}
+
+/// The local row id of an ACTIVE Resource still at `basis_revision` --
+/// the precondition every structural write shares.
+fn publishable_resource(
+    connection: &Connection,
+    resource_id: ResourceId,
+    basis_revision: &str,
+) -> Result<(i64, ResourceState, String), SymbolError> {
+    let (local_id, state, current_revision) = resource_row(connection, resource_id)?;
+    if state != ResourceState::Active {
+        return Err(SymbolError::ResourceNotActive { resource_id, state });
+    }
+    if current_revision != basis_revision {
+        return Err(SymbolError::RevisionMismatch {
+            resource_id,
+            basis: basis_revision.to_owned(),
+            current: current_revision,
+        });
+    }
+    Ok((local_id, state, current_revision))
+}
+
+fn resource_row(
+    connection: &Connection,
+    resource_id: ResourceId,
+) -> Result<(i64, ResourceState, String), SymbolError> {
+    let row: Option<(i64, String, String)> = connection
+        .query_row(
+            "SELECT id, state, resource_revision FROM resource WHERE uid = ?1",
+            params![resource_id.to_bytes().to_vec()],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()?;
+    let (local_id, state, revision) = row.ok_or(SymbolError::UnknownResource { resource_id })?;
+    Ok((local_id, ResourceState::parse(&state)?, revision))
 }
 
 pub(crate) type RawSymbolRow = (
