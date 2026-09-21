@@ -32,6 +32,13 @@ pub const WORKSPACE_SCOPE_KEY: &str = "*";
 /// 6).
 pub const WATCHER_CONTINUITY_LOST_CODE: &str = "WATCHER_CONTINUITY_LOST";
 
+/// `last_error_code` written when a reconcile failed and the Resource
+/// inventory therefore could not be confirmed current (#16 task 6). It is
+/// only written when nothing already explains the dirty state -- an earlier
+/// reason, such as [`WATCHER_CONTINUITY_LOST_CODE`], is not overwritten by
+/// a later failure to recover from it.
+pub const RECONCILE_FAILED_CODE: &str = "RECONCILE_FAILED";
+
 /// Whether work is outstanding for this component.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProcessingState {

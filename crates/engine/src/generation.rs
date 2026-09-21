@@ -382,6 +382,70 @@ pub(crate) fn current_workspace_revision(
         .map_err(GenerationError::from)
 }
 
+/// `workspace_clock.last_change_seq`: the monotonic input-change sequence
+/// (#4 task 1 §4, #13 task 7 §2). Reconcile is what advances it -- a raw
+/// watcher event never does.
+pub(crate) fn change_seq(connection: &Connection) -> Result<i64, GenerationError> {
+    connection
+        .query_row(
+            "SELECT last_change_seq FROM workspace_clock WHERE id = 0",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?
+        .ok_or(GenerationError::ClockNotBootstrapped)
+}
+
+/// Advance the input-change sequence and the Workspace revision together,
+/// in the caller's transaction. Both are one fact -- "a confirmed input
+/// change happened" -- so they are never written apart.
+pub(crate) fn advance_change_seq(
+    connection: &Connection,
+    change_seq: i64,
+    workspace_revision: &str,
+) -> Result<(), GenerationError> {
+    let changed = connection.execute(
+        "UPDATE workspace_clock SET last_change_seq = ?1, current_workspace_revision = ?2 \
+         WHERE id = 0",
+        params![change_seq, workspace_revision],
+    )?;
+    if changed == 0 {
+        return Err(GenerationError::ClockNotBootstrapped);
+    }
+    Ok(())
+}
+
+/// Record how far a completed reconcile accounted for the change journal,
+/// and when it ran. Bookkeeping only: it says nothing about whether the
+/// Resource inventory changed, and it never touches the watcher's own
+/// `watcher_continuity_state`, which the watcher contract owns.
+pub(crate) fn record_reconcile(
+    connection: &Connection,
+    last_reconcile_seq: i64,
+) -> Result<(), GenerationError> {
+    let changed = connection.execute(
+        "UPDATE workspace_clock SET last_reconcile_seq = ?1, last_full_reconcile_at = ?2 \
+         WHERE id = 0",
+        params![last_reconcile_seq, db::now_millis_text()],
+    )?;
+    if changed == 0 {
+        return Err(GenerationError::ClockNotBootstrapped);
+    }
+    Ok(())
+}
+
+/// `workspace_clock.last_reconcile_seq`.
+pub(crate) fn last_reconcile_seq(connection: &Connection) -> Result<i64, GenerationError> {
+    connection
+        .query_row(
+            "SELECT last_reconcile_seq FROM workspace_clock WHERE id = 0",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?
+        .ok_or(GenerationError::ClockNotBootstrapped)
+}
+
 pub(crate) fn begin_generation(
     connection: &Connection,
     basis_workspace_revision: &str,

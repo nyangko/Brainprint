@@ -114,12 +114,18 @@ impl fmt::Display for WatchEventKind {
     }
 }
 
-/// A journal row's own state. Applying a candidate is #16 task 6/13's job,
-/// so no `APPLIED` state is written here.
+/// A journal row's own state. Ingestion never writes [`Self::Applied`];
+/// only a verified reconcile does (#16 task 6).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JournalState {
     /// An outstanding candidate.
     Pending,
+    /// A verified reconcile has accounted for this candidate. Its
+    /// `applied_generation_id` names the generation that published the
+    /// resulting Resource changes, or is NULL when the reconcile confirmed
+    /// there was nothing to change (the candidate is still resolved -- it
+    /// simply produced no generation).
+    Applied,
     /// Superseded by a newer candidate, which `coalesced_into_seq` names.
     /// The row is kept: coalescing folds meaning forward, it never erases
     /// evidence.
@@ -133,6 +139,7 @@ impl JournalState {
     fn as_str(self) -> &'static str {
         match self {
             Self::Pending => "PENDING",
+            Self::Applied => "APPLIED",
             Self::Coalesced => "COALESCED",
             Self::Transient => "TRANSIENT",
         }
@@ -141,6 +148,7 @@ impl JournalState {
     fn parse(raw: &str) -> Result<Self, WatchError> {
         match raw {
             "PENDING" => Ok(Self::Pending),
+            "APPLIED" => Ok(Self::Applied),
             "COALESCED" => Ok(Self::Coalesced),
             "TRANSIENT" => Ok(Self::Transient),
             other => Err(WatchError::UnknownJournalState {
@@ -214,6 +222,11 @@ pub struct JournalEntry {
     pub processing_state: JournalState,
     pub coalesced_into_seq: Option<i64>,
     pub observed_at: String,
+    /// The generation that published the Resource changes this candidate
+    /// was accounted for by (#16 task 6). `None` while the row is still
+    /// pending, and also once a reconcile resolved it without needing to
+    /// publish anything.
+    pub applied_generation_id: Option<i64>,
 }
 
 /// One normalized filesystem event, as this crate defines it.
@@ -380,20 +393,7 @@ impl WatchIngest {
 
     /// The persisted continuity state.
     pub fn continuity(&self) -> Result<WatcherContinuity, WatchError> {
-        let raw: Option<String> = self
-            .connection()
-            .query_row(
-                "SELECT watcher_continuity_state FROM workspace_clock WHERE id = 0",
-                [],
-                |row| row.get(0),
-            )
-            .optional()?;
-        match raw {
-            Some(raw) => WatcherContinuity::parse(&raw),
-            None => Err(WatchError::Generation(
-                GenerationError::ClockNotBootstrapped,
-            )),
-        }
+        continuity(self.connection())
     }
 
     /// Ingest one normalized event.
@@ -470,52 +470,18 @@ impl WatchIngest {
     /// Every journal row, oldest first -- including coalesced ones, which
     /// are kept as evidence.
     pub fn journal(&self) -> Result<Vec<JournalEntry>, WatchError> {
-        self.query_journal("SELECT {COLUMNS} FROM change_journal ORDER BY seq")
+        journal(self.connection())
     }
 
     /// The outstanding candidates: rows still `PENDING`.
     pub fn pending_candidates(&self) -> Result<Vec<JournalEntry>, WatchError> {
-        self.query_journal(
-            "SELECT {COLUMNS} FROM change_journal WHERE processing_state = 'PENDING' ORDER BY seq",
-        )
+        pending_candidates(self.connection())
     }
 
-    /// Move evidence that is safe to hand to [`identity::plan_changes`].
-    ///
-    /// Only paired-rename rows qualify at all, and among those this drops
-    /// anything ambiguous: an endpoint named by more than one rename, or a
-    /// rename whose destination is another rename's source (an `A→B`,
-    /// `B→A` swap, or a longer cycle). Those rows stay in the journal with
-    /// both paths intact -- the evidence is preserved for #16 task 6/13,
-    /// it is simply not turned into an identity decision here.
+    /// Move evidence that is safe to hand to [`identity::plan_changes`]:
+    /// unambiguous paired renames only. See [`pending_move_evidence`].
     pub fn pending_move_evidence(&self) -> Result<Vec<MoveEvidence>, WatchError> {
-        let renames: Vec<(String, String)> = self
-            .pending_candidates()?
-            .into_iter()
-            .filter(|entry| entry.event_kind == WatchEventKind::Move)
-            .filter_map(|entry| Some((entry.path_before?, entry.path_after?)))
-            .collect();
-
-        let mut source_uses: HashMap<&str, usize> = HashMap::new();
-        let mut destination_uses: HashMap<&str, usize> = HashMap::new();
-        for (from, to) in &renames {
-            *source_uses.entry(from.as_str()).or_default() += 1;
-            *destination_uses.entry(to.as_str()).or_default() += 1;
-        }
-
-        Ok(renames
-            .iter()
-            .filter(|(from, to)| {
-                source_uses.get(from.as_str()) == Some(&1)
-                    && destination_uses.get(to.as_str()) == Some(&1)
-                    && !source_uses.contains_key(to.as_str())
-                    && !destination_uses.contains_key(from.as_str())
-            })
-            .map(|(from, to)| MoveEvidence {
-                from_path_key: from.clone(),
-                to_path_key: to.clone(),
-            })
-            .collect())
+        pending_move_evidence(self.connection())
     }
 
     fn ingest_path(
@@ -748,6 +714,7 @@ impl WatchIngest {
             processing_state: row.processing_state,
             coalesced_into_seq: None,
             observed_at,
+            applied_generation_id: None,
         })
     }
 
@@ -773,17 +740,6 @@ impl WatchIngest {
         Ok(())
     }
 
-    fn query_journal(&self, sql: &str) -> Result<Vec<JournalEntry>, WatchError> {
-        const COLUMNS: &str = "seq, workspace_revision, event_kind, resource_uid, path_before, \
-                               path_after, observed_size, observed_mtime_ns, \
-                               candidate_fingerprint, processing_state, coalesced_into_seq, \
-                               observed_at";
-        let connection = self.connection();
-        let mut statement = connection.prepare(&sql.replace("{COLUMNS}", COLUMNS))?;
-        let rows = statement.query_map([], raw_journal_row)?;
-        rows.map(|raw| decode_journal_row(raw?)).collect()
-    }
-
     fn connection(&self) -> &Connection {
         self.resources.connection()
     }
@@ -800,6 +756,129 @@ struct JournalRow<'a> {
     observed: Option<&'a ObservedResource>,
     candidate_fingerprint: Option<String>,
     processing_state: JournalState,
+}
+
+// The `&Connection` functions below are what [`WatchIngest`]'s read methods
+// are built from. They exist so reconcile (#16 task 6) can read the journal
+// and the continuity state through this module's contract -- including its
+// closed vocabularies and its ambiguity rules for move evidence -- inside
+// its own transaction, instead of re-implementing any of it against raw SQL.
+
+pub(crate) fn continuity(connection: &Connection) -> Result<WatcherContinuity, WatchError> {
+    let raw: Option<String> = connection
+        .query_row(
+            "SELECT watcher_continuity_state FROM workspace_clock WHERE id = 0",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    match raw {
+        Some(raw) => WatcherContinuity::parse(&raw),
+        None => Err(WatchError::Generation(
+            GenerationError::ClockNotBootstrapped,
+        )),
+    }
+}
+
+pub(crate) fn journal(connection: &Connection) -> Result<Vec<JournalEntry>, WatchError> {
+    query_journal(
+        connection,
+        "SELECT {COLUMNS} FROM change_journal ORDER BY seq",
+    )
+}
+
+pub(crate) fn pending_candidates(connection: &Connection) -> Result<Vec<JournalEntry>, WatchError> {
+    query_journal(
+        connection,
+        "SELECT {COLUMNS} FROM change_journal WHERE processing_state = 'PENDING' ORDER BY seq",
+    )
+}
+
+/// The highest `change_journal.seq` written so far, or 0 for an empty
+/// journal. Reconcile snapshots this before planning so it can tell, at
+/// publication time, whether the watcher saw anything new meanwhile.
+pub(crate) fn max_journal_seq(connection: &Connection) -> Result<i64, WatchError> {
+    Ok(connection.query_row(
+        "SELECT COALESCE(MAX(seq), 0) FROM change_journal",
+        [],
+        |row| row.get(0),
+    )?)
+}
+
+/// Move evidence that is safe to hand to [`identity::plan_changes`].
+///
+/// Only paired-rename rows qualify at all, and among those this drops
+/// anything ambiguous: an endpoint named by more than one rename, or a
+/// rename whose destination is another rename's source (an `A→B`, `B→A`
+/// swap, or a longer cycle). Those rows stay in the journal with both paths
+/// intact -- the evidence is preserved, it is simply not turned into an
+/// identity decision.
+pub(crate) fn pending_move_evidence(
+    connection: &Connection,
+) -> Result<Vec<MoveEvidence>, WatchError> {
+    let renames: Vec<(String, String)> = pending_candidates(connection)?
+        .into_iter()
+        .filter(|entry| entry.event_kind == WatchEventKind::Move)
+        .filter_map(|entry| Some((entry.path_before?, entry.path_after?)))
+        .collect();
+
+    let mut source_uses: HashMap<&str, usize> = HashMap::new();
+    let mut destination_uses: HashMap<&str, usize> = HashMap::new();
+    for (from, to) in &renames {
+        *source_uses.entry(from.as_str()).or_default() += 1;
+        *destination_uses.entry(to.as_str()).or_default() += 1;
+    }
+
+    Ok(renames
+        .iter()
+        .filter(|(from, to)| {
+            source_uses.get(from.as_str()) == Some(&1)
+                && destination_uses.get(to.as_str()) == Some(&1)
+                && !source_uses.contains_key(to.as_str())
+                && !destination_uses.contains_key(from.as_str())
+        })
+        .map(|(from, to)| MoveEvidence {
+            from_path_key: from.clone(),
+            to_path_key: to.clone(),
+        })
+        .collect())
+}
+
+/// Mark every still-`PENDING` row up to and including `through_seq` as
+/// [`JournalState::Applied`], attributed to `generation_id` when the
+/// reconcile published one.
+///
+/// Rows are never deleted, and terminal rows (`COALESCED`, `TRANSIENT`,
+/// already `APPLIED`) are left exactly as they are: their evidence and
+/// their `coalesced_into_seq` links stay intact. Rows newer than
+/// `through_seq` stay `PENDING`, because this reconcile did not account for
+/// them.
+pub(crate) fn mark_applied(
+    connection: &Connection,
+    through_seq: i64,
+    generation_id: Option<i64>,
+) -> Result<(), WatchError> {
+    connection.execute(
+        "UPDATE change_journal SET processing_state = ?1, applied_generation_id = ?2 \
+         WHERE processing_state = ?3 AND seq <= ?4",
+        params![
+            JournalState::Applied.as_str(),
+            generation_id,
+            JournalState::Pending.as_str(),
+            through_seq
+        ],
+    )?;
+    Ok(())
+}
+
+fn query_journal(connection: &Connection, sql: &str) -> Result<Vec<JournalEntry>, WatchError> {
+    const COLUMNS: &str = "seq, workspace_revision, event_kind, resource_uid, path_before, \
+                           path_after, observed_size, observed_mtime_ns, \
+                           candidate_fingerprint, processing_state, coalesced_into_seq, \
+                           observed_at, applied_generation_id";
+    let mut statement = connection.prepare(&sql.replace("{COLUMNS}", COLUMNS))?;
+    let rows = statement.query_map([], raw_journal_row)?;
+    rows.map(|raw| decode_journal_row(raw?)).collect()
 }
 
 /// Which consecutive pairs fold into one effective candidate, and what that
@@ -856,6 +935,7 @@ type RawJournalRow = (
     String,
     Option<i64>,
     String,
+    Option<i64>,
 );
 
 fn raw_journal_row(row: &Row<'_>) -> rusqlite::Result<RawJournalRow> {
@@ -872,6 +952,7 @@ fn raw_journal_row(row: &Row<'_>) -> rusqlite::Result<RawJournalRow> {
         row.get(9)?,
         row.get(10)?,
         row.get(11)?,
+        row.get(12)?,
     ))
 }
 
@@ -895,6 +976,7 @@ fn decode_journal_row(raw: RawJournalRow) -> Result<JournalEntry, WatchError> {
         processing_state: JournalState::parse(&raw.9)?,
         coalesced_into_seq: raw.10,
         observed_at: raw.11,
+        applied_generation_id: raw.12,
     })
 }
 

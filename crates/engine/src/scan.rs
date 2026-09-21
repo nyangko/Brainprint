@@ -51,6 +51,7 @@ use crate::{
     identity::{self, IdentityError, ObservationMode, ObservedResource, ResourceChange},
     resource::{self, ResourceError, ResourceStore},
     schema,
+    watch::WatchError,
 };
 
 /// What a completed baseline publication produced.
@@ -62,9 +63,14 @@ pub struct ScanReport {
     pub changes: Vec<ResourceChange>,
 }
 
-/// Failure anywhere in the scan → publish path. Whatever the variant,
+/// Failure anywhere in a scan → publish path. Whatever the variant,
 /// nothing is half-published: either the whole publication transaction
 /// committed or none of it did, and the generation is left `ABORTED`.
+///
+/// Shared by the baseline scan (#16 task 4) and reconcile (#16 task 6):
+/// both walk the same full-discovery → verify → publish path and fail in
+/// exactly the same ways, so they report failure through one contract
+/// rather than two parallel enums.
 #[derive(Debug)]
 pub enum ScanError {
     Discovery(DiscoveryError),
@@ -72,6 +78,9 @@ pub enum ScanError {
     Generation(GenerationError),
     Store(ResourceError),
     Component(ComponentError),
+    /// Reading or updating the `change_journal` failed, or a stored row
+    /// held a value outside the watcher's closed vocabulary.
+    Journal(WatchError),
     /// The Workspace changed while the scan was running, so the candidate
     /// snapshot no longer describes the current filesystem. Retryable --
     /// by an explicit caller decision, never automatically.
@@ -94,7 +103,7 @@ impl ScanError {
         matches!(self, Self::InputChanged { .. })
     }
 
-    fn abort_reason(&self) -> String {
+    pub(crate) fn abort_reason(&self) -> String {
         match self {
             Self::InputChanged { detail } => {
                 format!("workspace input changed during scan: {detail}")
@@ -117,6 +126,7 @@ impl fmt::Display for ScanError {
             }
             Self::Store(source) => write!(formatter, "resource store failed: {source}"),
             Self::Component(source) => write!(formatter, "component state failed: {source}"),
+            Self::Journal(source) => write!(formatter, "change journal failed: {source}"),
             Self::InputChanged { detail } => write!(
                 formatter,
                 "workspace input changed during the scan, so nothing was published: {detail}"
@@ -137,6 +147,7 @@ impl Error for ScanError {
             Self::Generation(source) => Some(source),
             Self::Store(source) => Some(source),
             Self::Component(source) => Some(source),
+            Self::Journal(source) => Some(source),
             Self::InputChanged { .. } | Self::InvariantViolated { .. } => None,
         }
     }
@@ -169,6 +180,12 @@ impl From<ResourceError> for ScanError {
 impl From<ComponentError> for ScanError {
     fn from(source: ComponentError) -> Self {
         Self::Component(source)
+    }
+}
+
+impl From<WatchError> for ScanError {
+    fn from(source: WatchError) -> Self {
+        Self::Journal(source)
     }
 }
 
@@ -285,7 +302,7 @@ impl BaselineScan {
         identity::apply_in_transaction(&self.resources, changes)?;
 
         // 4. The Resource table now agrees with what was published.
-        self.verify_invariants(snapshot)?;
+        verify_resource_invariants(&self.resources, snapshot)?;
 
         // 5-7. Component state, then STABLE, then the pointer swap.
         component::mark_current(
@@ -313,6 +330,9 @@ impl BaselineScan {
         config: &WorkspaceConfig,
         use_persisted: bool,
     ) -> Result<Vec<ObservedResource>, ScanError> {
+        if !use_persisted {
+            return observe_workspace_verified(workspace_root, config);
+        }
         discovery::enumerate_resources(workspace_root, config)?
             .iter()
             .map(|entry| {
@@ -332,56 +352,88 @@ impl BaselineScan {
             .collect()
     }
 
-    /// Post-apply checks on the Resource table itself.
-    fn verify_invariants(&self, snapshot: &[ObservedResource]) -> Result<(), ScanError> {
-        let active = self.resources.list_active()?;
-        if active.len() != snapshot.len() {
-            return Err(ScanError::InvariantViolated {
-                detail: format!(
-                    "{} ACTIVE resources for {} observed entries",
-                    active.len(),
-                    snapshot.len()
-                ),
-            });
-        }
-
-        for (persisted, observed) in active.iter().zip(snapshot) {
-            if persisted.path_key != observed.discovered.path_key {
-                return Err(ScanError::InvariantViolated {
-                    detail: format!(
-                        "ACTIVE path {:?} is not the observed path {:?}",
-                        persisted.path_key, observed.discovered.path_key
-                    ),
-                });
-            }
-        }
-
-        for stored in self.resources.list()? {
-            let tombstoned = resource::is_tombstone_path_key(&stored.path_key);
-            if (stored.state == crate::resource::ResourceState::Deleted) != tombstoned {
-                return Err(ScanError::InvariantViolated {
-                    detail: format!(
-                        "resource {:?} is {} but its path_key is {}a tombstone key",
-                        stored.path_rel,
-                        stored.state,
-                        if tombstoned { "" } else { "not " }
-                    ),
-                });
-            }
-        }
-
-        Ok(())
-    }
-
     fn connection(&self) -> &Connection {
         self.resources.connection()
     }
 }
 
+/// Post-apply checks on the Resource table itself: the ACTIVE set is
+/// exactly what was observed, and DELETED is exactly what is tombstoned.
+///
+/// Shared by the baseline scan and reconcile (#16 task 6) -- both apply
+/// identity decisions inside a publication transaction and must not commit
+/// a Resource table that disagrees with the snapshot they published.
+pub(crate) fn verify_resource_invariants(
+    resources: &ResourceStore,
+    snapshot: &[ObservedResource],
+) -> Result<(), ScanError> {
+    let active = resources.list_active()?;
+    if active.len() != snapshot.len() {
+        return Err(ScanError::InvariantViolated {
+            detail: format!(
+                "{} ACTIVE resources for {} observed entries",
+                active.len(),
+                snapshot.len()
+            ),
+        });
+    }
+
+    for (persisted, observed) in active.iter().zip(snapshot) {
+        if persisted.path_key != observed.discovered.path_key {
+            return Err(ScanError::InvariantViolated {
+                detail: format!(
+                    "ACTIVE path {:?} is not the observed path {:?}",
+                    persisted.path_key, observed.discovered.path_key
+                ),
+            });
+        }
+    }
+
+    for stored in resources.list()? {
+        let tombstoned = resource::is_tombstone_path_key(&stored.path_key);
+        if (stored.state == crate::resource::ResourceState::Deleted) != tombstoned {
+            return Err(ScanError::InvariantViolated {
+                detail: format!(
+                    "resource {:?} is {} but its path_key is {}a tombstone key",
+                    stored.path_rel,
+                    stored.state,
+                    if tombstoned { "" } else { "not " }
+                ),
+            });
+        }
+    }
+
+    Ok(())
+}
+
+/// Discover and observe the whole Workspace in
+/// [`ObservationMode::Verified`], without consulting a single persisted
+/// row: every FILE's current bytes are re-hashed, so the result describes
+/// the filesystem and nothing else.
+///
+/// This is the correctness path's one way of looking at the Workspace --
+/// the baseline scan's revalidation pass and every reconcile observation
+/// (#16 task 6) go through it.
+pub(crate) fn observe_workspace_verified(
+    workspace_root: &Path,
+    config: &WorkspaceConfig,
+) -> Result<Vec<ObservedResource>, ScanError> {
+    discovery::enumerate_resources(workspace_root, config)?
+        .iter()
+        .map(|entry| {
+            identity::observe(workspace_root, entry, None, ObservationMode::Verified)
+                .map_err(ScanError::from)
+        })
+        .collect()
+}
+
 /// The first way `candidate` and `fresh` disagree on something that decides
 /// correctness -- path set, classification, or FILE content evidence -- or
 /// `None` if they agree. `mtime` is not compared: it is not semantic input.
-fn snapshot_drift(candidate: &[ObservedResource], fresh: &[ObservedResource]) -> Option<String> {
+pub(crate) fn snapshot_drift(
+    candidate: &[ObservedResource],
+    fresh: &[ObservedResource],
+) -> Option<String> {
     for (before, after) in candidate.iter().zip(fresh) {
         if before.discovered != after.discovered {
             return Some(format!(

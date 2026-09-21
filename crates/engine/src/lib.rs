@@ -8,6 +8,7 @@ pub mod generation;
 pub mod identity;
 pub mod init;
 pub mod paths;
+pub mod reconcile;
 pub mod registry;
 pub mod resource;
 pub mod scan;
