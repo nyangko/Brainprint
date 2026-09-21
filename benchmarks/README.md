@@ -30,6 +30,17 @@ Each JSONL line is one run:
 
 An unavailable measurement is `null`. A measured zero is `0`.
 
+## Variants
+
+- `basic-tools` — the I0 no-Brainprint filesystem/text baseline
+  (`scripts/benchmark_baseline.py`).
+- `brainprint-i2-structured` / `brainprint-i2-text-fallback` /
+  `brainprint-i2` — the I2 re-measurement of the same scenario
+  (`cargo run -p brainprint-engine --example i2_benchmark`). The
+  structured and text-fallback lines are kept apart on purpose: a text
+  match is not a Relation, and only I3 may claim it is. See
+  `i2-acceptance-report.md`.
+
 ## Promotion
 
 Generated reports are not automatically baselines. A result is copied into `baselines/` only after its workspace snapshot and acceptance criteria are considered representative. No performance claim is made from a single run.
