@@ -44,8 +44,9 @@ use brainprint_core::ResourceId;
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::{
+    gaps::{GapError, IntendedRelation, PersistedUnresolved, UnresolvedEvidence, UnresolvedReason},
     generation::PublicationGrant,
-    graph::{self, GraphError, Relation, RelationKey},
+    graph::{self, GraphEndpoint, GraphError, Relation, RelationKey},
     resolution::EvidenceBasis,
     resource::ResourceState,
     symbol::OccurrenceKind,
@@ -89,6 +90,12 @@ pub struct EvidenceReplacement {
     /// Unresolved references (and their candidates) cleared from this
     /// owner's previous run.
     pub unresolved_cleared: usize,
+    /// Unresolved references written for this run (#17 task 7).
+    pub unresolved_written: usize,
+    /// Candidate rows written across them, after bounding.
+    pub candidates_written: usize,
+    /// Unresolved references whose candidate list was cut.
+    pub candidate_sets_truncated: usize,
 }
 
 /// Failure of a Resource-owned evidence replacement. Every variant
@@ -131,6 +138,14 @@ pub enum EvidenceError {
         resource_id: ResourceId,
         occurrence: OccurrenceRef,
     },
+    /// The same Occurrence was offered as both a resolved relation and
+    /// an unresolved gap. It is one or the other, and storing both would
+    /// make the same evidence answer two ways.
+    OccurrenceAlreadyResolved {
+        occurrence: OccurrenceRef,
+    },
+    /// A stored gap row held a value outside its closed vocabulary.
+    Gap(GapError),
 }
 
 impl fmt::Display for EvidenceError {
@@ -161,6 +176,12 @@ impl fmt::Display for EvidenceError {
             Self::UnknownResolutionContext { context_key } => {
                 write!(formatter, "no resolution context {context_key:?}")
             }
+            Self::OccurrenceAlreadyResolved { occurrence } => write!(
+                formatter,
+                "the {} occurrence at {}..{} is both resolved and unresolved",
+                occurrence.kind, occurrence.start_byte, occurrence.end_byte
+            ),
+            Self::Gap(source) => write!(formatter, "unresolved row failed to decode: {source}"),
             Self::UnknownOccurrence {
                 resource_id,
                 occurrence,
@@ -195,6 +216,12 @@ impl From<GraphError> for EvidenceError {
     }
 }
 
+impl From<GapError> for EvidenceError {
+    fn from(source: GapError) -> Self {
+        Self::Gap(source)
+    }
+}
+
 /// Replace every piece of graph evidence one Resource owns, in the
 /// caller's open publication transaction.
 ///
@@ -212,6 +239,26 @@ pub fn replace_resource_evidence(
     grant: &PublicationGrant,
     basis: &EvidenceBasis,
     evidence: &[RelationEvidence],
+) -> Result<EvidenceReplacement, EvidenceError> {
+    replace_resource_graph(connection, grant, basis, evidence, &[])
+}
+
+/// Replace one Resource's resolved *and* unresolved graph evidence, in
+/// the caller's open publication transaction (#17 task 7).
+///
+/// The two halves are one replacement: an occurrence that stopped being
+/// unresolved and an occurrence that started being resolved are the same
+/// re-analysis, and committing one without the other would leave the
+/// graph claiming both at once. The same ownership rule covers both --
+/// only this Resource's rows are touched.
+///
+/// An Occurrence may appear in one list or the other, never both.
+pub fn replace_resource_graph(
+    connection: &Connection,
+    grant: &PublicationGrant,
+    basis: &EvidenceBasis,
+    evidence: &[RelationEvidence],
+    unresolved: &[UnresolvedEvidence],
 ) -> Result<EvidenceReplacement, EvidenceError> {
     if basis.generation_id != grant.generation_id() {
         return Err(EvidenceError::GenerationMismatch {
@@ -265,6 +312,59 @@ pub fn replace_resource_evidence(
         }
     }
     replacement.relations_bound = bound_now.len();
+
+    // The gaps, against the same Occurrences and in the same
+    // transaction. An occurrence cannot be in both lists.
+    for gap in unresolved {
+        if evidence
+            .iter()
+            .any(|resolved| resolved.occurrence == gap.occurrence)
+        {
+            return Err(EvidenceError::OccurrenceAlreadyResolved {
+                occurrence: gap.occurrence,
+            });
+        }
+        let occurrence_id = occurrence_row_id(connection, owner, basis, gap.occurrence)?;
+        let (candidates, truncated) = gap.bounded_candidates();
+        connection.execute(
+            "INSERT INTO unresolved_reference \
+             (occurrence_id, intended_relation_kind, lookup_name, module_hint, reason, \
+              resolution_context_id, candidate_truncated) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                occurrence_id,
+                gap.intended.as_str(),
+                gap.lookup_name,
+                gap.module_hint,
+                gap.reason.as_str(),
+                context_id,
+                i64::from(truncated),
+            ],
+        )?;
+        let unresolved_id = connection.last_insert_rowid();
+        for (ordinal, candidate) in candidates.iter().enumerate() {
+            // A candidate is a canonical identity the resolver already
+            // had; ensuring its entity records no new claim.
+            graph::ensure_entity(connection, candidate)?;
+            let entity_id = graph::require_entity_id(connection, candidate)?;
+            connection.execute(
+                "INSERT INTO relation_candidate \
+                 (unresolved_reference_id, target_entity_id, evidence_kind, ordinal) \
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    unresolved_id,
+                    entity_id,
+                    crate::gaps::STRUCTURAL_CANDIDATE,
+                    i64::try_from(ordinal).unwrap_or(i64::MAX),
+                ],
+            )?;
+            replacement.candidates_written += 1;
+        }
+        replacement.unresolved_written += 1;
+        if truncated {
+            replacement.candidate_sets_truncated += 1;
+        }
+    }
 
     // A relation this owner stopped proving survives if anyone else
     // still proves it. Only the ones with no evidence left at all go.
@@ -413,6 +513,82 @@ fn delete_relation_if_unevidenced(
         params![relation_id],
     )?;
     Ok(changed == 1)
+}
+
+/// Every unresolved reference one Resource owns, with its candidates in
+/// stored order.
+///
+/// The minimum readback #17 task 7's lifecycle needs; the query surface
+/// that shapes this for a caller is task 8's.
+pub fn list_unresolved_for_resource(
+    connection: &Connection,
+    resource_id: ResourceId,
+) -> Result<Vec<PersistedUnresolved>, EvidenceError> {
+    let mut statement = connection.prepare(
+        "SELECT unresolved_reference.id, occurrence.kind, occurrence.start_byte, \
+                occurrence.end_byte, unresolved_reference.intended_relation_kind, \
+                unresolved_reference.lookup_name, unresolved_reference.module_hint, \
+                unresolved_reference.reason, unresolved_reference.candidate_truncated, \
+                resolution_context.context_key \
+         FROM unresolved_reference \
+         JOIN occurrence ON occurrence.id = unresolved_reference.occurrence_id \
+         JOIN resource ON resource.id = occurrence.resource_id \
+         LEFT JOIN resolution_context \
+                ON resolution_context.id = unresolved_reference.resolution_context_id \
+         WHERE resource.uid = ?1 \
+         ORDER BY occurrence.start_byte, occurrence.end_byte, occurrence.kind",
+    )?;
+    let rows = statement.query_map(params![resource_id.to_bytes().to_vec()], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, i64>(2)?,
+            row.get::<_, i64>(3)?,
+            row.get::<_, String>(4)?,
+            row.get::<_, String>(5)?,
+            row.get::<_, Option<String>>(6)?,
+            row.get::<_, String>(7)?,
+            row.get::<_, i64>(8)?,
+            row.get::<_, Option<String>>(9)?,
+        ))
+    })?;
+
+    let mut found = Vec::new();
+    for row in rows {
+        let raw = row?;
+        found.push(PersistedUnresolved {
+            occurrence: OccurrenceRef {
+                kind: OccurrenceKind::parse_public(&raw.1)
+                    .map_err(|_| GapError::UnknownReason { raw: raw.1.clone() })?,
+                start_byte: usize::try_from(raw.2).unwrap_or(0),
+                end_byte: usize::try_from(raw.3).unwrap_or(0),
+            },
+            intended: IntendedRelation::parse(&raw.4)?,
+            lookup_name: raw.5,
+            module_hint: raw.6,
+            reason: UnresolvedReason::parse(&raw.7)?,
+            candidate_truncated: raw.8 != 0,
+            candidates: candidates_of(connection, raw.0)?,
+            resolution_context_key: raw.9,
+        });
+    }
+    Ok(found)
+}
+
+fn candidates_of(
+    connection: &Connection,
+    unresolved_id: i64,
+) -> Result<Vec<GraphEndpoint>, EvidenceError> {
+    let mut statement = connection.prepare(
+        "SELECT target_entity_id FROM relation_candidate \
+         WHERE unresolved_reference_id = ?1 ORDER BY ordinal",
+    )?;
+    let rows = statement.query_map(params![unresolved_id], |row| row.get::<_, i64>(0))?;
+    let mut found = Vec::new();
+    for row in rows {
+        found.push(graph::endpoint_of_entity(connection, row?)?);
+    }
+    Ok(found)
 }
 
 #[cfg(test)]

@@ -281,6 +281,13 @@ impl OccurrenceKind {
         }
     }
 
+    /// Decode a stored kind. Public so a caller reading Occurrence rows
+    /// through another table (#17 task 7) shares this vocabulary rather
+    /// than re-deriving it.
+    pub fn parse_public(raw: &str) -> Result<Self, SymbolError> {
+        Self::parse(raw)
+    }
+
     fn parse(raw: &str) -> Result<Self, SymbolError> {
         match raw {
             "DEFINITION" => Ok(Self::Definition),

@@ -658,6 +658,24 @@ pub(crate) fn insert_relation(
 /// The local row id of one edge, for a caller that must reference it
 /// from another table -- an Occurrence binding (#17 task 3). The id stays
 /// inside the crate; nothing public hands one out.
+/// The `graph_entity` row id for an endpoint that has one. For a
+/// caller that must reference an entity from another table -- a
+/// candidate row (#17 task 7). The id stays inside the crate.
+pub(crate) fn require_entity_id(
+    connection: &Connection,
+    endpoint: &GraphEndpoint,
+) -> Result<i64, GraphError> {
+    require_entity(connection, endpoint)
+}
+
+/// The endpoint one `graph_entity` row stands for, for the same caller.
+pub(crate) fn endpoint_of_entity(
+    connection: &Connection,
+    entity_id: i64,
+) -> Result<GraphEndpoint, GraphError> {
+    endpoint_of(connection, entity_id)
+}
+
 pub(crate) fn relation_row_id(
     connection: &Connection,
     key: &RelationKey<'_>,

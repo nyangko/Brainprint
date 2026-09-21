@@ -7,6 +7,7 @@ pub mod db;
 pub mod discovery;
 pub mod evidence;
 pub mod extract;
+pub mod gaps;
 pub mod generation;
 pub mod graph;
 pub mod identity;
