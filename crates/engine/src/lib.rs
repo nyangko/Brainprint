@@ -27,4 +27,5 @@ pub mod search;
 pub mod structural;
 pub mod symbol;
 pub mod telemetry;
+pub mod types;
 pub mod watch;

@@ -629,6 +629,18 @@ impl Walker<'_> {
             }
             _ => {}
         }
+
+        // Type positions whose relation the syntax settles (#17 task 6).
+        // The set and the spans are that module's, so evidence and
+        // relations cannot disagree about what counts as a type
+        // reference or where it sits. An `override` marker is not one:
+        // it states that something is overridden, never what, so it
+        // gets no Occurrence to bind to.
+        for reference in crate::types::type_references_at(node, self.dialect, self.source) {
+            if reference.evidence != crate::types::TypeEvidence::OverrideMarker {
+                push(OccurrenceKind::TypeSite, reference.span);
+            }
+        }
     }
 
     fn classify(&self, node: Node<'_>, frame: &Frame) -> Declared {

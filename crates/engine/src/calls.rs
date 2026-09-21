@@ -274,7 +274,11 @@ fn resolve_site(site: &CallSite, scope: &BindingScope<'_>) -> CallOutcome {
 
 /// A bare name: an explicit import binding first, then this file's own
 /// top-level declarations. Either way, a locally bound name is refused.
-fn resolve_name(name: &str, scope: &BindingScope<'_>) -> CallOutcome {
+///
+/// Public because the binding rules are the same wherever a name has to
+/// be bound structurally -- #17 task 6 resolves type names through this
+/// exact path rather than growing a second, subtly different one.
+pub fn resolve_name(name: &str, scope: &BindingScope<'_>) -> CallOutcome {
     if scope.local_names.contains(name) {
         return CallOutcome::Unresolved(UnresolvedCall::PossiblyShadowed);
     }
@@ -299,7 +303,7 @@ fn resolve_name(name: &str, scope: &BindingScope<'_>) -> CallOutcome {
 /// `receiver.member()`. Two shapes are structural: a namespace import's
 /// member, and a member of a type declared in this file. Everything else
 /// needs the receiver's type.
-fn resolve_member(receiver: &str, member: &str, scope: &BindingScope<'_>) -> CallOutcome {
+pub fn resolve_member(receiver: &str, member: &str, scope: &BindingScope<'_>) -> CallOutcome {
     if scope.local_names.contains(receiver) {
         // `obj.foo()` where `obj` is a parameter or a local: the type is
         // exactly what is not known here.

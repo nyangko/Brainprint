@@ -262,6 +262,11 @@ pub enum OccurrenceKind {
     /// reference candidate, and never a declaration, an import, or a
     /// call's own callee, each of which already has its own evidence.
     ReferenceSite,
+    /// A type named in a declaration: a base class, an implemented
+    /// interface or trait, or an explicit parameter/return/field type
+    /// (#17 task 6). Again a narrow set, not an index of every type
+    /// token: only the positions whose relation the syntax settles.
+    TypeSite,
 }
 
 impl OccurrenceKind {
@@ -272,6 +277,7 @@ impl OccurrenceKind {
             Self::ImportSite => "IMPORT_SITE",
             Self::CallSite => "CALL_SITE",
             Self::ReferenceSite => "REFERENCE_SITE",
+            Self::TypeSite => "TYPE_SITE",
         }
     }
 
@@ -281,6 +287,7 @@ impl OccurrenceKind {
             "IMPORT_SITE" => Ok(Self::ImportSite),
             "CALL_SITE" => Ok(Self::CallSite),
             "REFERENCE_SITE" => Ok(Self::ReferenceSite),
+            "TYPE_SITE" => Ok(Self::TypeSite),
             other => Err(SymbolError::UnknownOccurrenceKind {
                 raw: other.to_owned(),
             }),
