@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 brainprint-core.workspace = true
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt"] }
 
 [lints]
 workspace = true

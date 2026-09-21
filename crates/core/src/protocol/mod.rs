@@ -11,13 +11,17 @@
 //!   [`tokio::io::AsyncRead`]/`AsyncWrite` stream.
 //! - [`transport`]: the local-only (never TCP) IPC stream itself -- Unix
 //!   domain socket or Windows named pipe.
+//! - [`endpoint`]: where that stream lives -- the one path derivation both
+//!   `brainprint-daemon` and `brainprint-cli` share (#15 task 10).
 
+pub mod endpoint;
 pub mod framing;
 pub mod messages;
 pub mod transport;
 
+pub use endpoint::{EndpointPaths, EndpointResolutionError};
 pub use messages::{
-    ErrorResponse, HandshakeRequest, HandshakeResponse, Request, Response, StatusRequest,
-    StatusResponse,
+    ErrorKind, ErrorResponse, HandshakeRequest, HandshakeResponse, InitRequest, InitResponse,
+    InstallRequest, InstallResponse, Request, Response, StatusRequest, StatusResponse,
 };
 pub use transport::{ClientConnection, Listener, ServerConnection};

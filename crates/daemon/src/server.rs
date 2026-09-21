@@ -13,11 +13,18 @@ use std::{error::Error, fmt, io, path::Path, time::Duration};
 
 use brainprint_core::{
     BuildInfo,
-    protocol::{self, ErrorResponse, HandshakeResponse, Request, Response, transport::Listener},
+    protocol::{
+        self, ErrorKind, ErrorResponse, HandshakeResponse, Request, Response, transport::Listener,
+    },
 };
+use brainprint_engine::paths::GlobalPaths;
 use tokio::io::{AsyncRead, AsyncWrite};
 
-use crate::{client, runtime_paths::RuntimeEndpoint, state::DaemonState};
+use crate::{
+    client, handlers,
+    runtime_paths::{self, RuntimeEndpoint},
+    state::DaemonState,
+};
 
 /// Failure starting the daemon.
 #[derive(Debug)]
@@ -60,16 +67,15 @@ pub struct Server {
     listener: Listener,
     endpoint: RuntimeEndpoint,
     state: DaemonState,
+    global_paths: GlobalPaths,
 }
 
 impl Server {
     /// Acquire the singleton lock, bind the local IPC endpoint (recovering
     /// from stale runtime artifacts left by a crashed previous instance),
     /// and prepare to serve.
-    pub async fn bind(
-        global_paths: &brainprint_engine::paths::GlobalPaths,
-    ) -> Result<Self, StartError> {
-        let endpoint = RuntimeEndpoint::resolve(global_paths);
+    pub async fn bind(global_paths: &GlobalPaths) -> Result<Self, StartError> {
+        let endpoint = runtime_paths::resolve(global_paths);
         ensure_runtime_dir(&endpoint.runtime_root)?;
 
         acquire_lock_or_detect_stale(&endpoint).await?;
@@ -91,21 +97,23 @@ impl Server {
             listener,
             endpoint,
             state: DaemonState::new(),
+            global_paths: global_paths.clone(),
         })
     }
 
     /// Accept connections until cancelled (e.g. by a `Ctrl+C` future
     /// raced against this with `tokio::select!`). Each connection is
     /// handled concurrently, so multiple clients can handshake/query
-    /// status at once.
+    /// status/install/init at once.
     pub async fn serve(&mut self) -> io::Result<()> {
         loop {
             let connection = self.listener.accept().await?;
             let state = self.state;
+            let global_paths = self.global_paths.clone();
             tokio::spawn(async move {
                 // A single client's connection failing must never take
                 // down the daemon or any other client's connection.
-                let _ = handle_connection(connection, state).await;
+                let _ = handle_connection(connection, state, global_paths).await;
             });
         }
     }
@@ -122,7 +130,11 @@ impl Server {
     }
 }
 
-async fn handle_connection<S>(mut connection: S, state: DaemonState) -> io::Result<()>
+async fn handle_connection<S>(
+    mut connection: S,
+    state: DaemonState,
+    global_paths: GlobalPaths,
+) -> io::Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
@@ -141,6 +153,7 @@ where
         protocol::framing::write_message(
             &mut connection,
             &Response::Error(ErrorResponse {
+                kind: ErrorKind::InvalidRequest,
                 message: "the first message on a connection must be Handshake".to_owned(),
             }),
         )
@@ -181,9 +194,42 @@ where
                 daemon_version: build.version.to_owned(),
             }),
             Request::Status(_) => Response::Status(state.status()),
+            Request::Install(_) => {
+                let global_paths = global_paths.clone();
+                match run_blocking(move || handlers::handle_install(&global_paths)).await {
+                    Ok(install) => Response::Install(install),
+                    Err(error) => Response::Error(error),
+                }
+            }
+            Request::Init(init_request) => {
+                let global_paths = global_paths.clone();
+                match run_blocking(move || handlers::handle_init(&global_paths, &init_request.path))
+                    .await
+                {
+                    Ok(init) => Response::Init(init),
+                    Err(error) => Response::Error(error),
+                }
+            }
         };
         protocol::framing::write_message(&mut connection, &response).await?;
     }
+}
+
+/// `handlers::handle_install`/`handle_init` call straight into synchronous
+/// `brainprint-engine` (filesystem + SQLite) work -- run it off the async
+/// executor so one slow request never stalls this daemon's other
+/// connections.
+async fn run_blocking<T, F>(f: F) -> Result<T, ErrorResponse>
+where
+    F: FnOnce() -> Result<T, ErrorResponse> + Send + 'static,
+    T: Send + 'static,
+{
+    tokio::task::spawn_blocking(f).await.unwrap_or_else(|_| {
+        Err(ErrorResponse {
+            kind: ErrorKind::DaemonInternal,
+            message: "internal error: request handler task panicked".to_owned(),
+        })
+    })
 }
 
 fn bind_listener(endpoint: &RuntimeEndpoint) -> io::Result<Listener> {
@@ -306,6 +352,57 @@ mod tests {
         }
     }
 
+    async fn send(
+        connection: &mut brainprint_core::protocol::ClientConnection,
+        request: Request,
+    ) -> Response {
+        protocol::framing::write_message(connection, &request)
+            .await
+            .expect("write should succeed");
+        protocol::framing::read_message(connection)
+            .await
+            .expect("read should succeed")
+    }
+
+    /// Real `git` commands for worktree lineage tests, duplicated from
+    /// `brainprint-engine`'s own `init.rs` test helpers of the same shape
+    /// (different crate, same minimal fixture need).
+    fn run_git(args: &[&str], cwd: &Path) {
+        let output = process::Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .env("GIT_AUTHOR_NAME", "brainprint-test")
+            .env("GIT_AUTHOR_EMAIL", "test@brainprint.invalid")
+            .env("GIT_COMMITTER_NAME", "brainprint-test")
+            .env("GIT_COMMITTER_EMAIL", "test@brainprint.invalid")
+            .output()
+            .expect("git should be installed and runnable for this test");
+        assert!(
+            output.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn real_git_repo(workspace: &Path) {
+        run_git(&["init", "-q"], workspace);
+        run_git(&["commit", "-q", "--allow-empty", "-m", "init"], workspace);
+    }
+
+    fn add_worktree(main_repo: &Path, worktree: &Path, branch: &str) {
+        run_git(
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                branch,
+                &worktree.to_string_lossy(),
+            ],
+            main_repo,
+        );
+    }
+
     #[tokio::test]
     async fn bind_then_handshake_then_status_succeeds() {
         let home = TestHome::create("basic");
@@ -313,7 +410,7 @@ mod tests {
         let mut server = Server::bind(&global_paths)
             .await
             .expect("bind should succeed");
-        let endpoint = RuntimeEndpoint::resolve(&global_paths);
+        let endpoint = runtime_paths::resolve(&global_paths);
 
         let serve_task = tokio::spawn(async move {
             let _ = server.serve().await;
@@ -346,7 +443,7 @@ mod tests {
         let mut server = Server::bind(&global_paths)
             .await
             .expect("bind should succeed");
-        let endpoint = RuntimeEndpoint::resolve(&global_paths);
+        let endpoint = runtime_paths::resolve(&global_paths);
 
         let serve_task = tokio::spawn(async move {
             let _ = server.serve().await;
@@ -378,7 +475,7 @@ mod tests {
     async fn connecting_when_no_daemon_is_running_is_reported_explicitly() {
         let home = TestHome::create("not-running");
         let global_paths = home.global_paths();
-        let endpoint = RuntimeEndpoint::resolve(&global_paths);
+        let endpoint = runtime_paths::resolve(&global_paths);
 
         let error = client::connect(&endpoint)
             .await
@@ -411,7 +508,7 @@ mod tests {
     async fn stale_runtime_artifacts_are_recovered_on_next_start() {
         let home = TestHome::create("stale-recovery");
         let global_paths = home.global_paths();
-        let endpoint = RuntimeEndpoint::resolve(&global_paths);
+        let endpoint = runtime_paths::resolve(&global_paths);
 
         // Simulate a crash: bind, then drop without cleanup, leaving the
         // socket file (and, separately, the lock file) behind.
@@ -446,7 +543,7 @@ mod tests {
         let mut server = Server::bind(&global_paths)
             .await
             .expect("bind should succeed");
-        let endpoint = RuntimeEndpoint::resolve(&global_paths);
+        let endpoint = runtime_paths::resolve(&global_paths);
         let serve_task = tokio::spawn(async move {
             let _ = server.serve().await;
         });
@@ -481,12 +578,254 @@ mod tests {
         let server = Server::bind(&global_paths)
             .await
             .expect("bind should succeed");
-        let endpoint = RuntimeEndpoint::resolve(&global_paths);
+        let endpoint = runtime_paths::resolve(&global_paths);
 
         server.cleanup();
 
         #[cfg(unix)]
         assert!(!endpoint.socket_path.exists());
         assert!(!endpoint.lock_path.exists());
+    }
+
+    #[tokio::test]
+    async fn install_via_daemon_creates_global_config_and_db_and_is_idempotent() {
+        let home = TestHome::create("install");
+        let global_paths = home.global_paths();
+        let mut server = Server::bind(&global_paths)
+            .await
+            .expect("bind should succeed");
+        let endpoint = runtime_paths::resolve(&global_paths);
+        let serve_task = tokio::spawn(async move {
+            let _ = server.serve().await;
+        });
+
+        let mut connection = client::connect(&endpoint)
+            .await
+            .expect("connect should succeed");
+        client::handshake(&mut connection, "test-client")
+            .await
+            .expect("handshake should succeed");
+
+        let first = send(
+            &mut connection,
+            Request::Install(brainprint_core::protocol::InstallRequest),
+        )
+        .await;
+        let Response::Install(first_install) = first else {
+            panic!("expected Install response, got {first:?}")
+        };
+        assert!(first_install.config_freshly_created);
+        assert!(first_install.db_freshly_created);
+        assert!(global_paths.config_file.is_file());
+        assert!(global_paths.global_db.is_file());
+
+        let second = send(
+            &mut connection,
+            Request::Install(brainprint_core::protocol::InstallRequest),
+        )
+        .await;
+        let Response::Install(second_install) = second else {
+            panic!("expected Install response, got {second:?}")
+        };
+        assert!(!second_install.config_freshly_created);
+        assert!(!second_install.db_freshly_created);
+
+        serve_task.abort();
+    }
+
+    #[tokio::test]
+    async fn init_via_daemon_fresh_non_git_succeeds() {
+        let home = TestHome::create("init-fresh");
+        let global_paths = home.global_paths();
+        let workspace = TestHome::create("init-fresh-workspace");
+        let mut server = Server::bind(&global_paths)
+            .await
+            .expect("bind should succeed");
+        let endpoint = runtime_paths::resolve(&global_paths);
+        let serve_task = tokio::spawn(async move {
+            let _ = server.serve().await;
+        });
+
+        let mut connection = client::connect(&endpoint)
+            .await
+            .expect("connect should succeed");
+        client::handshake(&mut connection, "test-client")
+            .await
+            .expect("handshake should succeed");
+
+        let response = send(
+            &mut connection,
+            Request::Init(brainprint_core::protocol::InitRequest {
+                path: workspace.0.to_string_lossy().into_owned(),
+            }),
+        )
+        .await;
+        let Response::Init(init) = response else {
+            panic!("expected Init response, got {response:?}")
+        };
+        assert!(init.freshly_created);
+        assert!(!init.is_git);
+
+        serve_task.abort();
+    }
+
+    #[tokio::test]
+    async fn init_via_daemon_reinit_preserves_identity() {
+        let home = TestHome::create("init-reinit");
+        let global_paths = home.global_paths();
+        let workspace = TestHome::create("init-reinit-workspace");
+        let mut server = Server::bind(&global_paths)
+            .await
+            .expect("bind should succeed");
+        let endpoint = runtime_paths::resolve(&global_paths);
+        let serve_task = tokio::spawn(async move {
+            let _ = server.serve().await;
+        });
+
+        let mut connection = client::connect(&endpoint)
+            .await
+            .expect("connect should succeed");
+        client::handshake(&mut connection, "test-client")
+            .await
+            .expect("handshake should succeed");
+
+        let request = Request::Init(brainprint_core::protocol::InitRequest {
+            path: workspace.0.to_string_lossy().into_owned(),
+        });
+        let Response::Init(first) = send(&mut connection, request.clone()).await else {
+            panic!("expected Init response")
+        };
+        assert!(first.freshly_created);
+
+        let Response::Init(second) = send(&mut connection, request).await else {
+            panic!("expected Init response")
+        };
+        assert!(!second.freshly_created);
+        assert_eq!(second.project_id, first.project_id);
+        assert_eq!(second.workspace_id, first.workspace_id);
+
+        serve_task.abort();
+    }
+
+    #[tokio::test]
+    async fn init_via_daemon_secondary_worktree_shares_project_id_with_new_workspace_id() {
+        let home = TestHome::create("init-worktree");
+        let global_paths = home.global_paths();
+        let main_repo = TestHome::create("init-worktree-main");
+        real_git_repo(&main_repo.0);
+        let mut server = Server::bind(&global_paths)
+            .await
+            .expect("bind should succeed");
+        let endpoint = runtime_paths::resolve(&global_paths);
+        let serve_task = tokio::spawn(async move {
+            let _ = server.serve().await;
+        });
+
+        let mut connection = client::connect(&endpoint)
+            .await
+            .expect("connect should succeed");
+        client::handshake(&mut connection, "test-client")
+            .await
+            .expect("handshake should succeed");
+
+        let main_response = send(
+            &mut connection,
+            Request::Init(brainprint_core::protocol::InitRequest {
+                path: main_repo.0.to_string_lossy().into_owned(),
+            }),
+        )
+        .await;
+        let Response::Init(main_init) = main_response else {
+            panic!("expected Init response for main repo, got {main_response:?}")
+        };
+        assert!(main_init.is_git);
+
+        let secondary = TestHome::create("init-worktree-secondary");
+        add_worktree(&main_repo.0, &secondary.0, "feature-x");
+
+        let secondary_response = send(
+            &mut connection,
+            Request::Init(brainprint_core::protocol::InitRequest {
+                path: secondary.0.to_string_lossy().into_owned(),
+            }),
+        )
+        .await;
+        let Response::Init(secondary_init) = secondary_response else {
+            panic!("expected Init response for secondary worktree, got {secondary_response:?}")
+        };
+
+        assert_eq!(secondary_init.project_id, main_init.project_id);
+        assert_ne!(secondary_init.workspace_id, main_init.workspace_id);
+
+        let secondary_paths = brainprint_engine::paths::WorkspacePaths::from_root(
+            std::path::PathBuf::from(&secondary_init.workspace_root),
+        );
+        assert!(!secondary_paths.project_db.exists());
+        assert!(secondary_paths.workspace_db.is_file());
+
+        serve_task.abort();
+    }
+
+    #[tokio::test]
+    async fn init_identity_conflict_via_daemon_is_reported_as_conflict_error() {
+        let home = TestHome::create("init-conflict");
+        let global_paths = home.global_paths();
+        let workspace = TestHome::create("init-conflict-workspace");
+        fs::create_dir_all(workspace.0.join(".git")).expect(".git fixture should be created");
+        let mut server = Server::bind(&global_paths)
+            .await
+            .expect("bind should succeed");
+        let endpoint = runtime_paths::resolve(&global_paths);
+        let serve_task = tokio::spawn(async move {
+            let _ = server.serve().await;
+        });
+
+        let mut connection = client::connect(&endpoint)
+            .await
+            .expect("connect should succeed");
+        client::handshake(&mut connection, "test-client")
+            .await
+            .expect("handshake should succeed");
+
+        let first = send(
+            &mut connection,
+            Request::Init(brainprint_core::protocol::InitRequest {
+                path: workspace.0.to_string_lossy().into_owned(),
+            }),
+        )
+        .await;
+        assert!(matches!(first, Response::Init(_)));
+
+        // Tamper with the bound project.db identity to force a mismatch on
+        // the next init of the same Workspace.
+        let workspace_paths = brainprint_engine::paths::WorkspacePaths::from_root(
+            fs::canonicalize(&workspace.0).expect("workspace path should canonicalize"),
+        );
+        {
+            let opened = brainprint_engine::schema::project::open(&workspace_paths.project_db)
+                .expect("project.db should reopen");
+            let other = brainprint_core::ProjectId::generate();
+            opened
+                .connection
+                .execute(
+                    "UPDATE db_meta SET project_uid = ?1 WHERE id = 0",
+                    [other.to_bytes().to_vec()],
+                )
+                .expect("tampering update should succeed");
+        }
+
+        let second = send(
+            &mut connection,
+            Request::Init(brainprint_core::protocol::InitRequest {
+                path: workspace.0.to_string_lossy().into_owned(),
+            }),
+        )
+        .await;
+        let Response::Error(error) = second else {
+            panic!("expected an Error response for the identity mismatch, got {second:?}")
+        };
+        assert_eq!(error.kind, brainprint_core::protocol::ErrorKind::Conflict);
+
+        serve_task.abort();
     }
 }

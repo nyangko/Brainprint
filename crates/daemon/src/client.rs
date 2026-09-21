@@ -112,8 +112,10 @@ pub async fn handshake(
             server_protocol_version,
             client_protocol_version,
         }),
-        Response::Error(ErrorResponse { message }) => Err(ClientError::Rejected(message)),
-        Response::Status(_) => Err(ClientError::UnexpectedResponse),
+        Response::Error(ErrorResponse { message, .. }) => Err(ClientError::Rejected(message)),
+        Response::Status(_) | Response::Install(_) | Response::Init(_) => {
+            Err(ClientError::UnexpectedResponse)
+        }
     }
 }
 
@@ -131,8 +133,10 @@ pub async fn status(connection: &mut ClientConnection) -> Result<StatusResponse,
 
     match response {
         Response::Status(status) => Ok(status),
-        Response::Error(ErrorResponse { message }) => Err(ClientError::Rejected(message)),
-        Response::Handshake(_) => Err(ClientError::UnexpectedResponse),
+        Response::Error(ErrorResponse { message, .. }) => Err(ClientError::Rejected(message)),
+        Response::Handshake(_) | Response::Install(_) | Response::Init(_) => {
+            Err(ClientError::UnexpectedResponse)
+        }
     }
 }
 
