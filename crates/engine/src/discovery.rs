@@ -19,12 +19,20 @@
 //! always excluded, alongside the rest of the deterministic default list.
 //!
 //! Exclusion is deterministic and name-based only (#16 task 2 "Discovery /
-//! Ignore" §1-2): a fixed default directory-name deny list, extendable
-//! per-Workspace via
-//! [`crate::config::WorkspaceConfig::extra_excluded_directory_names`]. No
-//! `.gitignore` parsing or glob engine is implemented here -- that is not
-//! what this task asks for, and would need a new dependency this
-//! deterministic rule does not.
+//! Ignore" §1-2): no `.gitignore` parsing or glob engine is implemented
+//! here. Two tiers (#16 task 2 acceptance correction -- "이름만 보고 모든
+//! 동명 디렉터리를 무조건 제외하는 과잉 규칙은 피하고, project/config
+//! evidence를 이용할 수 있게 구조를 둔다"):
+//! - [`UNCONDITIONAL_EXCLUDED_DIR_NAMES`] (plus
+//!   [`crate::config::WorkspaceConfig::extra_excluded_directory_names`]):
+//!   the name alone is strong evidence -- pruned at every depth.
+//! - [`CONTEXTUAL_EXCLUDED_DIR_NAMES`][]: `build`/`dist`/`target`/`bin`/`obj`
+//!   are common derived-output names but also plausible ordinary source
+//!   directory names, so they are pruned only where their parent
+//!   directory also holds a matching ecosystem project marker (e.g.
+//!   `target` next to `Cargo.toml`, `bin`/`obj` next to a `.csproj`/`.sln`
+//!   file). A `src/target/` or `domain/build/` with no such sibling marker
+//!   is left in the tree: false exclusion is worse than false inclusion.
 //!
 //! Classification never guesses a language for a non-code Resource:
 //! `language: None` is preserved for anything outside the closed
@@ -38,21 +46,51 @@ use crate::{
     resource::{ResourceKind, ResourceLanguage, ResourceRole},
 };
 
-/// Directory names never walked into, regardless of Workspace config (#16
-/// task 2 "기본 제외 후보"). `.brainprint` is Brainprint's own runtime/data
-/// directory, never project-owned source (#16 "Locked 입력").
-const DEFAULT_EXCLUDED_DIR_NAMES: &[&str] = &[
+/// Directory names pruned at every depth, regardless of location -- the
+/// name itself is strong, unambiguous evidence (#16 task 2 "기본 제외
+/// 후보"). `.brainprint` is Brainprint's own runtime/data directory, never
+/// project-owned source (#16 "Locked 입력").
+const UNCONDITIONAL_EXCLUDED_DIR_NAMES: &[&str] = &[
     ".git",
     ".brainprint",
     "node_modules",
     "venv",
     ".venv",
     "virtualenv",
-    "build",
-    "dist",
-    "target",
-    "bin",
-    "obj",
+];
+
+/// A sibling file that counts as project/config evidence for a
+/// [`CONTEXTUAL_EXCLUDED_DIR_NAMES`] candidate.
+enum ProjectMarker {
+    /// Exact, case-sensitive file name.
+    FileName(&'static str),
+    /// File extension, compared case-insensitively.
+    Extension(&'static str),
+}
+
+const RUST_MARKERS: &[ProjectMarker] = &[ProjectMarker::FileName("Cargo.toml")];
+const DOTNET_MARKERS: &[ProjectMarker] = &[
+    ProjectMarker::Extension("csproj"),
+    ProjectMarker::Extension("sln"),
+];
+const BUILD_OUTPUT_MARKERS: &[ProjectMarker] = &[
+    ProjectMarker::FileName("package.json"),
+    ProjectMarker::FileName("pyproject.toml"),
+    ProjectMarker::FileName("setup.py"),
+    ProjectMarker::FileName("setup.cfg"),
+    ProjectMarker::FileName("Cargo.toml"),
+];
+
+/// Directory names that are common derived-output locations but are also
+/// plausible ordinary source directory names. Pruned only when the
+/// candidate's *parent* directory also contains one of the listed sibling
+/// markers for that ecosystem (#16 task 2 acceptance correction).
+const CONTEXTUAL_EXCLUDED_DIR_NAMES: &[(&str, &[ProjectMarker])] = &[
+    ("target", RUST_MARKERS),
+    ("bin", DOTNET_MARKERS),
+    ("obj", DOTNET_MARKERS),
+    ("build", BUILD_OUTPUT_MARKERS),
+    ("dist", BUILD_OUTPUT_MARKERS),
 ];
 
 const TEST_DIR_NAMES: &[&str] = &["test", "tests", "__tests__", "spec", "specs"];
@@ -123,14 +161,16 @@ impl Error for DiscoveryError {
     }
 }
 
-/// Walk `workspace_root`, applying the deterministic default exclusion
-/// list plus `config.extra_excluded_directory_names`, and classify every
-/// retained entry. Results are ordered by `path_key` for determinism.
+/// Walk `workspace_root`, applying the unconditional exclusion list plus
+/// `config.extra_excluded_directory_names` (both location-independent, per
+/// explicit user/deterministic-name evidence), the marker-gated contextual
+/// exclusion list, and classify every retained entry. Results are ordered
+/// by `path_key` for determinism.
 pub fn enumerate_resources(
     workspace_root: &Path,
     config: &WorkspaceConfig,
 ) -> Result<Vec<DiscoveredResource>, DiscoveryError> {
-    let excluded_names: HashSet<&str> = DEFAULT_EXCLUDED_DIR_NAMES
+    let excluded_names: HashSet<&str> = UNCONDITIONAL_EXCLUDED_DIR_NAMES
         .iter()
         .copied()
         .chain(
@@ -164,7 +204,7 @@ fn walk(
         .map_err(|source| io_error(current, source))?;
     entries.sort_by_key(fs::DirEntry::file_name);
 
-    for entry in entries {
+    for entry in &entries {
         let file_type = entry
             .file_type()
             .map_err(|source| io_error(&entry.path(), source))?;
@@ -179,7 +219,8 @@ fn walk(
 
         if file_type.is_dir() {
             let name = entry.file_name();
-            if excluded_names.contains(name.to_string_lossy().as_ref()) {
+            let name = name.to_string_lossy();
+            if is_excluded_dir(&name, &entries, excluded_names) {
                 continue;
             }
             out.push(DiscoveredResource {
@@ -204,6 +245,34 @@ fn walk(
         // directory Resource and is skipped.
     }
     Ok(())
+}
+
+/// Whether directory `name` should be pruned: unconditionally (strong
+/// name evidence, incl. user config), or -- for a
+/// [`CONTEXTUAL_EXCLUDED_DIR_NAMES`] candidate -- only when `siblings`
+/// (its parent directory's own entries) contain a matching project marker.
+fn is_excluded_dir(name: &str, siblings: &[fs::DirEntry], excluded_names: &HashSet<&str>) -> bool {
+    if excluded_names.contains(name) {
+        return true;
+    }
+    CONTEXTUAL_EXCLUDED_DIR_NAMES
+        .iter()
+        .find(|(candidate, _)| *candidate == name)
+        .is_some_and(|(_, markers)| sibling_has_marker(siblings, markers))
+}
+
+fn sibling_has_marker(siblings: &[fs::DirEntry], markers: &[ProjectMarker]) -> bool {
+    siblings.iter().any(|entry| {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        markers.iter().any(|marker| match marker {
+            ProjectMarker::FileName(expected) => name.as_ref() == *expected,
+            ProjectMarker::Extension(extension) => Path::new(name.as_ref())
+                .extension()
+                .and_then(|found| found.to_str())
+                .is_some_and(|found| found.eq_ignore_ascii_case(extension)),
+        })
+    })
 }
 
 fn io_error(path: &Path, source: std::io::Error) -> DiscoveryError {
@@ -361,20 +430,19 @@ mod tests {
     }
 
     #[test]
-    fn default_excluded_directories_are_pruned_entirely() {
-        let dir = TestDir::create("default-exclusion");
+    fn unconditional_excluded_directories_are_pruned_entirely() {
+        let dir = TestDir::create("unconditional-exclusion");
         dir.write("src/lib.rs", "");
         dir.write("node_modules/pkg/index.js", "");
         dir.write(".git/HEAD", "");
         dir.write(".brainprint/data/index.db", "");
         dir.write("venv/lib/site.py", "");
-        dir.write("target/debug/build.log", "");
 
         let resources = enumerate_resources(dir.path(), &WorkspaceConfig::default())
             .expect("enumeration should succeed");
 
         assert!(contains(&resources, "src/lib.rs"));
-        for excluded in ["node_modules", ".git", ".brainprint", "venv", "target"] {
+        for excluded in ["node_modules", ".git", ".brainprint", "venv"] {
             assert!(
                 !resources
                     .iter()
@@ -382,6 +450,88 @@ mod tests {
                 "{excluded} must be fully pruned"
             );
         }
+    }
+
+    #[test]
+    fn contextual_derived_output_dirs_are_pruned_only_with_matching_project_marker() {
+        let dir = TestDir::create("contextual-exclusion-positive");
+        // Rust workspace root: target/ next to Cargo.toml.
+        dir.write("Cargo.toml", "");
+        dir.write("target/debug/build.log", "");
+        // .NET project: bin/, obj/ next to a .csproj.
+        dir.write("App.csproj", "");
+        dir.write("bin/Debug/app.dll", "");
+        dir.write("obj/Debug/app.cache", "");
+        // JS project: build/, dist/ next to package.json.
+        dir.write("web/package.json", "");
+        dir.write("web/build/bundle.js", "");
+        dir.write("web/dist/bundle.min.js", "");
+
+        let resources = enumerate_resources(dir.path(), &WorkspaceConfig::default())
+            .expect("enumeration should succeed");
+
+        for excluded in ["target", "bin", "obj", "web/build", "web/dist"] {
+            assert!(
+                !resources
+                    .iter()
+                    .any(|resource| resource.path_rel.starts_with(excluded)),
+                "{excluded} with a matching project marker must be pruned"
+            );
+        }
+        assert!(contains(&resources, "Cargo.toml"));
+        assert!(contains(&resources, "App.csproj"));
+        assert!(contains(&resources, "web/package.json"));
+    }
+
+    #[test]
+    fn contextual_derived_output_dirs_without_a_project_marker_are_not_excluded() {
+        let dir = TestDir::create("contextual-exclusion-negative");
+        // No Cargo.toml/.csproj/.sln/package.json anywhere: these are
+        // plausible ordinary source subtrees, not derived output.
+        dir.write("src/target/generated.rs", "");
+        dir.write("domain/build/model.rs", "");
+        dir.write("app/bin/launcher.py", "");
+        dir.write("lib/dist/index.py", "");
+        dir.write("service/obj/mapper.py", "");
+
+        let resources = enumerate_resources(dir.path(), &WorkspaceConfig::default())
+            .expect("enumeration should succeed");
+
+        for retained in [
+            "src/target/generated.rs",
+            "domain/build/model.rs",
+            "app/bin/launcher.py",
+            "lib/dist/index.py",
+            "service/obj/mapper.py",
+        ] {
+            assert!(
+                contains(&resources, retained),
+                "{retained} has no sibling project marker and must not be excluded \
+                 by name alone -- false exclusion must be avoided"
+            );
+        }
+    }
+
+    #[test]
+    fn user_extra_excluded_names_prune_regardless_of_location_or_markers() {
+        let dir = TestDir::create("user-exclusion-any-location");
+        dir.write("nested/deep/vendor/thirdparty.rs", "");
+        dir.write("nested/deep/kept.rs", "");
+
+        let mut config = WorkspaceConfig::default();
+        config
+            .extra_excluded_directory_names
+            .push("vendor".to_owned());
+
+        let resources =
+            enumerate_resources(dir.path(), &config).expect("enumeration should succeed");
+
+        assert!(contains(&resources, "nested/deep/kept.rs"));
+        assert!(
+            !resources
+                .iter()
+                .any(|resource| resource.path_rel.contains("vendor"))
+        );
     }
 
     #[test]
