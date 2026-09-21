@@ -4,6 +4,7 @@ pub mod config;
 pub mod db;
 pub mod discovery;
 pub mod generation;
+pub mod identity;
 pub mod init;
 pub mod paths;
 pub mod registry;

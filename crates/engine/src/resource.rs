@@ -25,6 +25,29 @@ use rusqlite::{Connection, OptionalExtension, Row, params};
 
 use crate::{db::DbOpenError, schema};
 
+/// Internal `path_key` namespace a DELETED tombstone is moved into.
+///
+/// `resource.path_key` is UNIQUE, which would otherwise make a preserved
+/// DELETED tombstone block a brand-new Resource at the same path -- and the
+/// only way to "resolve" that without a namespace would be to resurrect the
+/// old `ResourceId`, which #16 task 3 explicitly forbids. Moving the
+/// tombstone's *internal* key into this namespace keeps ACTIVE path
+/// uniqueness enforced by the same UNIQUE constraint while leaving the
+/// user-facing historical [`Resource::path_rel`] and the stable
+/// [`ResourceId`] untouched.
+///
+/// The leading `/` is what makes the namespace collision-free: a discovered
+/// `path_key` is always Workspace-root-relative and never starts with `/`
+/// (see [`crate::discovery`]).
+pub const TOMBSTONE_PATH_KEY_PREFIX: &str = "/tombstone/";
+
+/// Whether `path_key` is an internal tombstone key rather than a real
+/// current Workspace path. Never confuse it with [`Resource::path_rel`].
+#[must_use]
+pub fn is_tombstone_path_key(path_key: &str) -> bool {
+    path_key.starts_with(TOMBSTONE_PATH_KEY_PREFIX)
+}
+
 /// Physical filesystem kind of a Resource (#13 task 6 §6 `kind` column).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResourceKind {
@@ -391,6 +414,24 @@ impl ResourceStore {
             .transpose()
     }
 
+    /// Look up the ACTIVE Resource currently occupying `path_key`. DELETED
+    /// tombstones are never returned (#16 task 3: a deleted Resource must
+    /// not surface as a current lookup result).
+    pub fn get_active_by_path_key(
+        &self,
+        path_key: &str,
+    ) -> Result<Option<Resource>, ResourceError> {
+        self.connection
+            .query_row(
+                &format!("{SELECT_RESOURCE_SQL} WHERE r.path_key = ?1 AND r.state = 'ACTIVE'"),
+                params![path_key],
+                raw_resource_from_row,
+            )
+            .optional()?
+            .map(decode_resource)
+            .transpose()
+    }
+
     /// List every Resource row, ordered by `path_key` for deterministic
     /// results.
     pub fn list(&self) -> Result<Vec<Resource>, ResourceError> {
@@ -399,6 +440,105 @@ impl ResourceStore {
             .prepare(&format!("{SELECT_RESOURCE_SQL} ORDER BY r.path_key"))?;
         let rows = statement.query_map([], raw_resource_from_row)?;
         rows.map(|raw| decode_resource(raw?)).collect()
+    }
+
+    /// List the current (ACTIVE) Resource inventory, ordered by `path_key`.
+    pub fn list_active(&self) -> Result<Vec<Resource>, ResourceError> {
+        let mut statement = self.connection.prepare(&format!(
+            "{SELECT_RESOURCE_SQL} WHERE r.state = 'ACTIVE' ORDER BY r.path_key"
+        ))?;
+        let rows = statement.query_map([], raw_resource_from_row)?;
+        rows.map(|raw| decode_resource(raw?)).collect()
+    }
+
+    /// Overwrite every mutable column of the row identified by
+    /// `resource.id`. The stable id is the key and is never rewritten.
+    /// Returns `false` if no row carries that id.
+    pub fn update_resource(&self, resource: &Resource) -> Result<bool, ResourceError> {
+        let container_local_id = resource
+            .container_resource_id
+            .map(|container_id| {
+                self.local_id(container_id)?
+                    .ok_or(ResourceError::UnknownContainer { container_id })
+            })
+            .transpose()?;
+
+        let changed = self.connection.execute(
+            "UPDATE resource SET \
+             path_rel = ?2, path_key = ?3, kind = ?4, role = ?5, language = ?6, \
+             size = ?7, mtime_ns = ?8, fingerprint = ?9, content_hash = ?10, \
+             state = ?11, resource_revision = ?12, generated_kind = ?13, \
+             container_resource_id = ?14 \
+             WHERE uid = ?1",
+            params![
+                resource.id.to_bytes().to_vec(),
+                resource.path_rel,
+                resource.path_key,
+                resource.kind.as_str(),
+                resource.role.as_str(),
+                resource.language.map(ResourceLanguage::as_str),
+                resource.size_bytes,
+                resource.mtime_ns,
+                resource.fingerprint,
+                resource.content_hash,
+                resource.state.as_str(),
+                resource.resource_revision,
+                resource.generated_kind,
+                container_local_id,
+            ],
+        )?;
+        Ok(changed > 0)
+    }
+
+    /// Refresh only the cheap filesystem metadata of an existing Resource,
+    /// leaving `fingerprint`/`resource_revision` untouched (#16 task 3: an
+    /// mtime-only change is never a semantic change, but recording it keeps
+    /// the metadata fast path usable next time).
+    pub fn refresh_metadata(
+        &self,
+        id: ResourceId,
+        size_bytes: i64,
+        mtime_ns: i64,
+    ) -> Result<bool, ResourceError> {
+        let changed = self.connection.execute(
+            "UPDATE resource SET size = ?2, mtime_ns = ?3 WHERE uid = ?1",
+            params![id.to_bytes().to_vec(), size_bytes, mtime_ns],
+        )?;
+        Ok(changed > 0)
+    }
+
+    /// Transition an ACTIVE Resource to DELETED, preserving its stable id
+    /// and its user-facing historical `path_rel` while moving its internal
+    /// `path_key` into [`TOMBSTONE_PATH_KEY_PREFIX`] so the freed path stays
+    /// available to a future Resource.
+    ///
+    /// Idempotent: an already-DELETED row matches nothing and is returned as
+    /// `false`, so repeated deletes never bump the revision again.
+    pub fn mark_deleted(
+        &self,
+        id: ResourceId,
+        resource_revision: &str,
+    ) -> Result<bool, ResourceError> {
+        let changed = self.connection.execute(
+            "UPDATE resource SET \
+             state = 'DELETED', \
+             resource_revision = ?2, \
+             path_key = ?3 || hex(uid) || '/' || path_key \
+             WHERE uid = ?1 AND state = 'ACTIVE'",
+            params![
+                id.to_bytes().to_vec(),
+                resource_revision,
+                TOMBSTONE_PATH_KEY_PREFIX
+            ],
+        )?;
+        Ok(changed > 0)
+    }
+
+    /// Begin a transaction on this store's connection. Every subsequent
+    /// call on this same `ResourceStore` runs inside it until the returned
+    /// transaction is committed or dropped (rollback).
+    pub fn transaction(&self) -> Result<rusqlite::Transaction<'_>, ResourceError> {
+        Ok(self.connection.unchecked_transaction()?)
     }
 
     fn local_id(&self, id: ResourceId) -> Result<Option<i64>, ResourceError> {

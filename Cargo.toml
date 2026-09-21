@@ -19,6 +19,7 @@ brainprint-engine = { path = "crates/engine" }
 rusqlite = { version = "0.40", features = ["bundled"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+sha2 = "0.10"
 tokio = { version = "1", default-features = false }
 toml = "1.1"
 uuid = { version = "1", features = ["v4"] }
