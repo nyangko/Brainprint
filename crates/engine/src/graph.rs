@@ -750,6 +750,63 @@ pub(crate) fn delete_relations_from(
     )?)
 }
 
+/// Edges leaving `source`, for a caller that owns the connection
+/// (#17 task 8's query surface).
+pub(crate) fn relations_from(
+    connection: &Connection,
+    source: &GraphEndpoint,
+    kind: Option<RelationKind>,
+) -> Result<Vec<Relation>, GraphError> {
+    relations_by(connection, Direction::From, source, kind)
+}
+
+/// Edges arriving at `target`. The same rows read through the target
+/// index -- there is no reverse row to read instead.
+pub(crate) fn relations_to(
+    connection: &Connection,
+    target: &GraphEndpoint,
+    kind: Option<RelationKind>,
+) -> Result<Vec<Relation>, GraphError> {
+    relations_by(connection, Direction::To, target, kind)
+}
+
+/// The `graph_entity` row id for an endpoint, or `None` if the endpoint
+/// has never been used. The id stays inside the crate.
+pub(crate) fn entity_id_of(
+    connection: &Connection,
+    endpoint: &GraphEndpoint,
+) -> Result<Option<i64>, GraphError> {
+    entity_id(connection, endpoint)
+}
+
+/// A total, stable order over canonical endpoints.
+///
+/// Identity, never a row id: the same two endpoints sort the same way in
+/// any `index.db`, on any machine, in any order of discovery. Candidate
+/// bounding (#17 task 7) and query result ordering (task 8) share it so
+/// that they cannot disagree about what "first" means.
+#[must_use]
+pub(crate) fn endpoint_sort_key(endpoint: &GraphEndpoint) -> (u8, Vec<u8>) {
+    match endpoint {
+        GraphEndpoint::Resource(id) => (0, id.to_bytes().to_vec()),
+        GraphEndpoint::Symbol(id) => (1, id.to_bytes().to_vec()),
+        GraphEndpoint::External(external) => (
+            2,
+            format!(
+                "{}\u{1f}{}\u{1f}{}",
+                external.package_identity,
+                external.module_path.as_deref().unwrap_or_default(),
+                external.symbol_name.as_deref().unwrap_or_default()
+            )
+            .into_bytes(),
+        ),
+        GraphEndpoint::Domain(domain) => (
+            3,
+            format!("{}\u{1f}{}", domain.kind, domain.normalized_identity).into_bytes(),
+        ),
+    }
+}
+
 /// Which end of the edge a lookup is anchored on.
 #[derive(Debug, Clone, Copy)]
 enum Direction {

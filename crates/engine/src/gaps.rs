@@ -41,7 +41,7 @@ use brainprint_core::{ResourceId, SymbolId};
 use crate::{
     calls::{CallOutcome, ResolvedCall, UnresolvedCall},
     evidence::OccurrenceRef,
-    graph::{GraphEndpoint, RelationKind},
+    graph::{self, GraphEndpoint, RelationKind},
     imports::{ImportOutcome, ResolvedImport, UnresolvedImport},
     symbol::OccurrenceKind,
     types::{ResolvedTypeReference, TypeEvidence, TypeOutcome, UnresolvedType},
@@ -269,25 +269,9 @@ impl UnresolvedEvidence {
 
 /// A total, stable order over canonical endpoints, so the same
 /// candidate set is cut the same way on every machine and every run.
+/// One definition, shared with the query surface (#17 task 8).
 fn candidate_order(endpoint: &GraphEndpoint) -> (u8, Vec<u8>) {
-    match endpoint {
-        GraphEndpoint::Resource(id) => (0, id.to_bytes().to_vec()),
-        GraphEndpoint::Symbol(id) => (1, id.to_bytes().to_vec()),
-        GraphEndpoint::External(external) => (
-            2,
-            format!(
-                "{}\u{1f}{}\u{1f}{}",
-                external.package_identity,
-                external.module_path.as_deref().unwrap_or_default(),
-                external.symbol_name.as_deref().unwrap_or_default()
-            )
-            .into_bytes(),
-        ),
-        GraphEndpoint::Domain(domain) => (
-            3,
-            format!("{}\u{1f}{}", domain.kind, domain.normalized_identity).into_bytes(),
-        ),
-    }
+    graph::endpoint_sort_key(endpoint)
 }
 
 /// One persisted unresolved reference, read back.
