@@ -555,7 +555,12 @@ pub(crate) fn check_publishable(
 /// transaction back. A grant that is neither published nor rolled back
 /// would leave evidence on a BUILDING generation, which is what the
 /// STABLE-only rule exists to prevent.
-pub(crate) struct PublicationGrant {
+///
+/// The type is public because it appears in the signatures a publication
+/// path calls (#17 task 3), but it stays sealed: its fields are private
+/// and [`grant_publication`] is the only way to obtain one, so nothing
+/// outside this crate can manufacture the permission.
+pub struct PublicationGrant {
     generation_id: i64,
     basis_workspace_revision: String,
 }

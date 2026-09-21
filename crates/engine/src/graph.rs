@@ -655,6 +655,29 @@ pub(crate) fn insert_relation(
     Ok(changed == 1)
 }
 
+/// The local row id of one edge, for a caller that must reference it
+/// from another table -- an Occurrence binding (#17 task 3). The id stays
+/// inside the crate; nothing public hands one out.
+pub(crate) fn relation_row_id(
+    connection: &Connection,
+    key: &RelationKey<'_>,
+) -> Result<Option<i64>, GraphError> {
+    let (Some(source), Some(target)) = (
+        entity_id(connection, key.source)?,
+        entity_id(connection, key.target)?,
+    ) else {
+        return Ok(None);
+    };
+    Ok(connection
+        .query_row(
+            "SELECT id FROM relation \
+             WHERE kind = ?1 AND source_entity_id = ?2 AND target_entity_id = ?3",
+            params![key.kind.as_str(), source, target],
+            |row| row.get(0),
+        )
+        .optional()?)
+}
+
 pub(crate) fn relation(
     connection: &Connection,
     key: &RelationKey<'_>,

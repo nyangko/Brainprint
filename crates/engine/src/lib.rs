@@ -4,6 +4,7 @@ pub mod component;
 pub mod config;
 pub mod db;
 pub mod discovery;
+pub mod evidence;
 pub mod extract;
 pub mod generation;
 pub mod graph;
