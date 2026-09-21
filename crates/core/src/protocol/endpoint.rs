@@ -15,7 +15,9 @@
 //! (#13 task 4 §3-4) -- duplicated rather than shared across that
 //! boundary, same tradeoff as the FNV-1a hash below.
 
-use std::path::{Path, PathBuf};
+#[cfg(unix)]
+use std::path::Path;
+use std::path::PathBuf;
 
 /// A resolved daemon IPC endpoint plus its singleton lock file path.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -142,10 +144,8 @@ fn user_home_dir() -> Option<PathBuf> {
         return Some(PathBuf::from(profile));
     }
 
-    let drive = non_empty_env("HOMEDRIVE")?;
-    let path = non_empty_env("HOMEPATH")?;
-    let mut combined = std::ffi::OsString::from(drive);
-    combined.push(path);
+    let mut combined = non_empty_env("HOMEDRIVE")?;
+    combined.push(non_empty_env("HOMEPATH")?);
     Some(PathBuf::from(combined))
 }
 

@@ -7,9 +7,6 @@ use std::{
     path::{Path, PathBuf},
 };
 
-#[cfg(windows)]
-use std::ffi::OsString;
-
 /// Error returned when Brainprint cannot resolve a required platform path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PathResolutionError {
@@ -150,10 +147,8 @@ fn user_home_dir() -> Option<PathBuf> {
         return Some(PathBuf::from(profile));
     }
 
-    let drive = non_empty_env("HOMEDRIVE")?;
-    let path = non_empty_env("HOMEPATH")?;
-    let mut combined = OsString::from(drive);
-    combined.push(path);
+    let mut combined = non_empty_env("HOMEDRIVE")?;
+    combined.push(non_empty_env("HOMEPATH")?);
     Some(PathBuf::from(combined))
 }
 
