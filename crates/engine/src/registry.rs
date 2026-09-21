@@ -68,13 +68,64 @@ const GLOBAL_MIGRATIONS: &[Migration] = &[
             CREATE INDEX idx_project_git_lineage_project ON project_git_lineage (project_uid);
         ",
     },
+    Migration {
+        version: 3,
+        name: "add_registry_active_missing_last_seen",
+        sql: "
+            ALTER TABLE project_registry ADD COLUMN state TEXT NOT NULL DEFAULT 'ACTIVE';
+            ALTER TABLE project_registry ADD COLUMN last_seen_at TEXT;
+            ALTER TABLE workspace_registry ADD COLUMN state TEXT NOT NULL DEFAULT 'ACTIVE';
+            ALTER TABLE workspace_registry ADD COLUMN last_seen_at TEXT;
+        ",
+    },
 ];
+
+/// Whether the registry believes this identity's locator is currently
+/// reachable/valid (#13 task 6 §2, #15 task 11). I1 has no background
+/// scanner -- this is only ever set as a direct result of an explicit
+/// reopen/recovery observation (see `brainprint-engine::init`), never
+/// inferred from a locator string alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RegistryState {
+    Active,
+    Missing,
+}
+
+impl RegistryState {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Active => "ACTIVE",
+            Self::Missing => "MISSING",
+        }
+    }
+
+    fn parse(raw: &str) -> Result<Self, RegistryError> {
+        match raw {
+            "ACTIVE" => Ok(Self::Active),
+            "MISSING" => Ok(Self::Missing),
+            other => Err(RegistryError::UnknownState {
+                raw: other.to_owned(),
+            }),
+        }
+    }
+}
+
+impl fmt::Display for RegistryState {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
 
 /// A registered Project: its stable identity and current project-home locator.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectRegistryEntry {
     pub project_id: ProjectId,
     pub home_locator: PathBuf,
+    pub state: RegistryState,
+    /// Millisecond-epoch text of the last successful observation. `None`
+    /// only for a row created before this column existed (never written
+    /// by this module).
+    pub last_seen_at: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -88,6 +139,8 @@ pub struct WorkspaceRegistryEntry {
     /// Whether this Workspace is its Project's current project-home
     /// (the sole owner of that Project's `project.db`; see #13 task 5 §4).
     pub is_project_home: bool,
+    pub state: RegistryState,
+    pub last_seen_at: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -142,6 +195,10 @@ pub enum RegistryError {
         existing_project_id: ProjectId,
         requested_project_id: ProjectId,
     },
+    /// A `state` column held a value this module never writes.
+    UnknownState {
+        raw: String,
+    },
 }
 
 impl fmt::Display for RegistryError {
@@ -188,6 +245,7 @@ impl fmt::Display for RegistryError {
                  (requested project {requested_project_id})",
                 git_common_dir.display()
             ),
+            Self::UnknownState { raw } => write!(formatter, "unknown registry state {raw:?}"),
         }
     }
 }
@@ -201,7 +259,8 @@ impl Error for RegistryError {
             | Self::UnknownWorkspace { .. }
             | Self::ProjectLocatorConflict { .. }
             | Self::WorkspaceIdentityConflict { .. }
-            | Self::GitLineageConflict { .. } => None,
+            | Self::GitLineageConflict { .. }
+            | Self::UnknownState { .. } => None,
         }
     }
 }
@@ -238,6 +297,12 @@ impl GlobalRegistry {
     /// `home_locator`, this returns [`RegistryError::ProjectLocatorConflict`]
     /// rather than moving it. Use [`Self::update_project_locator`] for a
     /// deliberate relocation.
+    ///
+    /// A matching re-registration is treated as a fresh observation (#15
+    /// task 11): it marks the entry [`RegistryState::Active`] and touches
+    /// `last_seen_at`, so a Project previously marked
+    /// [`RegistryState::Missing`] recovers automatically the next time it
+    /// is genuinely seen again.
     pub fn register_project(
         &self,
         project_id: ProjectId,
@@ -245,7 +310,7 @@ impl GlobalRegistry {
     ) -> Result<ProjectRegistryEntry, RegistryError> {
         if let Some(existing) = self.get_project(project_id)? {
             if existing.home_locator == home_locator {
-                return Ok(existing);
+                return self.mark_project_active(project_id);
             }
             return Err(RegistryError::ProjectLocatorConflict {
                 project_id,
@@ -256,11 +321,13 @@ impl GlobalRegistry {
 
         let now = db::now_millis_text();
         self.connection.execute(
-            "INSERT INTO project_registry (project_uid, home_locator, created_at, updated_at) \
-             VALUES (?1, ?2, ?3, ?3)",
+            "INSERT INTO project_registry \
+             (project_uid, home_locator, state, last_seen_at, created_at, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, ?4, ?4)",
             params![
                 project_id.to_bytes().to_vec(),
                 locator_to_text(home_locator),
+                RegistryState::Active.as_str(),
                 now
             ],
         )?;
@@ -268,9 +335,57 @@ impl GlobalRegistry {
         Ok(ProjectRegistryEntry {
             project_id,
             home_locator: home_locator.to_path_buf(),
+            state: RegistryState::Active,
+            last_seen_at: Some(now.clone()),
             created_at: now.clone(),
             updated_at: now,
         })
+    }
+
+    /// Mark a Project as currently observed/reachable, touching
+    /// `last_seen_at` (#15 task 11).
+    pub fn mark_project_active(
+        &self,
+        project_id: ProjectId,
+    ) -> Result<ProjectRegistryEntry, RegistryError> {
+        let now = db::now_millis_text();
+        let changed = self.connection.execute(
+            "UPDATE project_registry SET state = ?1, last_seen_at = ?2, updated_at = ?2 \
+             WHERE project_uid = ?3",
+            params![
+                RegistryState::Active.as_str(),
+                now,
+                project_id.to_bytes().to_vec()
+            ],
+        )?;
+        if changed == 0 {
+            return Err(RegistryError::UnknownProject { project_id });
+        }
+        self.get_project(project_id)?
+            .ok_or(RegistryError::UnknownProject { project_id })
+    }
+
+    /// Mark a Project's home locator as not currently reachable (#15 task
+    /// 11: e.g. the project-home `project.db` is missing). `last_seen_at`
+    /// is left untouched -- it keeps recording the last time the Project
+    /// genuinely *was* seen, not this negative observation.
+    pub fn mark_project_missing(
+        &self,
+        project_id: ProjectId,
+    ) -> Result<ProjectRegistryEntry, RegistryError> {
+        let changed = self.connection.execute(
+            "UPDATE project_registry SET state = ?1, updated_at = ?2 WHERE project_uid = ?3",
+            params![
+                RegistryState::Missing.as_str(),
+                db::now_millis_text(),
+                project_id.to_bytes().to_vec()
+            ],
+        )?;
+        if changed == 0 {
+            return Err(RegistryError::UnknownProject { project_id });
+        }
+        self.get_project(project_id)?
+            .ok_or(RegistryError::UnknownProject { project_id })
     }
 
     /// Look up a Project by its stable identity.
@@ -280,33 +395,54 @@ impl GlobalRegistry {
     ) -> Result<Option<ProjectRegistryEntry>, RegistryError> {
         self.connection
             .query_row(
-                "SELECT home_locator, created_at, updated_at FROM project_registry WHERE project_uid = ?1",
+                "SELECT home_locator, state, last_seen_at, created_at, updated_at \
+                 FROM project_registry WHERE project_uid = ?1",
                 params![project_id.to_bytes().to_vec()],
                 |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                    ))
+                },
+            )
+            .optional()?
+            .map(
+                |(home_locator, state_raw, last_seen_at, created_at, updated_at)| {
                     Ok(ProjectRegistryEntry {
                         project_id,
-                        home_locator: PathBuf::from(row.get::<_, String>(0)?),
-                        created_at: row.get(1)?,
-                        updated_at: row.get(2)?,
+                        home_locator: PathBuf::from(home_locator),
+                        state: RegistryState::parse(&state_raw)?,
+                        last_seen_at,
+                        created_at,
+                        updated_at,
                     })
                 },
             )
-            .optional()
-            .map_err(RegistryError::from)
+            .transpose()
     }
 
     /// Explicitly relocate an already-registered Project's home locator,
-    /// keeping its identity unchanged (#13 task 5 §5).
+    /// keeping its identity unchanged (#13 task 5 §5). Also marks the
+    /// entry [`RegistryState::Active`] with a fresh `last_seen_at`: a
+    /// deliberate relocation is itself a confirmed-live observation (#15
+    /// task 11's directory-move repair path).
     pub fn update_project_locator(
         &self,
         project_id: ProjectId,
         new_locator: &Path,
     ) -> Result<ProjectRegistryEntry, RegistryError> {
+        let now = db::now_millis_text();
         let changed = self.connection.execute(
-            "UPDATE project_registry SET home_locator = ?1, updated_at = ?2 WHERE project_uid = ?3",
+            "UPDATE project_registry \
+             SET home_locator = ?1, state = ?2, last_seen_at = ?3, updated_at = ?3 \
+             WHERE project_uid = ?4",
             params![
                 locator_to_text(new_locator),
-                db::now_millis_text(),
+                RegistryState::Active.as_str(),
+                now,
                 project_id.to_bytes().to_vec()
             ],
         )?;
@@ -326,6 +462,10 @@ impl GlobalRegistry {
     /// locator, this returns [`RegistryError::WorkspaceIdentityConflict`]
     /// instead of merging — the same WorkspaceID found at two different
     /// active locators must never be silently treated as one move.
+    ///
+    /// A matching re-registration marks the entry [`RegistryState::Active`]
+    /// with a fresh `last_seen_at` (#15 task 11), same as
+    /// [`Self::register_project`].
     pub fn register_workspace(
         &self,
         workspace_id: WorkspaceId,
@@ -339,7 +479,7 @@ impl GlobalRegistry {
 
         if let Some(existing) = self.get_workspace(workspace_id)? {
             if existing.project_id == project_id && existing.locator == locator {
-                return Ok(existing);
+                return self.mark_workspace_active(workspace_id);
             }
             return Err(RegistryError::WorkspaceIdentityConflict {
                 workspace_id,
@@ -353,13 +493,15 @@ impl GlobalRegistry {
         let now = db::now_millis_text();
         self.connection.execute(
             "INSERT INTO workspace_registry \
-             (workspace_uid, project_uid, locator, is_project_home, created_at, updated_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?5)",
+             (workspace_uid, project_uid, locator, is_project_home, state, last_seen_at, \
+              created_at, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6, ?6)",
             params![
                 workspace_id.to_bytes().to_vec(),
                 project_id.to_bytes().to_vec(),
                 locator_to_text(locator),
                 is_project_home,
+                RegistryState::Active.as_str(),
                 now
             ],
         )?;
@@ -369,9 +511,55 @@ impl GlobalRegistry {
             project_id,
             locator: locator.to_path_buf(),
             is_project_home,
+            state: RegistryState::Active,
+            last_seen_at: Some(now.clone()),
             created_at: now.clone(),
             updated_at: now,
         })
+    }
+
+    /// Mark a Workspace as currently observed/reachable, touching
+    /// `last_seen_at` (#15 task 11).
+    pub fn mark_workspace_active(
+        &self,
+        workspace_id: WorkspaceId,
+    ) -> Result<WorkspaceRegistryEntry, RegistryError> {
+        let now = db::now_millis_text();
+        let changed = self.connection.execute(
+            "UPDATE workspace_registry SET state = ?1, last_seen_at = ?2, updated_at = ?2 \
+             WHERE workspace_uid = ?3",
+            params![
+                RegistryState::Active.as_str(),
+                now,
+                workspace_id.to_bytes().to_vec()
+            ],
+        )?;
+        if changed == 0 {
+            return Err(RegistryError::UnknownWorkspace { workspace_id });
+        }
+        self.get_workspace(workspace_id)?
+            .ok_or(RegistryError::UnknownWorkspace { workspace_id })
+    }
+
+    /// Mark a Workspace's locator as not currently reachable (#15 task
+    /// 11). `last_seen_at` is left untouched.
+    pub fn mark_workspace_missing(
+        &self,
+        workspace_id: WorkspaceId,
+    ) -> Result<WorkspaceRegistryEntry, RegistryError> {
+        let changed = self.connection.execute(
+            "UPDATE workspace_registry SET state = ?1, updated_at = ?2 WHERE workspace_uid = ?3",
+            params![
+                RegistryState::Missing.as_str(),
+                db::now_millis_text(),
+                workspace_id.to_bytes().to_vec()
+            ],
+        )?;
+        if changed == 0 {
+            return Err(RegistryError::UnknownWorkspace { workspace_id });
+        }
+        self.get_workspace(workspace_id)?
+            .ok_or(RegistryError::UnknownWorkspace { workspace_id })
     }
 
     /// Look up a Workspace by its stable identity.
@@ -381,36 +569,66 @@ impl GlobalRegistry {
     ) -> Result<Option<WorkspaceRegistryEntry>, RegistryError> {
         self.connection
             .query_row(
-                "SELECT project_uid, locator, is_project_home, created_at, updated_at \
+                "SELECT project_uid, locator, is_project_home, state, last_seen_at, \
+                        created_at, updated_at \
                  FROM workspace_registry WHERE workspace_uid = ?1",
                 params![workspace_id.to_bytes().to_vec()],
                 |row| {
+                    Ok((
+                        row.get::<_, Vec<u8>>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, bool>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, String>(6)?,
+                    ))
+                },
+            )
+            .optional()?
+            .map(
+                |(
+                    project_uid,
+                    locator,
+                    is_project_home,
+                    state_raw,
+                    last_seen_at,
+                    created_at,
+                    updated_at,
+                )| {
                     Ok(WorkspaceRegistryEntry {
                         workspace_id,
-                        project_id: project_id_from_blob(row.get(0)?),
-                        locator: PathBuf::from(row.get::<_, String>(1)?),
-                        is_project_home: row.get(2)?,
-                        created_at: row.get(3)?,
-                        updated_at: row.get(4)?,
+                        project_id: project_id_from_blob(project_uid),
+                        locator: PathBuf::from(locator),
+                        is_project_home,
+                        state: RegistryState::parse(&state_raw)?,
+                        last_seen_at,
+                        created_at,
+                        updated_at,
                     })
                 },
             )
-            .optional()
-            .map_err(RegistryError::from)
+            .transpose()
     }
 
     /// Explicitly relocate an already-registered Workspace's locator,
-    /// keeping its identity unchanged.
+    /// keeping its identity unchanged. Also marks the entry
+    /// [`RegistryState::Active`] with a fresh `last_seen_at` (#15 task 11's
+    /// directory-move repair path).
     pub fn update_workspace_locator(
         &self,
         workspace_id: WorkspaceId,
         new_locator: &Path,
     ) -> Result<WorkspaceRegistryEntry, RegistryError> {
+        let now = db::now_millis_text();
         let changed = self.connection.execute(
-            "UPDATE workspace_registry SET locator = ?1, updated_at = ?2 WHERE workspace_uid = ?3",
+            "UPDATE workspace_registry \
+             SET locator = ?1, state = ?2, last_seen_at = ?3, updated_at = ?3 \
+             WHERE workspace_uid = ?4",
             params![
                 locator_to_text(new_locator),
-                db::now_millis_text(),
+                RegistryState::Active.as_str(),
+                now,
                 workspace_id.to_bytes().to_vec()
             ],
         )?;
@@ -430,36 +648,78 @@ impl GlobalRegistry {
         let text = locator_to_text(locator);
 
         let mut project_statement = self.connection.prepare(
-            "SELECT project_uid, home_locator, created_at, updated_at \
+            "SELECT project_uid, home_locator, state, last_seen_at, created_at, updated_at \
              FROM project_registry WHERE home_locator = ?1",
         )?;
         let projects = project_statement
             .query_map(params![text], |row| {
-                Ok(ProjectRegistryEntry {
-                    project_id: project_id_from_blob(row.get(0)?),
-                    home_locator: PathBuf::from(row.get::<_, String>(1)?),
-                    created_at: row.get(2)?,
-                    updated_at: row.get(3)?,
-                })
+                Ok((
+                    row.get::<_, Vec<u8>>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                ))
             })?
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .map(
+                |(project_uid, home_locator, state_raw, last_seen_at, created_at, updated_at)| {
+                    Ok(ProjectRegistryEntry {
+                        project_id: project_id_from_blob(project_uid),
+                        home_locator: PathBuf::from(home_locator),
+                        state: RegistryState::parse(&state_raw)?,
+                        last_seen_at,
+                        created_at,
+                        updated_at,
+                    })
+                },
+            )
+            .collect::<Result<Vec<_>, RegistryError>>()?;
 
         let mut workspace_statement = self.connection.prepare(
-            "SELECT workspace_uid, project_uid, is_project_home, created_at, updated_at \
+            "SELECT workspace_uid, project_uid, is_project_home, state, last_seen_at, \
+                    created_at, updated_at \
              FROM workspace_registry WHERE locator = ?1",
         )?;
         let workspaces = workspace_statement
             .query_map(params![text], |row| {
-                Ok(WorkspaceRegistryEntry {
-                    workspace_id: workspace_id_from_blob(row.get(0)?),
-                    project_id: project_id_from_blob(row.get(1)?),
-                    locator: locator.to_path_buf(),
-                    is_project_home: row.get(2)?,
-                    created_at: row.get(3)?,
-                    updated_at: row.get(4)?,
-                })
+                Ok((
+                    row.get::<_, Vec<u8>>(0)?,
+                    row.get::<_, Vec<u8>>(1)?,
+                    row.get::<_, bool>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                ))
             })?
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .map(
+                |(
+                    workspace_uid,
+                    project_uid,
+                    is_project_home,
+                    state_raw,
+                    last_seen_at,
+                    created_at,
+                    updated_at,
+                )| {
+                    Ok(WorkspaceRegistryEntry {
+                        workspace_id: workspace_id_from_blob(workspace_uid),
+                        project_id: project_id_from_blob(project_uid),
+                        locator: locator.to_path_buf(),
+                        is_project_home,
+                        state: RegistryState::parse(&state_raw)?,
+                        last_seen_at,
+                        created_at,
+                        updated_at,
+                    })
+                },
+            )
+            .collect::<Result<Vec<_>, RegistryError>>()?;
 
         Ok(LocatorCandidates {
             projects,
@@ -742,7 +1002,14 @@ mod tests {
             .register_project(project_id, home)
             .expect("re-registering with the same locator should be idempotent");
 
-        assert_eq!(first, second);
+        // Idempotent means "no new row and the same identity/locator" --
+        // not "no observable change at all". #15 task 11: a matching
+        // re-registration is itself an observation, so it refreshes
+        // state/last_seen_at/updated_at.
+        assert_eq!(first.project_id, second.project_id);
+        assert_eq!(first.home_locator, second.home_locator);
+        assert_eq!(first.created_at, second.created_at);
+        assert_eq!(second.state, RegistryState::Active);
     }
 
     #[test]
@@ -883,6 +1150,170 @@ mod tests {
             error,
             RegistryError::GitLineageConflict { existing_project_id, .. }
             if existing_project_id == first_project
+        ));
+    }
+
+    #[test]
+    fn fresh_registrations_start_active_with_last_seen_set() {
+        let dir = TestDir::create("fresh-active");
+        let registry = GlobalRegistry::open(&dir.db_path()).expect("registry should open");
+        let project_id = ProjectId::generate();
+        let workspace_id = WorkspaceId::generate();
+
+        let project = registry
+            .register_project(project_id, Path::new("/repo/main"))
+            .expect("project should register");
+        assert_eq!(project.state, RegistryState::Active);
+        assert!(project.last_seen_at.is_some());
+
+        let workspace = registry
+            .register_workspace(workspace_id, project_id, Path::new("/repo/main"), true)
+            .expect("workspace should register");
+        assert_eq!(workspace.state, RegistryState::Active);
+        assert!(workspace.last_seen_at.is_some());
+    }
+
+    #[test]
+    fn project_missing_then_active_updates_state_and_preserves_then_refreshes_last_seen() {
+        let dir = TestDir::create("project-missing-active");
+        let registry = GlobalRegistry::open(&dir.db_path()).expect("registry should open");
+        let project_id = ProjectId::generate();
+        let created = registry
+            .register_project(project_id, Path::new("/repo/main"))
+            .expect("project should register");
+        let seen_when_created = created.last_seen_at.clone();
+
+        let missing = registry
+            .mark_project_missing(project_id)
+            .expect("marking missing should succeed");
+        assert_eq!(missing.state, RegistryState::Missing);
+        // last_seen_at records the last time it was genuinely seen, so a
+        // negative observation must not touch it.
+        assert_eq!(missing.last_seen_at, seen_when_created);
+
+        let active = registry
+            .mark_project_active(project_id)
+            .expect("marking active should succeed");
+        assert_eq!(active.state, RegistryState::Active);
+        assert!(active.last_seen_at.is_some());
+    }
+
+    #[test]
+    fn workspace_missing_then_active_updates_state() {
+        let dir = TestDir::create("workspace-missing-active");
+        let registry = GlobalRegistry::open(&dir.db_path()).expect("registry should open");
+        let project_id = ProjectId::generate();
+        let workspace_id = WorkspaceId::generate();
+        registry
+            .register_project(project_id, Path::new("/repo/main"))
+            .expect("project should register");
+        registry
+            .register_workspace(workspace_id, project_id, Path::new("/repo/main"), true)
+            .expect("workspace should register");
+
+        let missing = registry
+            .mark_workspace_missing(workspace_id)
+            .expect("marking missing should succeed");
+        assert_eq!(missing.state, RegistryState::Missing);
+
+        let active = registry
+            .mark_workspace_active(workspace_id)
+            .expect("marking active should succeed");
+        assert_eq!(active.state, RegistryState::Active);
+    }
+
+    #[test]
+    fn reregistering_a_missing_project_marks_it_active_again() {
+        let dir = TestDir::create("rediscover-project");
+        let registry = GlobalRegistry::open(&dir.db_path()).expect("registry should open");
+        let project_id = ProjectId::generate();
+        registry
+            .register_project(project_id, Path::new("/repo/main"))
+            .expect("project should register");
+        registry
+            .mark_project_missing(project_id)
+            .expect("marking missing should succeed");
+
+        let rediscovered = registry
+            .register_project(project_id, Path::new("/repo/main"))
+            .expect("re-registering the same locator should succeed");
+        assert_eq!(rediscovered.state, RegistryState::Active);
+    }
+
+    #[test]
+    fn reregistering_a_missing_workspace_marks_it_active_again() {
+        let dir = TestDir::create("rediscover-workspace");
+        let registry = GlobalRegistry::open(&dir.db_path()).expect("registry should open");
+        let project_id = ProjectId::generate();
+        let workspace_id = WorkspaceId::generate();
+        registry
+            .register_project(project_id, Path::new("/repo/main"))
+            .expect("project should register");
+        registry
+            .register_workspace(workspace_id, project_id, Path::new("/repo/main"), true)
+            .expect("workspace should register");
+        registry
+            .mark_workspace_missing(workspace_id)
+            .expect("marking missing should succeed");
+
+        let rediscovered = registry
+            .register_workspace(workspace_id, project_id, Path::new("/repo/main"), true)
+            .expect("re-registering the same locator should succeed");
+        assert_eq!(rediscovered.state, RegistryState::Active);
+    }
+
+    #[test]
+    fn locator_update_marks_the_entry_active() {
+        let dir = TestDir::create("locator-update-active");
+        let registry = GlobalRegistry::open(&dir.db_path()).expect("registry should open");
+        let project_id = ProjectId::generate();
+        let workspace_id = WorkspaceId::generate();
+        registry
+            .register_project(project_id, Path::new("/repo/main"))
+            .expect("project should register");
+        registry
+            .register_workspace(workspace_id, project_id, Path::new("/repo/main"), true)
+            .expect("workspace should register");
+        registry
+            .mark_project_missing(project_id)
+            .expect("marking missing should succeed");
+        registry
+            .mark_workspace_missing(workspace_id)
+            .expect("marking missing should succeed");
+
+        let moved_project = registry
+            .update_project_locator(project_id, Path::new("/repo/moved"))
+            .expect("project relocation should succeed");
+        assert_eq!(moved_project.state, RegistryState::Active);
+
+        let moved_workspace = registry
+            .update_workspace_locator(workspace_id, Path::new("/repo/moved"))
+            .expect("workspace relocation should succeed");
+        assert_eq!(moved_workspace.state, RegistryState::Active);
+    }
+
+    #[test]
+    fn marking_an_unknown_project_or_workspace_is_rejected() {
+        let dir = TestDir::create("mark-unknown");
+        let registry = GlobalRegistry::open(&dir.db_path()).expect("registry should open");
+        let unknown_project = ProjectId::generate();
+        let unknown_workspace = WorkspaceId::generate();
+
+        assert!(matches!(
+            registry.mark_project_missing(unknown_project),
+            Err(RegistryError::UnknownProject { project_id }) if project_id == unknown_project
+        ));
+        assert!(matches!(
+            registry.mark_project_active(unknown_project),
+            Err(RegistryError::UnknownProject { project_id }) if project_id == unknown_project
+        ));
+        assert!(matches!(
+            registry.mark_workspace_missing(unknown_workspace),
+            Err(RegistryError::UnknownWorkspace { workspace_id }) if workspace_id == unknown_workspace
+        ));
+        assert!(matches!(
+            registry.mark_workspace_active(unknown_workspace),
+            Err(RegistryError::UnknownWorkspace { workspace_id }) if workspace_id == unknown_workspace
         ));
     }
 }

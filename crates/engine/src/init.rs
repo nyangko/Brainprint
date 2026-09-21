@@ -46,6 +46,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     config::{self, ConfigError},
     db::{self, DbKind, DbOpenError},
+    generation::{GenerationError, GenerationStore},
     paths::{GlobalPaths, WorkspacePaths},
     registry::{GlobalRegistry, RegistryError},
     schema,
@@ -128,6 +129,8 @@ pub enum InitError {
         project_id: ProjectId,
         home_locator: PathBuf,
     },
+    /// Reconciling orphaned `BUILDING` generations (#15 task 11) failed.
+    Generation(GenerationError),
 }
 
 impl fmt::Display for InitError {
@@ -191,6 +194,7 @@ impl fmt::Display for InitError {
                  (registry locator); explicit recovery is required (#15 task 11)",
                 home_locator.display()
             ),
+            Self::Generation(source) => write!(formatter, "{source}"),
         }
     }
 }
@@ -205,6 +209,7 @@ impl Error for InitError {
             Self::Db(source) => Some(source),
             Self::Registry(source) => Some(source),
             Self::Sqlite(source) => Some(source),
+            Self::Generation(source) => Some(source),
             Self::MissingParent { .. }
             | Self::UnsupportedIdentityFormat { .. }
             | Self::ProjectIdentityMismatch { .. }
@@ -236,6 +241,12 @@ impl From<RegistryError> for InitError {
 impl From<rusqlite::Error> for InitError {
     fn from(source: rusqlite::Error) -> Self {
         Self::Sqlite(source)
+    }
+}
+
+impl From<GenerationError> for InitError {
+    fn from(source: GenerationError) -> Self {
+        Self::Generation(source)
     }
 }
 
@@ -277,13 +288,18 @@ pub fn init_workspace(
     let registry = GlobalRegistry::open(&global_paths.global_db)?;
 
     if let Some(existing) = read_identity_file(&workspace_paths.identity_file)? {
-        // #15 task 7 rule: resuming a Workspace never re-derives its role
-        // from Git evidence -- the registry's recorded project-home
-        // locator is the single source of truth for "is this the
-        // project-home or a secondary worktree".
+        // #15 task 7/11 rule: resuming a Workspace never re-derives its
+        // role from Git evidence -- the registry's durable
+        // `is_project_home` flag for *this WorkspaceID* is the single
+        // source of truth for "is this the project-home or a secondary
+        // worktree". This must not be re-derived by comparing the
+        // project's home_locator to the current workspace_root: once the
+        // project-home directory itself moves (#15 task 11), that
+        // comparison would wrongly stop matching and misroute a
+        // project-home reopen as a secondary worktree.
         let is_project_home = registry
-            .get_project(existing.project_id)?
-            .map(|entry| entry.home_locator == workspace_root)
+            .get_workspace(existing.workspace_id)?
+            .map(|entry| entry.is_project_home)
             // No registry entry yet only happens mid-way through a
             // partially-failed fresh project-home init (the registry write
             // comes last); resuming that completes it as project-home.
@@ -351,6 +367,41 @@ fn finish_project_home(
     workspace_paths: &WorkspacePaths,
     registry: &GlobalRegistry,
 ) -> Result<InitOutcome, InitError> {
+    if !freshly_created && !workspace_paths.project_db.is_file() {
+        // #15 task 11: resuming an *existing* project-home identity whose
+        // project.db has disappeared must never be papered over by
+        // `schema::project::open` silently creating a fresh empty one --
+        // that would be exactly the durable-knowledge loss task 7/11
+        // forbid. A first-ever init (`freshly_created`) is the only case
+        // where project.db legitimately does not exist yet.
+        //
+        // But only when the registry *agrees* this locator is the
+        // project-home: if it instead points elsewhere, this is a
+        // workspace.toml copied to a second location without its DBs
+        // (the real project.db is intact at the registered locator) --
+        // a duplicate/conflict, not a missing store. Falling through lets
+        // the normal registration path below reject it as a conflict
+        // (false split over false merge), instead of misreporting it as
+        // "missing".
+        let registered_here = registry
+            .get_project(identity.project_id)?
+            .map(|entry| entry.home_locator == workspace_root)
+            .unwrap_or(true);
+        if registered_here {
+            let _ = registry.mark_project_missing(identity.project_id);
+            return Err(InitError::ProjectHomeMissing {
+                project_id: identity.project_id,
+                home_locator: workspace_root,
+            });
+        }
+        // Registry disagrees this is the current home locator -- probe
+        // the conflict *before* creating any local project.db here, so a
+        // duplicate/copy is rejected without leaving a stray empty DB
+        // behind. `register_project_with_move_repair` is idempotent, so
+        // calling it again later in the normal flow below is harmless.
+        register_project_with_move_repair(registry, identity.project_id, &workspace_root)?;
+    }
+
     config::bootstrap_workspace_config(workspace_paths)?;
 
     let project_db = schema::project::open(&workspace_paths.project_db)?;
@@ -371,9 +422,15 @@ fn finish_project_home(
         identity.project_id,
         identity.workspace_id,
     )?;
+    // #15 task 11 / #4 task 5 §8: a BUILDING generation left over from a
+    // process that never reopened this index.db again is never promoted
+    // to STABLE just because it's the only thing here -- abort it
+    // explicitly. Never touches the existing stable pointer.
+    GenerationStore::from_connection(index_db.connection).reconcile_orphan_generations()?;
 
-    registry.register_project(identity.project_id, &workspace_root)?;
-    registry.register_workspace(
+    register_project_with_move_repair(registry, identity.project_id, &workspace_root)?;
+    register_workspace_with_move_repair(
+        registry,
         identity.workspace_id,
         identity.project_id,
         &workspace_root,
@@ -424,8 +481,10 @@ fn finish_secondary_worktree(
         identity.project_id,
         identity.workspace_id,
     )?;
+    GenerationStore::from_connection(index_db.connection).reconcile_orphan_generations()?;
 
-    registry.register_workspace(
+    register_workspace_with_move_repair(
+        registry,
         identity.workspace_id,
         identity.project_id,
         &workspace_root,
@@ -441,10 +500,63 @@ fn finish_secondary_worktree(
     })
 }
 
+/// [`GlobalRegistry::register_project`] as-is, unless it hits a
+/// [`RegistryError::ProjectLocatorConflict`] whose *old* locator no longer
+/// exists on disk at all (#15 task 11): that is strong, direct evidence of
+/// a plain directory move rather than a copy/duplicate, so the identity is
+/// kept and the registry's locator is repaired instead of rejected. Any
+/// other conflict (the old locator still exists -- ambiguous, possibly a
+/// live duplicate) is rejected as before: false split/conflict over false
+/// merge.
+fn register_project_with_move_repair(
+    registry: &GlobalRegistry,
+    project_id: ProjectId,
+    new_locator: &Path,
+) -> Result<(), InitError> {
+    match registry.register_project(project_id, new_locator) {
+        Ok(_) => Ok(()),
+        Err(RegistryError::ProjectLocatorConflict {
+            existing_locator, ..
+        }) if !existing_locator.exists() => {
+            registry.update_project_locator(project_id, new_locator)?;
+            Ok(())
+        }
+        Err(other) => Err(other.into()),
+    }
+}
+
+/// [`GlobalRegistry::register_workspace`]'s counterpart to
+/// [`register_project_with_move_repair`]: only repairs when the conflict
+/// is against the *same* Project (this Workspace, not a different one
+/// colliding on the same stable ID) and the old locator is confirmed gone.
+fn register_workspace_with_move_repair(
+    registry: &GlobalRegistry,
+    workspace_id: WorkspaceId,
+    project_id: ProjectId,
+    new_locator: &Path,
+    is_project_home: bool,
+) -> Result<(), InitError> {
+    match registry.register_workspace(workspace_id, project_id, new_locator, is_project_home) {
+        Ok(_) => Ok(()),
+        Err(RegistryError::WorkspaceIdentityConflict {
+            existing_project_id,
+            existing_locator,
+            ..
+        }) if existing_project_id == project_id && !existing_locator.exists() => {
+            registry.update_workspace_locator(workspace_id, new_locator)?;
+            Ok(())
+        }
+        Err(other) => Err(other.into()),
+    }
+}
+
 /// Confirm `project_id`'s project-home `project.db` actually exists and is
 /// bound to `project_id`, without ever creating it (#15 task 7: a missing
 /// project-home store is an explicit missing/recovery-required result, not
-/// something to paper over with a fresh empty DB).
+/// something to paper over with a fresh empty DB). On success, marks the
+/// Project [`crate::registry::RegistryState::Active`]; on a missing store,
+/// marks it [`crate::registry::RegistryState::Missing`] (#15 task 11) so
+/// the registry reflects what reopen actually observed.
 fn verify_project_home_store(
     registry: &GlobalRegistry,
     project_id: ProjectId,
@@ -455,6 +567,7 @@ fn verify_project_home_store(
 
     let home_paths = WorkspacePaths::from_root(&project_entry.home_locator);
     if !home_paths.project_db.is_file() {
+        let _ = registry.mark_project_missing(project_id);
         return Err(InitError::ProjectHomeMissing {
             project_id,
             home_locator: project_entry.home_locator,
@@ -472,6 +585,7 @@ fn verify_project_home_store(
         Some(bytes) => {
             let found = stable_id_from_blob::<ProjectId>(&bytes, DbKind::Project)?;
             if found == project_id {
+                registry.mark_project_active(project_id)?;
                 Ok(())
             } else {
                 Err(InitError::ProjectIdentityMismatch {
@@ -480,10 +594,13 @@ fn verify_project_home_store(
                 })
             }
         }
-        None => Err(InitError::ProjectHomeMissing {
-            project_id,
-            home_locator: project_entry.home_locator,
-        }),
+        None => {
+            let _ = registry.mark_project_missing(project_id);
+            Err(InitError::ProjectHomeMissing {
+                project_id,
+                home_locator: project_entry.home_locator,
+            })
+        }
     }
 }
 
@@ -1384,5 +1501,186 @@ mod tests {
         assert_ne!(first_outcome.project_id, second_outcome.project_id);
         assert!(first_outcome.freshly_created);
         assert!(second_outcome.freshly_created);
+    }
+
+    // --- #15 task 11: restart/reopen identity/DB mismatch recovery ---
+
+    use crate::registry::RegistryState;
+
+    #[test]
+    fn restart_reidentifies_project_home_and_secondary_worktree_without_new_ids() {
+        let global_home = TestDir::create("restart-global");
+        let paths = global_paths(&global_home);
+        let main_repo = TestDir::create("restart-main");
+        real_git_repo(&main_repo);
+
+        let main_before =
+            init_workspace(main_repo.path(), &paths).expect("main init should succeed");
+
+        let secondary = TestDir::create("restart-secondary");
+        add_worktree(&main_repo, &secondary, "feature-restart");
+        let secondary_before =
+            init_workspace(secondary.path(), &paths).expect("secondary init should succeed");
+
+        // Simulate a daemon restart: every value below is freshly derived
+        // from what init_workspace reads back off disk (workspace.toml,
+        // global.db, project.db/workspace.db/index.db) -- nothing
+        // in-process is reused across these two calls.
+        let main_after = init_workspace(main_repo.path(), &paths)
+            .expect("main reopen after restart should succeed");
+        let secondary_after = init_workspace(secondary.path(), &paths)
+            .expect("secondary reopen after restart should succeed");
+
+        assert_eq!(main_after.project_id, main_before.project_id);
+        assert_eq!(main_after.workspace_id, main_before.workspace_id);
+        assert!(!main_after.freshly_created);
+
+        assert_eq!(secondary_after.project_id, secondary_before.project_id);
+        assert_eq!(secondary_after.workspace_id, secondary_before.workspace_id);
+        assert_eq!(secondary_after.project_id, main_before.project_id);
+        assert!(!secondary_after.freshly_created);
+    }
+
+    #[test]
+    fn project_home_resume_with_missing_project_db_is_rejected_not_recreated() {
+        let global_home = TestDir::create("home-missing-global");
+        let workspace = TestDir::create("home-missing-workspace");
+        make_git_repo(&workspace);
+        let paths = global_paths(&global_home);
+        let outcome =
+            init_workspace(workspace.path(), &paths).expect("initial init should succeed");
+
+        let workspace_paths = WorkspacePaths::from_root(&outcome.workspace_root);
+        fs::remove_file(&workspace_paths.project_db)
+            .expect("project.db fixture removal should succeed");
+
+        let error = init_workspace(workspace.path(), &paths)
+            .expect_err("resuming with a missing project.db must be rejected");
+        assert!(matches!(error, InitError::ProjectHomeMissing { .. }));
+        assert!(
+            !workspace_paths.project_db.exists(),
+            "project.db must never be silently recreated"
+        );
+
+        let registry = GlobalRegistry::open(&paths.global_db).expect("registry should open");
+        let project = registry
+            .get_project(outcome.project_id)
+            .expect("lookup should succeed")
+            .expect("project should still be registered");
+        assert_eq!(project.state, RegistryState::Missing);
+    }
+
+    #[test]
+    fn directory_move_repairs_registry_locator_and_preserves_identity() {
+        let global_home = TestDir::create("move-global");
+        let paths = global_paths(&global_home);
+        let old_workspace = TestDir::create("move-old");
+        make_git_repo(&old_workspace);
+        let outcome =
+            init_workspace(old_workspace.path(), &paths).expect("initial init should succeed");
+
+        // Simulate `mv old new`: physically move the directory (including
+        // .brainprint) to a location the registry has never seen. The old
+        // path is now genuinely gone -- strong evidence of a move, not a
+        // copy.
+        let new_path = env::temp_dir().join(format!(
+            "brainprint-init-move-new-{}-{}",
+            process::id(),
+            NEXT_TEMP_DIR.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::rename(old_workspace.path(), &new_path).expect("directory move should succeed");
+
+        let moved_outcome = init_workspace(&new_path, &paths)
+            .expect("init at the moved location must repair the locator, not conflict");
+        assert_eq!(moved_outcome.project_id, outcome.project_id);
+        assert_eq!(moved_outcome.workspace_id, outcome.workspace_id);
+        assert!(!moved_outcome.freshly_created);
+
+        let registry = GlobalRegistry::open(&paths.global_db).expect("registry should open");
+        let project = registry
+            .get_project(outcome.project_id)
+            .expect("lookup should succeed")
+            .expect("project should still be registered");
+        assert_eq!(project.home_locator, moved_outcome.workspace_root);
+        assert_eq!(project.state, RegistryState::Active);
+
+        let workspace = registry
+            .get_workspace(outcome.workspace_id)
+            .expect("lookup should succeed")
+            .expect("workspace should still be registered");
+        assert_eq!(workspace.locator, moved_outcome.workspace_root);
+
+        let _ = fs::remove_dir_all(&new_path);
+    }
+
+    #[test]
+    fn wrong_db_kind_is_rejected_on_reopen() {
+        let global_home = TestDir::create("wrong-kind-global");
+        let workspace = TestDir::create("wrong-kind-workspace");
+        let paths = global_paths(&global_home);
+        let outcome =
+            init_workspace(workspace.path(), &paths).expect("initial init should succeed");
+        let workspace_paths = WorkspacePaths::from_root(&outcome.workspace_root);
+
+        {
+            let connection = Connection::open(&workspace_paths.workspace_db)
+                .expect("workspace.db should open directly");
+            connection
+                .execute(
+                    "UPDATE db_meta SET db_kind = ?1 WHERE id = 0",
+                    params!["index"],
+                )
+                .expect("tampering update should succeed");
+        }
+
+        let error = init_workspace(workspace.path(), &paths)
+            .expect_err("a workspace.db tampered to claim db_kind=index must be rejected");
+        assert!(matches!(
+            error,
+            InitError::Db(DbOpenError::KindMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn reopen_reconciles_an_orphan_building_generation_without_exposing_it_as_current() {
+        use crate::generation::{GenerationState, GenerationStore};
+
+        let global_home = TestDir::create("orphan-generation-global");
+        let workspace = TestDir::create("orphan-generation-workspace");
+        let paths = global_paths(&global_home);
+        let outcome =
+            init_workspace(workspace.path(), &paths).expect("initial init should succeed");
+        let workspace_paths = WorkspacePaths::from_root(&outcome.workspace_root);
+
+        let orphan_id = {
+            let store =
+                GenerationStore::open(&workspace_paths.index_db).expect("index.db should reopen");
+            store
+                .bootstrap_clock("rev-1")
+                .expect("bootstrap should succeed");
+            let generation = store
+                .begin_generation("rev-1")
+                .expect("begin should succeed");
+            // Left BUILDING here -- simulates a crash before publish/abort.
+            generation.id
+        };
+
+        // This is exactly what a restarted daemon's next reopen does.
+        init_workspace(workspace.path(), &paths).expect("reopen should succeed");
+
+        let store =
+            GenerationStore::open(&workspace_paths.index_db).expect("index.db should reopen");
+        assert!(
+            store
+                .current_stable()
+                .expect("current lookup should succeed")
+                .is_none(),
+            "an orphan BUILDING generation must never be exposed as current"
+        );
+        let reconciled = store
+            .get_generation(orphan_id)
+            .expect("lookup should succeed")
+            .expect("the orphan generation should still exist, just no longer BUILDING");
+        assert_eq!(reconciled.state, GenerationState::Aborted);
     }
 }

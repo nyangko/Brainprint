@@ -202,9 +202,16 @@ impl GenerationStore {
     /// Open (creating/migrating if needed) the `index.db` at `path`.
     pub fn open(path: &Path) -> Result<Self, GenerationError> {
         let opened = schema::index::open(path)?;
-        Ok(Self {
-            connection: opened.connection,
-        })
+        Ok(Self::from_connection(opened.connection))
+    }
+
+    /// Wrap an already-opened `index.db` connection (#15 task 11: lets a
+    /// caller that already opened/verified `index.db` -- e.g.
+    /// `engine::init`'s reopen path -- reuse that same connection for
+    /// orphan-generation reconciliation instead of opening a second one).
+    #[must_use]
+    pub fn from_connection(connection: Connection) -> Self {
+        Self { connection }
     }
 
     /// Create `workspace_clock`'s single row if it does not already exist.
@@ -318,6 +325,37 @@ impl GenerationStore {
             aborted_reason: Some(reason.to_owned()),
             ..generation
         })
+    }
+
+    /// Abort every `BUILDING` generation left over from a previous process
+    /// (#15 task 11 / #4 task 5 §8: a restart discards process-local build
+    /// state, and a `BUILDING` row is never promoted to `STABLE` just
+    /// because nothing is actively building it anymore -- it is explicitly
+    /// marked `ABORTED`/recovery-required instead). Safe to call on every
+    /// reopen: an `index.db` with no orphaned `BUILDING` row returns an
+    /// empty list. Never touches `workspace_clock.stable_generation_id` --
+    /// the existing stable generation, if any, is left exactly as it was.
+    pub fn reconcile_orphan_generations(&self) -> Result<Vec<GenerationRecord>, GenerationError> {
+        let building_ids: Vec<i64> = {
+            let mut statement = self
+                .connection
+                .prepare("SELECT id FROM generation WHERE state = ?1")?;
+            statement
+                .query_map(params![GenerationState::Building.as_str()], |row| {
+                    row.get(0)
+                })?
+                .collect::<Result<_, _>>()?
+        };
+
+        building_ids
+            .into_iter()
+            .map(|generation_id| {
+                self.abort_generation(
+                    generation_id,
+                    "orphaned: no active build session after reopen",
+                )
+            })
+            .collect()
     }
 
     /// Publish a `BUILDING` generation to `STABLE`, atomically swapping
@@ -791,5 +829,77 @@ mod tests {
             .set_current_workspace_revision("rev-2")
             .expect_err("setting the revision without a bootstrapped clock must be rejected");
         assert!(matches!(error, GenerationError::ClockNotBootstrapped));
+    }
+
+    #[test]
+    fn reconcile_aborts_orphaned_building_generations_without_touching_stable() {
+        let dir = TestDir::create("reconcile-orphan");
+        let mut store = GenerationStore::open(&dir.db_path()).expect("store should open");
+        store.bootstrap_clock("rev-1").expect("bootstrap ok");
+
+        let stable = store.begin_generation("rev-1").expect("begin stable ok");
+        store
+            .publish_stable(stable.id)
+            .expect("publish should succeed");
+
+        // Simulates a daemon crash mid-build: this generation never
+        // published and is now orphaned.
+        let orphan = store.begin_generation("rev-1").expect("begin orphan ok");
+
+        let reconciled = store
+            .reconcile_orphan_generations()
+            .expect("reconcile should succeed");
+        assert_eq!(reconciled.len(), 1);
+        assert_eq!(reconciled[0].id, orphan.id);
+        assert_eq!(reconciled[0].state, GenerationState::Aborted);
+
+        let reloaded_orphan = store
+            .get_generation(orphan.id)
+            .expect("lookup should succeed")
+            .expect("orphan generation should still exist");
+        assert_eq!(reloaded_orphan.state, GenerationState::Aborted);
+
+        let current = store
+            .current_stable()
+            .expect("current lookup should succeed")
+            .expect("the original stable generation must remain current");
+        assert_eq!(current.id, stable.id);
+    }
+
+    #[test]
+    fn reconcile_is_a_no_op_when_nothing_is_orphaned() {
+        let dir = TestDir::create("reconcile-clean");
+        let store = GenerationStore::open(&dir.db_path()).expect("store should open");
+
+        let reconciled = store
+            .reconcile_orphan_generations()
+            .expect("reconcile should succeed on an empty index.db");
+        assert!(reconciled.is_empty());
+    }
+
+    #[test]
+    fn reopen_then_reconcile_never_exposes_orphan_building_as_current() {
+        let dir = TestDir::create("reopen-reconcile");
+        {
+            let store = GenerationStore::open(&dir.db_path()).expect("store should open");
+            store.bootstrap_clock("rev-1").expect("bootstrap ok");
+            store.begin_generation("rev-1").expect("begin ok");
+            // Process "crashes" here: never published, never reconciled.
+        }
+
+        let reopened = GenerationStore::open(&dir.db_path()).expect("store should reopen");
+        assert!(
+            reopened
+                .current_stable()
+                .expect("current lookup should succeed")
+                .is_none(),
+            "an orphaned BUILDING generation must never be current, reconciled or not"
+        );
+
+        let reconciled = reopened
+            .reconcile_orphan_generations()
+            .expect("reconcile should succeed");
+        assert_eq!(reconciled.len(), 1);
+        assert_eq!(reconciled[0].state, GenerationState::Aborted);
     }
 }

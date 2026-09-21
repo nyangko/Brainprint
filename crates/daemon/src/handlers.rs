@@ -72,8 +72,10 @@ fn map_registry_error(error: RegistryError) -> ErrorResponse {
         },
         // `Open`/`Sqlite` can carry a raw rusqlite error inside a
         // `DbOpenError::MigrationFailed`-style variant; never forward that
-        // text over the wire.
-        RegistryError::Open(_) | RegistryError::Sqlite(_) => {
+        // text over the wire. `UnknownState` means a `state` column holds
+        // a value this module never wrote -- internal data corruption,
+        // not something the user can act on.
+        RegistryError::Open(_) | RegistryError::Sqlite(_) | RegistryError::UnknownState { .. } => {
             log_internal_error("install/init", &error);
             generic_internal_error("storage")
         }
@@ -103,7 +105,9 @@ fn map_init_error(error: InitError) -> ErrorResponse {
                 kind: ErrorKind::Conflict,
                 message: registry_error.to_string(),
             },
-            RegistryError::Open(_) | RegistryError::Sqlite(_) => {
+            RegistryError::Open(_)
+            | RegistryError::Sqlite(_)
+            | RegistryError::UnknownState { .. } => {
                 log_internal_error("init", &error);
                 generic_internal_error("storage")
             }
@@ -117,8 +121,13 @@ fn map_init_error(error: InitError) -> ErrorResponse {
                 message: error.to_string(),
             }
         }
-        // Can carry a raw rusqlite/toml-encode error -- generic only.
-        InitError::EncodeIdentity { .. } | InitError::Db(_) | InitError::Sqlite(_) => {
+        // Can carry a raw rusqlite/toml-encode error, or (Generation) an
+        // orphan-generation-reconcile failure that may itself wrap one --
+        // generic only.
+        InitError::EncodeIdentity { .. }
+        | InitError::Db(_)
+        | InitError::Sqlite(_)
+        | InitError::Generation(_) => {
             log_internal_error("init", &error);
             generic_internal_error("storage")
         }
