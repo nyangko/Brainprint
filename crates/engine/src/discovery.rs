@@ -170,16 +170,7 @@ pub fn enumerate_resources(
     workspace_root: &Path,
     config: &WorkspaceConfig,
 ) -> Result<Vec<DiscoveredResource>, DiscoveryError> {
-    let excluded_names: HashSet<&str> = UNCONDITIONAL_EXCLUDED_DIR_NAMES
-        .iter()
-        .copied()
-        .chain(
-            config
-                .extra_excluded_directory_names
-                .iter()
-                .map(String::as_str),
-        )
-        .collect();
+    let excluded_names = excluded_name_set(config);
 
     let mut resources = Vec::new();
     walk(
@@ -190,6 +181,84 @@ pub fn enumerate_resources(
     )?;
     resources.sort_by(|a, b| a.path_key.cmp(&b.path_key));
     Ok(resources)
+}
+
+/// Whether `path_rel` lies under any excluded directory, for a caller that
+/// has one path rather than a whole walk -- a watcher event (#16 task 5).
+///
+/// Applies the same two-tier rule as [`enumerate_resources`], component by
+/// component, so watcher noise from `.git`, `node_modules`, or an
+/// evidenced build output directory never reaches the index. The final
+/// component is checked too: its kind may be unknowable (the entry may
+/// already be gone), and a *file* named `node_modules` or `target` is not
+/// worth a stat call to rescue. A parent directory that cannot be read
+/// yields no marker evidence, which -- as in [`enumerate_resources`] --
+/// means "not excluded": false exclusion is worse than false inclusion.
+pub fn is_ignored_path(workspace_root: &Path, path_rel: &str, config: &WorkspaceConfig) -> bool {
+    let excluded_names = excluded_name_set(config);
+
+    let mut parent = workspace_root.to_path_buf();
+    for name in path_rel.split('/').filter(|name| !name.is_empty()) {
+        let siblings: Vec<fs::DirEntry> = fs::read_dir(&parent)
+            .map(|entries| entries.filter_map(Result::ok).collect())
+            .unwrap_or_default();
+        if is_excluded_dir(name, &siblings, &excluded_names) {
+            return true;
+        }
+        parent.push(name);
+    }
+    false
+}
+
+/// Classify one existing path the way [`enumerate_resources`] would, for a
+/// caller holding a single path (#16 task 5). `Ok(None)` means the path is
+/// not currently a file or directory -- typically already deleted -- which
+/// is a fact, not an error.
+pub fn describe_path(
+    workspace_root: &Path,
+    path_rel: &str,
+) -> Result<Option<DiscoveredResource>, DiscoveryError> {
+    let full = workspace_root.join(path_rel);
+    let metadata = match fs::symlink_metadata(&full) {
+        Ok(metadata) => metadata,
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(source) => return Err(io_error(&full, source)),
+    };
+
+    // Symlinks are skipped by the walk, so they are not Resources here
+    // either.
+    let kind = if metadata.is_dir() {
+        ResourceKind::Directory
+    } else if metadata.is_file() {
+        ResourceKind::File
+    } else {
+        return Ok(None);
+    };
+
+    let (role, language) = match kind {
+        ResourceKind::Directory => (ResourceRole::Unknown, None),
+        ResourceKind::File => classify(path_rel),
+    };
+    Ok(Some(DiscoveredResource {
+        path_rel: path_rel.to_owned(),
+        path_key: path_rel.to_owned(),
+        kind,
+        role,
+        language,
+    }))
+}
+
+fn excluded_name_set(config: &WorkspaceConfig) -> HashSet<&str> {
+    UNCONDITIONAL_EXCLUDED_DIR_NAMES
+        .iter()
+        .copied()
+        .chain(
+            config
+                .extra_excluded_directory_names
+                .iter()
+                .map(String::as_str),
+        )
+        .collect()
 }
 
 fn walk(

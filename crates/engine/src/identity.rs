@@ -382,6 +382,23 @@ pub fn next_revision(current: &str) -> Result<String, IdentityError> {
     Ok((parsed + 1).to_string())
 }
 
+/// Candidate structural fingerprint for a freshly observed entry, using
+/// `previous`'s non-discovery attributes (generated kind, container) where
+/// one exists -- so the value is comparable with that row's stored
+/// `fingerprint`. A *candidate* only: computing it decides nothing (#16
+/// task 5 journals it as evidence, not truth).
+#[must_use]
+pub fn observed_fingerprint(observed: &ObservedResource, previous: Option<&Resource>) -> String {
+    build_resource(
+        previous.map_or_else(ResourceId::generate, |previous| previous.id),
+        INITIAL_REVISION.to_owned(),
+        observed,
+        previous.and_then(|previous| previous.generated_kind.clone()),
+        previous.and_then(|previous| previous.container_resource_id),
+    )
+    .fingerprint
+}
+
 /// Structural fingerprint of a Resource as stored. Excludes `mtime_ns`.
 #[must_use]
 pub fn fingerprint_of(resource: &Resource) -> String {

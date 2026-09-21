@@ -1,5 +1,6 @@
 //! Brainprint runtime engine implementation.
 
+pub mod component;
 pub mod config;
 pub mod db;
 pub mod discovery;
@@ -12,3 +13,4 @@ pub mod resource;
 pub mod scan;
 pub mod schema;
 pub mod telemetry;
+pub mod watch;

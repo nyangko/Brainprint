@@ -41,26 +41,17 @@
 
 use std::{error::Error, fmt, path::Path};
 
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::Connection;
 
 use crate::{
+    component::{self, ComponentError, ResourceIndexState},
     config::WorkspaceConfig,
-    db,
     discovery::{self, DiscoveryError},
     generation::{self, GenerationError, GenerationRecord},
     identity::{self, IdentityError, ObservationMode, ObservedResource, ResourceChange},
     resource::{self, ResourceError, ResourceStore},
     schema,
 };
-
-/// `component_state` coordinates for the Resource inventory component.
-/// `scope_key` is `*` because this component covers the whole Workspace
-/// rather than one path (#13 task 6 §7: the column is NOT NULL).
-const RESOURCE_INDEX_COMPONENT: &str = "RESOURCE_INDEX";
-const WORKSPACE_SCOPE_KIND: &str = "WORKSPACE";
-const WORKSPACE_SCOPE_KEY: &str = "*";
-const PROCESSING_READY: &str = "READY";
-const FRESHNESS_CURRENT: &str = "CURRENT";
 
 /// What a completed baseline publication produced.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -69,16 +60,6 @@ pub struct ScanReport {
     pub generation: GenerationRecord,
     /// The identity decisions this generation committed.
     pub changes: Vec<ResourceChange>,
-}
-
-/// The `RESOURCE_INDEX` row of `component_state`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ResourceIndexState {
-    pub basis_workspace_revision: String,
-    pub stable_generation_id: Option<i64>,
-    pub processing_state: String,
-    pub freshness_state: String,
-    pub last_error_code: Option<String>,
 }
 
 /// Failure anywhere in the scan → publish path. Whatever the variant,
@@ -90,6 +71,7 @@ pub enum ScanError {
     Identity(IdentityError),
     Generation(GenerationError),
     Store(ResourceError),
+    Component(ComponentError),
     /// The Workspace changed while the scan was running, so the candidate
     /// snapshot no longer describes the current filesystem. Retryable --
     /// by an explicit caller decision, never automatically.
@@ -134,6 +116,7 @@ impl fmt::Display for ScanError {
                 write!(formatter, "generation publication failed: {source}")
             }
             Self::Store(source) => write!(formatter, "resource store failed: {source}"),
+            Self::Component(source) => write!(formatter, "component state failed: {source}"),
             Self::InputChanged { detail } => write!(
                 formatter,
                 "workspace input changed during the scan, so nothing was published: {detail}"
@@ -153,6 +136,7 @@ impl Error for ScanError {
             Self::Identity(source) => Some(source),
             Self::Generation(source) => Some(source),
             Self::Store(source) => Some(source),
+            Self::Component(source) => Some(source),
             Self::InputChanged { .. } | Self::InvariantViolated { .. } => None,
         }
     }
@@ -179,6 +163,12 @@ impl From<GenerationError> for ScanError {
 impl From<ResourceError> for ScanError {
     fn from(source: ResourceError) -> Self {
         Self::Store(source)
+    }
+}
+
+impl From<ComponentError> for ScanError {
+    fn from(source: ComponentError) -> Self {
+        Self::Component(source)
     }
 }
 
@@ -218,29 +208,7 @@ impl BaselineScan {
     /// The `RESOURCE_INDEX` component's persisted state, or `None` if no
     /// baseline has ever been published.
     pub fn resource_index_state(&self) -> Result<Option<ResourceIndexState>, ScanError> {
-        self.connection()
-            .query_row(
-                "SELECT basis_workspace_revision, stable_generation_id, processing_state, \
-                        freshness_state, last_error_code \
-                 FROM component_state \
-                 WHERE component_kind = ?1 AND scope_kind = ?2 AND scope_key = ?3",
-                params![
-                    RESOURCE_INDEX_COMPONENT,
-                    WORKSPACE_SCOPE_KIND,
-                    WORKSPACE_SCOPE_KEY
-                ],
-                |row| {
-                    Ok(ResourceIndexState {
-                        basis_workspace_revision: row.get(0)?,
-                        stable_generation_id: row.get(1)?,
-                        processing_state: row.get(2)?,
-                        freshness_state: row.get(3)?,
-                        last_error_code: row.get(4)?,
-                    })
-                },
-            )
-            .optional()
-            .map_err(|source| ScanError::Store(ResourceError::from(source)))
+        Ok(component::read(self.connection())?)
     }
 
     /// Scan `workspace_root`, stage the resulting identity decisions, and
@@ -320,7 +288,7 @@ impl BaselineScan {
         self.verify_invariants(snapshot)?;
 
         // 5-7. Component state, then STABLE, then the pointer swap.
-        self.mark_resource_index_current(
+        component::mark_current(
             &transaction,
             &building.basis_workspace_revision,
             generation_id,
@@ -405,41 +373,6 @@ impl BaselineScan {
         Ok(())
     }
 
-    fn mark_resource_index_current(
-        &self,
-        connection: &Connection,
-        basis_workspace_revision: &str,
-        generation_id: i64,
-    ) -> Result<(), ScanError> {
-        connection
-            .execute(
-                "INSERT INTO component_state \
-                 (component_kind, scope_kind, scope_key, basis_workspace_revision, \
-                  stable_generation_id, processing_state, freshness_state, last_error_code, \
-                  updated_at) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8) \
-                 ON CONFLICT (component_kind, scope_kind, scope_key) DO UPDATE SET \
-                 basis_workspace_revision = excluded.basis_workspace_revision, \
-                 stable_generation_id = excluded.stable_generation_id, \
-                 processing_state = excluded.processing_state, \
-                 freshness_state = excluded.freshness_state, \
-                 last_error_code = NULL, \
-                 updated_at = excluded.updated_at",
-                params![
-                    RESOURCE_INDEX_COMPONENT,
-                    WORKSPACE_SCOPE_KIND,
-                    WORKSPACE_SCOPE_KEY,
-                    basis_workspace_revision,
-                    generation_id,
-                    PROCESSING_READY,
-                    FRESHNESS_CURRENT,
-                    db::now_millis_text(),
-                ],
-            )
-            .map_err(|source| ScanError::Store(ResourceError::from(source)))?;
-        Ok(())
-    }
-
     fn connection(&self) -> &Connection {
         self.resources.connection()
     }
@@ -492,6 +425,7 @@ mod tests {
 
     use super::*;
     use crate::{
+        component::{FreshnessState, ProcessingState},
         generation::GenerationState,
         resource::{Resource, ResourceKind, ResourceRole, ResourceState},
     };
@@ -598,8 +532,8 @@ mod tests {
             .resource_index_state()
             .expect("component state should be readable")
             .expect("RESOURCE_INDEX should have been written");
-        assert_eq!(state.processing_state, PROCESSING_READY);
-        assert_eq!(state.freshness_state, FRESHNESS_CURRENT);
+        assert_eq!(state.processing_state, ProcessingState::Ready);
+        assert_eq!(state.freshness_state, FreshnessState::Current);
         assert_eq!(state.stable_generation_id, Some(report.generation.id));
         assert_eq!(state.basis_workspace_revision, INITIAL_REVISION);
         assert_eq!(state.last_error_code, None);
