@@ -256,6 +256,12 @@ pub enum OccurrenceKind {
     /// The callee of a call expression. It is evidence that a call is
     /// written here -- not a resolved target function.
     CallSite,
+    /// A name used as a value rather than called: the `save` in
+    /// `register(save)` (#17 task 5). Deliberately *not* an index of
+    /// every identifier -- only the narrow shape that is a structural
+    /// reference candidate, and never a declaration, an import, or a
+    /// call's own callee, each of which already has its own evidence.
+    ReferenceSite,
 }
 
 impl OccurrenceKind {
@@ -265,6 +271,7 @@ impl OccurrenceKind {
             Self::Definition => "DEFINITION",
             Self::ImportSite => "IMPORT_SITE",
             Self::CallSite => "CALL_SITE",
+            Self::ReferenceSite => "REFERENCE_SITE",
         }
     }
 
@@ -273,6 +280,7 @@ impl OccurrenceKind {
             "DEFINITION" => Ok(Self::Definition),
             "IMPORT_SITE" => Ok(Self::ImportSite),
             "CALL_SITE" => Ok(Self::CallSite),
+            "REFERENCE_SITE" => Ok(Self::ReferenceSite),
             other => Err(SymbolError::UnknownOccurrenceKind {
                 raw: other.to_owned(),
             }),

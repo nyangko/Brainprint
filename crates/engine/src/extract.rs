@@ -567,6 +567,14 @@ impl Walker<'_> {
                 if let Some(callee) = node.child_by_field_name("function") {
                     push(OccurrenceKind::CallSite, span_of(callee));
                 }
+                // A name handed to a call as a value is the one
+                // reference shape that is structurally unambiguous
+                // evidence (#17 task 5's `register(save)`). Every other
+                // identifier stays unrecorded: an index of all of them
+                // would be a different product.
+                for argument in bare_identifier_arguments(node) {
+                    push(OccurrenceKind::ReferenceSite, span_of(argument));
+                }
             }
             (ParserDialect::Python, "import_statement" | "import_from_statement") => {
                 for field in ["module_name", "name"] {
@@ -1134,6 +1142,34 @@ fn is_binding(kind: SymbolKind) -> bool {
 
 /// Every named child of `node` under `field`, since a Python import can
 /// name several things in one statement.
+/// The identifiers a call receives as plain arguments -- `save` in
+/// `register(save)`, and nothing else. A nested call, a literal, an
+/// attribute access or any other expression is not a bare name, so it
+/// produces no reference evidence here.
+pub(crate) fn bare_identifier_arguments<'tree>(call: Node<'tree>) -> Vec<Node<'tree>> {
+    let Some(arguments) = call.child_by_field_name("arguments") else {
+        return Vec::new();
+    };
+    let mut cursor = arguments.walk();
+    let mut found = Vec::new();
+    for child in arguments.named_children(&mut cursor) {
+        match child.kind() {
+            "identifier" => found.push(child),
+            // C# wraps each argument in an `argument` node.
+            "argument" => {
+                let mut inner = child.walk();
+                found.extend(
+                    child
+                        .named_children(&mut inner)
+                        .filter(|node| node.kind() == "identifier"),
+                );
+            }
+            _ => {}
+        }
+    }
+    found
+}
+
 pub(crate) fn children_by_field<'tree>(node: Node<'tree>, field: &str) -> Vec<Node<'tree>> {
     let mut cursor = node.walk();
     let children: Vec<Node<'tree>> = node
