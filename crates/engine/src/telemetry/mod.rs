@@ -102,12 +102,7 @@ impl BenchmarkRecorder {
     }
 
     pub fn record_tool_call(&mut self) {
-        self.metrics.tool_calls = Some(
-            self.metrics
-                .tool_calls
-                .unwrap_or(0)
-                .saturating_add(1),
-        );
+        self.metrics.tool_calls = Some(self.metrics.tool_calls.unwrap_or(0).saturating_add(1));
     }
 
     pub fn set_source_reads(&mut self, bytes: u64, lines: u64, duplicate_bytes: u64) {
@@ -183,14 +178,16 @@ mod tests {
 
     #[test]
     fn unobserved_metrics_remain_unknown() {
-        let result = BenchmarkRecorder::new("run-1", "scenario-1", "brainprint")
-            .finish(true, None, None);
+        let result =
+            BenchmarkRecorder::new("run-1", "scenario-1", "brainprint").finish(true, None, None);
 
         assert!(result.build.is_some());
         assert_eq!(result.metrics.tool_calls, None);
         assert_eq!(result.metrics.process_cpu_ms, None);
 
-        let json = result.to_json_line().expect("benchmark result should serialize");
+        let json = result
+            .to_json_line()
+            .expect("benchmark result should serialize");
         assert!(json.contains("\"tool_calls\":null"));
         assert!(json.contains("\"process_cpu_ms\":null"));
     }
