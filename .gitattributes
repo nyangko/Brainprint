@@ -1,0 +1,14 @@
+# Force LF line endings for source/text files regardless of the checkout
+# platform's `core.autocrlf` default (#15 task 12: GitHub Actions'
+# windows-latest runner defaults to converting LF -> CRLF on checkout,
+# which then fails `cargo fmt --check` -- rustfmt requires LF). Windows
+# is a Tier-1 platform for Brainprint, so this is a correctness fix, not
+# a Windows-specific workaround applied only to CI.
+* text=auto eol=lf
+
+# Binary/generated files: never touch line endings.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary

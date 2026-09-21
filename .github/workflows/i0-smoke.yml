@@ -31,11 +31,16 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
-      - name: Test
-        run: cargo test --workspace --locked
-
       - name: Build
         run: cargo build --workspace --locked
+
+      # Must run after Build: since #15 task 12, the workspace test suite
+      # includes crates/daemon/tests/i1_acceptance.rs, which spawns the
+      # actual `brainprint` binary alongside `brainprintd` -- `cargo test`
+      # alone does not guarantee another package's `[[bin]]` target has
+      # been built yet.
+      - name: Test
+        run: cargo test --workspace --locked
 
       - name: CLI and daemon smoke
         run: |
