@@ -1,12 +1,13 @@
-//! Canonical Symbol model, `analysis_profile` reuse, and the
-//! Resource-owned replacement primitive (#16 task 8 / #13 task 6 §7-8).
+//! Canonical Symbol and Occurrence model, `analysis_profile` reuse, and
+//! the Resource-owned replacement primitive (#16 task 8-9 / #13 task 6
+//! §7-8).
 //!
-//! Scope: this module owns the typed boundary over the `symbol` and
-//! `analysis_profile` columns #15 task 5's schema already created. It
-//! defines no new column and redesigns none. It does not parse -- turning a
-//! parse tree into candidates is [`crate::extract`] -- and it knows nothing
-//! about Occurrence (#16 task 9), Relation (I3), or semantic resolution
-//! (I4).
+//! Scope: this module owns the typed boundary over the `symbol`,
+//! `occurrence`, and `analysis_profile` columns #15 task 5's schema
+//! already created. It defines no new column, adds no migration, and
+//! redesigns none. It does not parse -- turning a parse tree into
+//! candidates is [`crate::extract`] -- and it knows nothing about Relation
+//! (I3) or semantic resolution (I4).
 //!
 //! ## What a Symbol is here
 //!
@@ -34,9 +35,21 @@
 //! `resource_revision` the extraction was based on. A mismatch keeps the
 //! existing set exactly as it is.
 //!
-//! [`SymbolStore::replace_in_transaction`] is the same primitive without
-//! the transaction, so #16 task 9's Occurrence rows can be committed in the
-//! same transaction as the Symbols they point at.
+//! [`SymbolStore::replace_structure`] extends that to the whole structural
+//! result: Symbols and the [`Occurrence`] evidence about them are replaced
+//! in one transaction, so no state exists in which one was rewritten and
+//! the other was not. [`SymbolStore::replace_in_transaction`] and
+//! [`SymbolStore::replace_occurrences_in_transaction`] are the same
+//! primitives without the transaction, for a caller that owns one -- which
+//! is also how I3 will be able to attach Relation evidence to the same
+//! commit.
+//!
+//! ## Occurrence is evidence, not Relation
+//!
+//! An [`Occurrence`] records that a span of source *is* a definition, an
+//! import site, or a call site. It names no target. `relation_id` and
+//! `resolution_context_id` are left NULL at this tier, and deciding what a
+//! call reaches or what an import names is I3/I4's work.
 
 use std::{collections::HashMap, error::Error, fmt, path::Path};
 
@@ -45,6 +58,7 @@ use rusqlite::{Connection, OptionalExtension, Row, params};
 
 use crate::{
     db::{self, DbOpenError},
+    generation::{self, GenerationError},
     parser::{ParserDescriptor, SourcePoint, SourceSpan, StructuralCapability},
     resource::{ResourceError, ResourceLanguage, ResourceState},
     schema,
@@ -225,6 +239,86 @@ pub struct Symbol {
     pub analysis_profile_id: i64,
 }
 
+/// What a span of source is evidence *of*.
+///
+/// Deliberately tiny. A structural parse can prove that a declaration
+/// names itself here, that an import statement names something there, and
+/// that a call is written at this position -- and that is all. Every other
+/// identifier is left alone rather than asserted to be a REFERENCE to
+/// something, because deciding what it refers to is resolution (I3/I4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OccurrenceKind {
+    /// The name token of a declaration, at the declaration itself.
+    Definition,
+    /// The module or name an import/use statement writes. It is evidence
+    /// that an import mentions this text -- not a resolved module entity.
+    ImportSite,
+    /// The callee of a call expression. It is evidence that a call is
+    /// written here -- not a resolved target function.
+    CallSite,
+}
+
+impl OccurrenceKind {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Definition => "DEFINITION",
+            Self::ImportSite => "IMPORT_SITE",
+            Self::CallSite => "CALL_SITE",
+        }
+    }
+
+    fn parse(raw: &str) -> Result<Self, SymbolError> {
+        match raw {
+            "DEFINITION" => Ok(Self::Definition),
+            "IMPORT_SITE" => Ok(Self::ImportSite),
+            "CALL_SITE" => Ok(Self::CallSite),
+            other => Err(SymbolError::UnknownOccurrenceKind {
+                raw: other.to_owned(),
+            }),
+        }
+    }
+}
+
+impl fmt::Display for OccurrenceKind {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+/// One piece of structural source evidence.
+///
+/// An Occurrence is **not** a Relation and carries no target. `relation_id`
+/// and `resolution_context_id` exist in the schema for I3/I4 to fill in
+/// later; everything written at this tier leaves both NULL, which is why
+/// they are read-only here and never inputs.
+///
+/// It also has no stable identity: the row is evidence about a span of the
+/// current source, so a re-extraction replaces a Resource's whole evidence
+/// set rather than reconciling it row by row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Occurrence {
+    pub resource_id: ResourceId,
+    /// The smallest Symbol that lexically contains this span, or `None`
+    /// at file level. Lexical containment only -- no semantic owner is
+    /// inferred.
+    pub containing_symbol_id: Option<SymbolId>,
+    pub kind: OccurrenceKind,
+    /// The evidence's own narrow span, not the statement around it.
+    pub span: SourceSpan,
+    /// Always `None` at this tier: a structural Occurrence resolves
+    /// nothing. Read back from storage so the invariant is checkable.
+    pub relation_id: Option<i64>,
+    pub analysis_profile_id: i64,
+    /// Always `None` at this tier: there is no semantic resolution
+    /// context to record.
+    pub resolution_context_id: Option<i64>,
+    pub resource_revision: String,
+    /// The generation this evidence was published under, which must be
+    /// the stable one at the time of writing.
+    pub generation_id: i64,
+}
+
 /// The `analysis_profile` identity a structural extraction runs under.
 ///
 /// Built from task 7's [`ParserDescriptor`] plus this crate's extractor
@@ -301,11 +395,27 @@ pub enum SymbolError {
     Open(DbOpenError),
     Sqlite(rusqlite::Error),
     Resource(ResourceError),
+    Generation(GenerationError),
     UnknownSymbolKind {
         raw: String,
     },
     UnknownVisibility {
         raw: String,
+    },
+    UnknownOccurrenceKind {
+        raw: String,
+    },
+    /// Evidence was offered against a generation that is not the current
+    /// stable one -- building, aborted, or already superseded. Nothing is
+    /// attached to it.
+    GenerationNotStable {
+        generation_id: i64,
+        stable: Option<i64>,
+    },
+    /// An Occurrence named a containing Symbol that is not part of the
+    /// Symbol set it was published with.
+    UnknownContainingSymbol {
+        symbol: SymbolId,
     },
     /// No `resource` row for the id a replacement names.
     UnknownResource {
@@ -348,8 +458,25 @@ impl fmt::Display for SymbolError {
             Self::Open(source) => write!(formatter, "failed to open index.db: {source}"),
             Self::Sqlite(source) => write!(formatter, "symbol store sqlite error: {source}"),
             Self::Resource(source) => write!(formatter, "resource row failed to decode: {source}"),
+            Self::Generation(source) => write!(formatter, "generation lookup failed: {source}"),
             Self::UnknownSymbolKind { raw } => write!(formatter, "unknown symbol kind {raw:?}"),
             Self::UnknownVisibility { raw } => write!(formatter, "unknown visibility {raw:?}"),
+            Self::UnknownOccurrenceKind { raw } => {
+                write!(formatter, "unknown occurrence kind {raw:?}")
+            }
+            Self::GenerationNotStable {
+                generation_id,
+                stable,
+            } => write!(
+                formatter,
+                "generation {generation_id} is not the current stable generation ({}), so no \
+                 evidence was attached to it",
+                stable.map_or_else(|| "none".to_owned(), |id| id.to_string())
+            ),
+            Self::UnknownContainingSymbol { symbol } => write!(
+                formatter,
+                "occurrence names containing symbol {symbol}, which is not in the replacement"
+            ),
             Self::UnknownResource { resource_id } => {
                 write!(formatter, "no resource row for {resource_id}")
             }
@@ -380,6 +507,7 @@ impl Error for SymbolError {
             Self::Open(source) => Some(source),
             Self::Sqlite(source) => Some(source),
             Self::Resource(source) => Some(source),
+            Self::Generation(source) => Some(source),
             _ => None,
         }
     }
@@ -394,6 +522,12 @@ impl From<DbOpenError> for SymbolError {
 impl From<ResourceError> for SymbolError {
     fn from(source: ResourceError) -> Self {
         Self::Resource(source)
+    }
+}
+
+impl From<GenerationError> for SymbolError {
+    fn from(source: GenerationError) -> Self {
+        Self::Generation(source)
     }
 }
 
@@ -510,19 +644,198 @@ impl SymbolStore {
         Ok(())
     }
 
+    /// Replace one Resource's whole structural result -- Symbols and the
+    /// Occurrence evidence about them -- in a single transaction.
+    ///
+    /// This is the accepted-extraction path: `Symbol replace → local symbol
+    /// row mapping → Occurrence replace → commit`. A failure anywhere rolls
+    /// the whole thing back, so the previously published Symbols *and*
+    /// Occurrences both survive intact; there is no state in which one was
+    /// replaced and the other was not.
+    pub fn replace_structure(
+        &self,
+        resource_id: ResourceId,
+        basis_revision: &str,
+        generation_id: i64,
+        symbols: &[Symbol],
+        occurrences: &[Occurrence],
+    ) -> Result<(), SymbolError> {
+        let transaction = self.connection.unchecked_transaction()?;
+        let symbol_rows = self.replace_in_transaction(resource_id, basis_revision, symbols)?;
+        self.replace_occurrences_in_transaction(
+            resource_id,
+            basis_revision,
+            generation_id,
+            &symbol_rows,
+            occurrences,
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    /// Replace one Resource's Occurrence evidence, in the caller's
+    /// transaction, against the local symbol rows
+    /// [`Self::replace_in_transaction`] just wrote.
+    ///
+    /// An Occurrence has no stable identity of its own: it is evidence
+    /// about a span of the current source, so a re-extraction replaces the
+    /// whole set rather than reconciling it. What is checked before any of
+    /// it is written is that the evidence describes something current --
+    /// the Resource is still ACTIVE at `basis_revision`, and
+    /// `generation_id` is the generation that is *currently* STABLE.
+    /// Evidence is never attached to a stale revision or to a generation
+    /// that is building, aborted, or superseded.
+    pub fn replace_occurrences_in_transaction(
+        &self,
+        resource_id: ResourceId,
+        basis_revision: &str,
+        generation_id: i64,
+        symbol_rows: &HashMap<SymbolId, i64>,
+        occurrences: &[Occurrence],
+    ) -> Result<(), SymbolError> {
+        let (local_resource_id, state, current_revision) = self.resource_row(resource_id)?;
+        if state != ResourceState::Active {
+            return Err(SymbolError::ResourceNotActive { resource_id, state });
+        }
+        if current_revision != basis_revision {
+            return Err(SymbolError::RevisionMismatch {
+                resource_id,
+                basis: basis_revision.to_owned(),
+                current: current_revision,
+            });
+        }
+        let stable = generation::current_stable(&self.connection)?.map(|generation| generation.id);
+        if stable != Some(generation_id) {
+            return Err(SymbolError::GenerationNotStable {
+                generation_id,
+                stable,
+            });
+        }
+
+        self.connection.execute(
+            "DELETE FROM occurrence WHERE resource_id = ?1",
+            params![local_resource_id],
+        )?;
+
+        for occurrence in occurrences {
+            let containing = match occurrence.containing_symbol_id {
+                None => None,
+                Some(symbol) => Some(
+                    *symbol_rows
+                        .get(&symbol)
+                        .ok_or(SymbolError::UnknownContainingSymbol { symbol })?,
+                ),
+            };
+            self.connection.execute(
+                "INSERT INTO occurrence \
+                 (resource_id, containing_symbol_id, kind, start_byte, end_byte, start_line, \
+                  start_col, end_line, end_col, relation_id, analysis_profile_id, \
+                  resolution_context_id, resource_revision, generation) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, ?10, NULL, ?11, ?12)",
+                params![
+                    local_resource_id,
+                    containing,
+                    occurrence.kind.as_str(),
+                    i64::try_from(occurrence.span.start_byte).unwrap_or(i64::MAX),
+                    i64::try_from(occurrence.span.end_byte).unwrap_or(i64::MAX),
+                    i64::try_from(occurrence.span.start.line).unwrap_or(i64::MAX),
+                    i64::try_from(occurrence.span.start.column).unwrap_or(i64::MAX),
+                    i64::try_from(occurrence.span.end.line).unwrap_or(i64::MAX),
+                    i64::try_from(occurrence.span.end.column).unwrap_or(i64::MAX),
+                    occurrence.analysis_profile_id,
+                    occurrence.resource_revision,
+                    occurrence.generation_id,
+                ],
+            )?;
+        }
+
+        Ok(())
+    }
+
+    /// One Resource's Occurrence evidence, in source order.
+    pub fn list_occurrences_for_resource(
+        &self,
+        resource_id: ResourceId,
+    ) -> Result<Vec<Occurrence>, SymbolError> {
+        let mut statement = self.connection.prepare(
+            "SELECT r.uid, s.uid, o.kind, o.start_byte, o.end_byte, o.start_line, o.start_col, \
+                    o.end_line, o.end_col, o.relation_id, o.analysis_profile_id, \
+                    o.resolution_context_id, o.resource_revision, o.generation \
+             FROM occurrence o \
+             JOIN resource r ON r.id = o.resource_id \
+             LEFT JOIN symbol s ON s.id = o.containing_symbol_id \
+             WHERE r.uid = ?1 \
+             ORDER BY o.start_byte, o.end_byte, o.kind",
+        )?;
+        let rows = statement.query_map(params![resource_id.to_bytes().to_vec()], |row| {
+            Ok((
+                row.get::<_, Vec<u8>>(0)?,
+                row.get::<_, Option<Vec<u8>>>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, i64>(5)?,
+                row.get::<_, i64>(6)?,
+                row.get::<_, i64>(7)?,
+                row.get::<_, i64>(8)?,
+                row.get::<_, Option<i64>>(9)?,
+                row.get::<_, i64>(10)?,
+                row.get::<_, Option<i64>>(11)?,
+                row.get::<_, String>(12)?,
+                row.get::<_, i64>(13)?,
+            ))
+        })?;
+
+        rows.map(|raw| {
+            let raw = raw?;
+            Ok(Occurrence {
+                resource_id: ResourceId::from_bytes(stable_bytes(&raw.0, "resource.uid")),
+                containing_symbol_id: raw
+                    .1
+                    .map(|bytes| SymbolId::from_bytes(stable_bytes(&bytes, "symbol.uid"))),
+                kind: OccurrenceKind::parse(&raw.2)?,
+                span: SourceSpan {
+                    start_byte: usize::try_from(raw.3).unwrap_or(0),
+                    end_byte: usize::try_from(raw.4).unwrap_or(0),
+                    start: SourcePoint::new(
+                        usize::try_from(raw.5).unwrap_or(0),
+                        usize::try_from(raw.6).unwrap_or(0),
+                    ),
+                    end: SourcePoint::new(
+                        usize::try_from(raw.7).unwrap_or(0),
+                        usize::try_from(raw.8).unwrap_or(0),
+                    ),
+                },
+                relation_id: raw.9,
+                analysis_profile_id: raw.10,
+                resolution_context_id: raw.11,
+                resource_revision: raw.12,
+                generation_id: raw.13,
+            })
+        })
+        .collect()
+    }
+
     /// [`Self::replace_for_resource`]'s writes without the transaction, for
-    /// a caller that already owns one on this connection -- so #16 task 9's
-    /// Occurrence rows can land in the same commit as these Symbols.
+    /// a caller that already owns one on this connection -- so
+    /// [`Self::replace_occurrences_in_transaction`]'s rows can land in the
+    /// same commit as these Symbols.
     ///
     /// Either every row of the new set is written or none is: the old set
     /// is deleted and the new one inserted inside the caller's transaction,
     /// and there is deliberately no per-row update path.
+    ///
+    /// The Resource's Occurrences are deleted first. They are evidence
+    /// *about* these Symbols, so they cannot outlive the set they point
+    /// at -- and the foreign key would refuse the symbol delete anyway.
+    /// Returns each written Symbol's local `symbol.id`, which is what an
+    /// Occurrence's `containing_symbol_id` needs.
     pub fn replace_in_transaction(
         &self,
         resource_id: ResourceId,
         basis_revision: &str,
         symbols: &[Symbol],
-    ) -> Result<(), SymbolError> {
+    ) -> Result<HashMap<SymbolId, i64>, SymbolError> {
         // Re-checked here, immediately before writing, rather than by the
         // caller earlier: the point is that nothing moved in between.
         let (local_resource_id, state, current_revision) = self.resource_row(resource_id)?;
@@ -537,6 +850,10 @@ impl SymbolStore {
             });
         }
 
+        self.connection.execute(
+            "DELETE FROM occurrence WHERE resource_id = ?1",
+            params![local_resource_id],
+        )?;
         self.connection.execute(
             "DELETE FROM symbol WHERE resource_id = ?1",
             params![local_resource_id],
@@ -586,7 +903,7 @@ impl SymbolStore {
             local_ids.insert(symbol.id, self.connection.last_insert_rowid());
         }
 
-        Ok(())
+        Ok(local_ids)
     }
 
     fn resource_row(
@@ -697,7 +1014,7 @@ mod tests {
     use super::*;
     use crate::{
         config::WorkspaceConfig,
-        extract::{Extraction, assign_ids, extract},
+        extract::{Extraction, ExtractionStatus, assign_ids, extract, resolve_occurrences},
         parser::{ParserDialect, ParserRegistry, SourceBasis, dialect_for_resource},
         resource::Resource,
         scan::BaselineScan,
@@ -747,8 +1064,15 @@ export function top(): number { return 1 }
         /// Publish the Resource baseline and return the store plus the
         /// Resource for `rel`.
         fn baseline(&self, rel: &str) -> (SymbolStore, Resource) {
+            let (store, resource, _) = self.baseline_with_generation(rel);
+            (store, resource)
+        }
+
+        /// The same, plus the stable generation Occurrence evidence must
+        /// be published against.
+        fn baseline_with_generation(&self, rel: &str) -> (SymbolStore, Resource, i64) {
             let engine = BaselineScan::open(&self.db_path()).expect("index.db");
-            engine
+            let report = engine
                 .run_initial_scan(&self.root, &WorkspaceConfig::default(), "workspace-rev-1")
                 .expect("baseline scan");
             let resource = engine
@@ -760,6 +1084,7 @@ export function top(): number { return 1 }
             (
                 SymbolStore::open(&self.db_path()).expect("index.db"),
                 resource,
+                report.generation.id,
             )
         }
     }
@@ -792,6 +1117,31 @@ export function top(): number { return 1 }
         let symbols = assign_ids(&previous, &extraction, resource, profile_id);
         store.replace_for_resource(resource.id, &resource.resource_revision, &symbols)?;
         Ok(symbols)
+    }
+
+    /// The accepted-extraction path: Symbols and their evidence, together.
+    fn publish_structure(
+        store: &SymbolStore,
+        resource: &Resource,
+        generation_id: i64,
+        source: &str,
+    ) -> Result<(Vec<Symbol>, Vec<Occurrence>), SymbolError> {
+        let dialect = dialect_for_resource(resource).expect("a supported dialect");
+        let extraction = extraction_of(dialect, source);
+        assert!(extraction.is_accepted());
+        let profile_id = store.ensure_profile(&extraction.profile)?;
+        let previous = store.list_for_resource(resource.id)?;
+        let symbols = assign_ids(&previous, &extraction, resource, profile_id);
+        let occurrences =
+            resolve_occurrences(&extraction, &symbols, resource, profile_id, generation_id);
+        store.replace_structure(
+            resource.id,
+            &resource.resource_revision,
+            generation_id,
+            &symbols,
+            &occurrences,
+        )?;
+        Ok((symbols, occurrences))
     }
 
     #[test]
@@ -1033,7 +1383,7 @@ export function top(): number { return 1 }
     }
 
     #[test]
-    fn extraction_creates_no_occurrence_or_relation_rows() {
+    fn a_symbol_only_replacement_creates_no_evidence_or_relation_rows() {
         let fixture = Fixture::create("no-occurrence");
         fixture.write("thing.ts", SOURCE);
         let (store, resource) = fixture.baseline("thing.ts");
@@ -1077,6 +1427,280 @@ export function top(): number { return 1 }
                     .windows(needle.len())
                     .any(|window| window == needle.as_bytes()),
                 "index.db must not contain {needle:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn occurrences_round_trip_with_their_containment_and_spans() {
+        let fixture = Fixture::create("occurrence-round-trip");
+        fixture.write("thing.ts", SOURCE);
+        let (store, resource, generation) = fixture.baseline_with_generation("thing.ts");
+
+        let (symbols, written) =
+            publish_structure(&store, &resource, generation, SOURCE).expect("publish");
+        let stored = store
+            .list_occurrences_for_resource(resource.id)
+            .expect("list");
+
+        assert_eq!(stored, written, "what was written is what reads back");
+        assert!(!stored.is_empty());
+        let measure = symbols
+            .iter()
+            .find(|symbol| symbol.qualified_name == "Thing.measure")
+            .expect("measure");
+        let definition = stored
+            .iter()
+            .find(|occurrence| {
+                occurrence.kind == OccurrenceKind::Definition
+                    && occurrence.containing_symbol_id == Some(measure.id)
+            })
+            .expect("a definition for measure");
+        assert_eq!(
+            &SOURCE[definition.span.start_byte..definition.span.end_byte],
+            "measure",
+            "the stored span is the name token"
+        );
+        assert_eq!(definition.resource_revision, resource.resource_revision);
+        assert_eq!(definition.generation_id, generation);
+    }
+
+    #[test]
+    fn a_structural_occurrence_resolves_nothing() {
+        let fixture = Fixture::create("no-resolution");
+        fixture.write("thing.ts", SOURCE);
+        let (store, resource, generation) = fixture.baseline_with_generation("thing.ts");
+        publish_structure(&store, &resource, generation, SOURCE).expect("publish");
+
+        for occurrence in store
+            .list_occurrences_for_resource(resource.id)
+            .expect("list")
+        {
+            assert_eq!(occurrence.relation_id, None);
+            assert_eq!(occurrence.resolution_context_id, None);
+        }
+        for table in [
+            "relation",
+            "graph_entity",
+            "unresolved_reference",
+            "relation_candidate",
+            "resolution_context",
+        ] {
+            let count: i64 = store
+                .connection()
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
+                .expect("count");
+            assert_eq!(count, 0, "{table} belongs to I3/I4, not to this tier");
+        }
+    }
+
+    #[test]
+    fn evidence_is_only_published_against_the_current_stable_generation() {
+        let fixture = Fixture::create("generation-basis");
+        fixture.write("thing.ts", SOURCE);
+        let (store, resource, generation) = fixture.baseline_with_generation("thing.ts");
+        let dialect = dialect_for_resource(&resource).expect("dialect");
+        let extraction = extraction_of(dialect, SOURCE);
+        let profile_id = store.ensure_profile(&extraction.profile).expect("profile");
+        let symbols = assign_ids(&[], &extraction, &resource, profile_id);
+
+        // A generation that is merely BUILDING is not something evidence
+        // may be attached to.
+        let building =
+            generation::begin_generation(store.connection(), "workspace-rev-1").expect("begin");
+        let stale = resolve_occurrences(&extraction, &symbols, &resource, profile_id, building.id);
+        let error = store
+            .replace_structure(
+                resource.id,
+                &resource.resource_revision,
+                building.id,
+                &symbols,
+                &stale,
+            )
+            .expect_err("a non-stable generation must be refused");
+
+        assert!(matches!(error, SymbolError::GenerationNotStable { .. }));
+        assert!(
+            store
+                .list_for_resource(resource.id)
+                .expect("list")
+                .is_empty(),
+            "the refused publication wrote no Symbols either"
+        );
+        assert!(
+            store
+                .list_occurrences_for_resource(resource.id)
+                .expect("list")
+                .is_empty()
+        );
+
+        // The stable one is accepted.
+        publish_structure(&store, &resource, generation, SOURCE).expect("publish");
+        assert!(
+            !store
+                .list_occurrences_for_resource(resource.id)
+                .expect("list")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_revision_mismatch_preserves_both_symbols_and_occurrences() {
+        let fixture = Fixture::create("occurrence-revision");
+        fixture.write("thing.ts", SOURCE);
+        let (store, resource, generation) = fixture.baseline_with_generation("thing.ts");
+        let (symbols, occurrences) =
+            publish_structure(&store, &resource, generation, SOURCE).expect("publish");
+
+        let error = store
+            .replace_structure(resource.id, "99", generation, &symbols[..1], &[])
+            .expect_err("a stale extraction must not be written");
+
+        assert!(matches!(error, SymbolError::RevisionMismatch { .. }));
+        assert_eq!(store.list_for_resource(resource.id).expect("list"), symbols);
+        assert_eq!(
+            store
+                .list_occurrences_for_resource(resource.id)
+                .expect("list"),
+            occurrences,
+            "both sets survive together"
+        );
+    }
+
+    #[test]
+    fn a_failing_occurrence_apply_rolls_the_symbol_replacement_back_too() {
+        let fixture = Fixture::create("occurrence-rollback");
+        fixture.write("thing.ts", SOURCE);
+        let (store, resource, generation) = fixture.baseline_with_generation("thing.ts");
+        let (symbols, occurrences) =
+            publish_structure(&store, &resource, generation, SOURCE).expect("publish");
+
+        // Evidence naming a Symbol that is not in the replacement: the
+        // Symbols have already been rewritten when this is discovered.
+        let orphan = Occurrence {
+            containing_symbol_id: Some(SymbolId::generate()),
+            ..occurrences[0].clone()
+        };
+        let trimmed = &symbols[..1];
+        let error = store
+            .replace_structure(
+                resource.id,
+                &resource.resource_revision,
+                generation,
+                trimmed,
+                &[orphan],
+            )
+            .expect_err("inconsistent evidence must not be written");
+
+        assert!(matches!(error, SymbolError::UnknownContainingSymbol { .. }));
+        assert_eq!(
+            store.list_for_resource(resource.id).expect("list"),
+            symbols,
+            "the Symbol replacement rolled back with the evidence"
+        );
+        assert_eq!(
+            store
+                .list_occurrences_for_resource(resource.id)
+                .expect("list"),
+            occurrences
+        );
+    }
+
+    #[test]
+    fn an_unchanged_re_extraction_publishes_the_same_evidence() {
+        let fixture = Fixture::create("occurrence-stable");
+        fixture.write("thing.ts", SOURCE);
+        let (store, resource, generation) = fixture.baseline_with_generation("thing.ts");
+
+        let (first_symbols, first) =
+            publish_structure(&store, &resource, generation, SOURCE).expect("publish");
+        let (second_symbols, second) =
+            publish_structure(&store, &resource, generation, SOURCE).expect("publish again");
+
+        assert_eq!(first, second);
+        assert_eq!(
+            first_symbols.iter().map(|s| s.id).collect::<Vec<_>>(),
+            second_symbols.iter().map(|s| s.id).collect::<Vec<_>>(),
+            "stable Symbol identities mean stable containment"
+        );
+        assert_eq!(
+            store
+                .list_occurrences_for_resource(resource.id)
+                .expect("list"),
+            second
+        );
+    }
+
+    #[test]
+    fn a_partial_parse_leaves_the_accepted_evidence_alone() {
+        let fixture = Fixture::create("occurrence-partial");
+        fixture.write("thing.ts", SOURCE);
+        let (store, resource, generation) = fixture.baseline_with_generation("thing.ts");
+        let (symbols, occurrences) =
+            publish_structure(&store, &resource, generation, SOURCE).expect("publish");
+
+        let broken = "export class Thing {\n  measure(): number {\n    return\n}\n";
+        let extraction = extraction_of(ParserDialect::TypeScript, broken);
+        assert!(!extraction.is_accepted());
+
+        // The caller never reaches a replacement for a result it may not
+        // accept, so nothing is written.
+        assert_eq!(store.list_for_resource(resource.id).expect("list"), symbols);
+        assert_eq!(
+            store
+                .list_occurrences_for_resource(resource.id)
+                .expect("list"),
+            occurrences
+        );
+    }
+
+    #[test]
+    fn a_svelte_component_publishes_no_evidence_and_is_not_an_empty_success() {
+        let fixture = Fixture::create("occurrence-svelte");
+        fixture.write(
+            "View.svelte",
+            "<script lang=\"ts\">\n  export function go() { run() }\n</script>\n<p/>\n",
+        );
+        let (store, resource, _) = fixture.baseline_with_generation("View.svelte");
+        let dialect = dialect_for_resource(&resource).expect("dialect");
+        let extraction = extraction_of(dialect, "<script/>");
+
+        assert_eq!(extraction.status, ExtractionStatus::ContainerOnly);
+        assert!(!extraction.is_accepted(), "not an empty success");
+        assert!(extraction.occurrences.is_empty());
+        assert!(
+            store
+                .list_occurrences_for_resource(resource.id)
+                .expect("list")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn no_source_text_reaches_the_occurrence_table() {
+        let fixture = Fixture::create("occurrence-no-body");
+        let source =
+            "import { secretHelper } from './m'\nexport function top() { return secretHelper() }\n";
+        fixture.write("thing.ts", source);
+        let (store, resource, generation) = fixture.baseline_with_generation("thing.ts");
+        publish_structure(&store, &resource, generation, source).expect("publish");
+
+        let stored: i64 = store
+            .connection()
+            .query_row("SELECT COUNT(*) FROM occurrence", [], |row| row.get(0))
+            .expect("count");
+        assert!(stored > 0, "there is evidence to find");
+        drop(store);
+
+        let bytes = fs::read(fixture.db_path()).expect("index.db bytes");
+        for needle in ["secretHelper", "./m", "return"] {
+            assert!(
+                !bytes
+                    .windows(needle.len())
+                    .any(|window| window == needle.as_bytes()),
+                "index.db must not contain {needle:?}; spans are offsets, not text"
             );
         }
     }

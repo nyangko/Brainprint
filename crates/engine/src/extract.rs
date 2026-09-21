@@ -1,5 +1,6 @@
-//! Structural Symbol/Scope/span extraction, and the SymbolID continuity
-//! rules that survive an edit (#16 task 8).
+//! Structural Symbol/Scope/span extraction, the structural Occurrence
+//! evidence found in the same walk, and the SymbolID continuity rules that
+//! survive an edit (#16 task 8-9).
 //!
 //! This is the only place a `tree_sitter` tree is walked. What comes out is
 //! [`ExtractedSymbol`] -- Brainprint types with byte + line/column spans --
@@ -56,6 +57,17 @@
 //! replacement. Nothing tries to argue that a renamed declaration "is" the
 //! old one.
 //!
+//! ## Occurrence evidence
+//!
+//! The same walk collects [`ExtractedOccurrence`]s: a declaration's own
+//! name token, the module or name an import statement writes, and a call's
+//! callee. Nothing else. Every other identifier is left alone rather than
+//! asserted to be a reference to something, because what it refers to is
+//! resolution (I3/I4) -- and for the same reason none of this evidence
+//! carries a target. An occurrence's containing Symbol is whatever
+//! lexically encloses it, which the walk already knows; no semantic owner
+//! is worked out.
+//!
 //! ## Partial parses
 //!
 //! A [`ParseStatus::Partial`] tree still yields the candidates it can see,
@@ -75,7 +87,7 @@ use tree_sitter::Node;
 use crate::{
     parser::{ParseStatus, ParseTree, ParserDialect, SourcePoint, SourceSpan},
     resource::Resource,
-    symbol::{AnalysisProfile, Symbol, SymbolKind, Visibility},
+    symbol::{AnalysisProfile, Occurrence, OccurrenceKind, Symbol, SymbolKind, Visibility},
 };
 
 /// Upper bound on a stored `signature`, in characters.
@@ -133,6 +145,19 @@ pub struct ExtractedSymbol {
     pub parent: Option<usize>,
 }
 
+/// One piece of structural source evidence, before it has a Resource,
+/// a profile, or a generation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExtractedOccurrence {
+    pub kind: OccurrenceKind,
+    /// The evidence's own narrow span: a declaration's name token, the
+    /// module/name an import writes, a call's callee.
+    pub span: SourceSpan,
+    /// Index of the smallest enclosing Symbol in the same extraction, or
+    /// `None` at file level. Lexical containment only.
+    pub containing: Option<usize>,
+}
+
 /// What one parse yielded.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Extraction {
@@ -141,6 +166,9 @@ pub struct Extraction {
     /// The profile these candidates were produced under, dialect included.
     pub profile: AnalysisProfile,
     pub symbols: Vec<ExtractedSymbol>,
+    /// Structural evidence found in the same walk. Never a Relation: no
+    /// entry here names a target.
+    pub occurrences: Vec<ExtractedOccurrence>,
 }
 
 impl Extraction {
@@ -174,6 +202,10 @@ pub fn extract(tree: &ParseTree, source: &[u8]) -> Extraction {
             dialect,
             profile,
             symbols: Vec::new(),
+            // An unmapped container yields no evidence either. Claiming
+            // occurrences for an embedded script this stage does not read
+            // would be inventing them.
+            occurrences: Vec::new(),
         };
     }
 
@@ -182,6 +214,7 @@ pub fn extract(tree: &ParseTree, source: &[u8]) -> Extraction {
         dialect,
         separator: separator(dialect),
         symbols: Vec::new(),
+        occurrences: Vec::new(),
     };
     walker.walk(
         tree.syntax_tree().root_node(),
@@ -193,6 +226,15 @@ pub fn extract(tree: &ParseTree, source: &[u8]) -> Extraction {
         },
     );
 
+    // Source order, which is also the order the evidence reads back in.
+    walker.occurrences.sort_by(|left, right| {
+        (left.span.start_byte, left.span.end_byte, left.kind.as_str()).cmp(&(
+            right.span.start_byte,
+            right.span.end_byte,
+            right.kind.as_str(),
+        ))
+    });
+
     Extraction {
         status: match tree.status() {
             ParseStatus::Complete => ExtractionStatus::Complete,
@@ -201,7 +243,44 @@ pub fn extract(tree: &ParseTree, source: &[u8]) -> Extraction {
         dialect,
         profile,
         symbols: walker.symbols,
+        occurrences: walker.occurrences,
     }
+}
+
+/// Bind an extraction's evidence to a Resource, a profile, and the
+/// generation that publishes it.
+///
+/// `symbols` must be [`assign_ids`]'s output for the same extraction: it
+/// is index-aligned with `extraction.symbols`, which is how a candidate's
+/// enclosing-Symbol index becomes a [`SymbolId`].
+#[must_use]
+pub fn resolve_occurrences(
+    extraction: &Extraction,
+    symbols: &[Symbol],
+    resource: &Resource,
+    analysis_profile_id: i64,
+    generation_id: i64,
+) -> Vec<Occurrence> {
+    extraction
+        .occurrences
+        .iter()
+        .map(|evidence| Occurrence {
+            resource_id: resource.id,
+            containing_symbol_id: evidence
+                .containing
+                .and_then(|index| symbols.get(index))
+                .map(|symbol| symbol.id),
+            kind: evidence.kind,
+            span: evidence.span,
+            // A structural Occurrence resolves nothing: both stay NULL
+            // until I3/I4 has something true to put in them.
+            relation_id: None,
+            resolution_context_id: None,
+            analysis_profile_id,
+            resource_revision: resource.resource_revision.clone(),
+            generation_id,
+        })
+        .collect()
 }
 
 /// Give every candidate a [`SymbolId`], reusing a previous one wherever the
@@ -341,6 +420,8 @@ enum Declared {
 struct Candidate {
     kind: SymbolKind,
     name: String,
+    /// The name token itself, which is the DEFINITION evidence span.
+    name_span: SourceSpan,
     span: SourceSpan,
     signature: Option<String>,
     visibility: Visibility,
@@ -361,10 +442,12 @@ struct Walker<'a> {
     dialect: ParserDialect,
     separator: &'static str,
     symbols: Vec<ExtractedSymbol>,
+    occurrences: Vec<ExtractedOccurrence>,
 }
 
 impl Walker<'_> {
     fn walk(&mut self, node: Node<'_>, frame: &Frame) {
+        self.collect_evidence(node, frame);
         let declared = self.classify(node, frame);
         let child_frame = match declared {
             Declared::Nothing => None,
@@ -420,6 +503,13 @@ impl Walker<'_> {
                 continue;
             }
             let qualified_name = extend(&frame.segments, &candidate.name).join(self.separator);
+            // A declaration is evidence of itself, at its name token --
+            // not across the whole body it opens.
+            self.occurrences.push(ExtractedOccurrence {
+                kind: OccurrenceKind::Definition,
+                span: candidate.name_span,
+                containing: Some(self.symbols.len()),
+            });
             self.symbols.push(ExtractedSymbol {
                 kind: candidate.kind,
                 name: candidate.name,
@@ -443,6 +533,94 @@ impl Walker<'_> {
             in_callable: frame.in_callable || is_callable(symbol.kind),
             member_context: symbol.kind.is_type_like(),
         })
+    }
+
+    /// Import and call evidence at `node`, if any.
+    ///
+    /// `frame.parent` is already the smallest Symbol that lexically
+    /// contains this node, which is exactly the containment rule -- no
+    /// semantic owner is worked out.
+    fn collect_evidence(&mut self, node: Node<'_>, frame: &Frame) {
+        let containing = frame.parent;
+        let mut push = |kind: OccurrenceKind, span: SourceSpan| {
+            self.occurrences.push(ExtractedOccurrence {
+                kind,
+                span,
+                containing,
+            });
+        };
+
+        match (self.dialect, node.kind()) {
+            // A call is evidence that a call is written here. Which
+            // function it reaches is resolution (I3/I4), so the callee
+            // expression's span is all that is recorded.
+            (ParserDialect::Python, "call")
+            | (
+                ParserDialect::JavaScript
+                | ParserDialect::Jsx
+                | ParserDialect::TypeScript
+                | ParserDialect::Tsx
+                | ParserDialect::Rust,
+                "call_expression",
+            )
+            | (ParserDialect::CSharp, "invocation_expression") => {
+                if let Some(callee) = node.child_by_field_name("function") {
+                    push(OccurrenceKind::CallSite, span_of(callee));
+                }
+            }
+            (ParserDialect::Python, "import_statement" | "import_from_statement") => {
+                for field in ["module_name", "name"] {
+                    for named in children_by_field(node, field) {
+                        // `import x as y` names x; the alias is a local
+                        // binding, not the thing imported.
+                        let evidence = named
+                            .child_by_field_name("name")
+                            .filter(|_| named.kind() == "aliased_import")
+                            .unwrap_or(named);
+                        push(OccurrenceKind::ImportSite, span_of(evidence));
+                    }
+                }
+            }
+            (
+                ParserDialect::JavaScript
+                | ParserDialect::Jsx
+                | ParserDialect::TypeScript
+                | ParserDialect::Tsx,
+                "import_statement",
+            ) => {
+                if let Some(source) = node.child_by_field_name("source") {
+                    push(OccurrenceKind::ImportSite, span_of(source));
+                }
+                for specifier in descendants(node, "import_specifier") {
+                    if let Some(name) = specifier.child_by_field_name("name") {
+                        push(OccurrenceKind::ImportSite, span_of(name));
+                    }
+                }
+            }
+            (ParserDialect::CSharp, "using_directive") => {
+                // The last name in the directive is the namespace being
+                // used; an alias in front of it is a local name.
+                let mut cursor = node.walk();
+                let names: Vec<Node<'_>> = node
+                    .named_children(&mut cursor)
+                    .filter(|child| {
+                        matches!(
+                            child.kind(),
+                            "identifier" | "qualified_name" | "alias_qualified_name"
+                        )
+                    })
+                    .collect();
+                if let Some(used) = names.last() {
+                    push(OccurrenceKind::ImportSite, span_of(*used));
+                }
+            }
+            (ParserDialect::Rust, "use_declaration") => {
+                if let Some(argument) = node.child_by_field_name("argument") {
+                    push(OccurrenceKind::ImportSite, span_of(argument));
+                }
+            }
+            _ => {}
+        }
     }
 
     fn classify(&self, node: Node<'_>, frame: &Frame) -> Declared {
@@ -487,13 +665,14 @@ impl Walker<'_> {
             "assignment" | "type_alias_statement" => node.child_by_field_name("left"),
             _ => node.child_by_field_name("name"),
         };
-        let Some(name) = name_node.and_then(|node| self.plain_name(node)) else {
+        let Some((name, name_span)) = name_node.and_then(|node| self.name_of(node)) else {
             return Declared::Nothing;
         };
 
         Declared::Symbols(vec![Candidate {
             kind,
             name,
+            name_span,
             span: span_of(node),
             signature: self.signature(node, self.signature_end(node)),
             // Python writes no visibility keyword, and a leading
@@ -550,7 +729,7 @@ impl Walker<'_> {
         let name_node = node
             .child_by_field_name("name")
             .or_else(|| node.child_by_field_name("property"));
-        let Some(name) = name_node.and_then(|node| self.plain_name(node)) else {
+        let Some((name, name_span)) = name_node.and_then(|node| self.name_of(node)) else {
             return Declared::Nothing;
         };
         let _ = frame;
@@ -558,6 +737,7 @@ impl Walker<'_> {
         Declared::Symbols(vec![Candidate {
             kind,
             name,
+            name_span,
             span: span_of(node),
             signature: self.signature(node, self.signature_end(node)),
             visibility,
@@ -580,9 +760,9 @@ impl Walker<'_> {
             .named_children(&mut cursor)
             .filter(|child| child.kind() == "variable_declarator")
             .filter_map(|declarator| {
-                let name = declarator
+                let (name, name_span) = declarator
                     .child_by_field_name("name")
-                    .and_then(|node| self.plain_name(node))?;
+                    .and_then(|node| self.name_of(node))?;
                 let value = declarator.child_by_field_name("value");
                 let kind = match value.map(|node| node.kind()) {
                     Some("arrow_function" | "function_expression" | "function") => {
@@ -596,6 +776,7 @@ impl Walker<'_> {
                 Some(Candidate {
                     kind,
                     name,
+                    name_span,
                     span: span_of(node),
                     signature: Some(truncate(&format!("{keyword} {header}"))),
                     visibility: Visibility::Unspecified,
@@ -636,9 +817,9 @@ impl Walker<'_> {
             _ => return Declared::Nothing,
         };
 
-        let Some(name) = node
+        let Some((name, name_span)) = node
             .child_by_field_name("name")
-            .and_then(|node| self.plain_name(node))
+            .and_then(|node| self.name_of(node))
         else {
             return Declared::Nothing;
         };
@@ -647,6 +828,7 @@ impl Walker<'_> {
         Declared::Symbols(vec![Candidate {
             kind,
             name,
+            name_span,
             span: span_of(node),
             signature: self.signature(node, self.signature_end(node)),
             visibility,
@@ -670,7 +852,7 @@ impl Walker<'_> {
         let candidates = self
             .declarator_names(node)
             .into_iter()
-            .map(|name| Candidate {
+            .map(|(name, name_span)| Candidate {
                 kind: if constant {
                     SymbolKind::Constant
                 } else {
@@ -678,6 +860,7 @@ impl Walker<'_> {
                 },
                 signature: Some(truncate(format!("{prefix} {name}").trim())),
                 name,
+                name_span,
                 span: span_of(node),
                 visibility,
                 exported,
@@ -734,9 +917,9 @@ impl Walker<'_> {
             _ => return Declared::Nothing,
         };
 
-        let Some(name) = node
+        let Some((name, name_span)) = node
             .child_by_field_name("name")
-            .and_then(|node| self.plain_name(node))
+            .and_then(|node| self.name_of(node))
         else {
             return Declared::Nothing;
         };
@@ -744,6 +927,7 @@ impl Walker<'_> {
         Declared::Symbols(vec![Candidate {
             kind,
             name,
+            name_span,
             span: span_of(node),
             signature: self.signature(node, self.signature_end(node)),
             visibility,
@@ -754,6 +938,12 @@ impl Walker<'_> {
     /// The text of a node that is expected to be a bare name, unwrapping
     /// the one-child wrappers some grammars use (Python's `type`).
     fn plain_name(&self, node: Node<'_>) -> Option<String> {
+        self.name_of(node).map(|(name, _)| name)
+    }
+
+    /// A bare name plus the span of the token it actually came from --
+    /// which is the DEFINITION evidence span, never the declaration's.
+    fn name_of(&self, node: Node<'_>) -> Option<(String, SourceSpan)> {
         const NAMES: &[&str] = &[
             "identifier",
             "type_identifier",
@@ -765,13 +955,12 @@ impl Walker<'_> {
             "shorthand_property_identifier",
         ];
         if NAMES.contains(&node.kind()) {
-            return Some(self.text(node));
+            return Some((self.text(node), span_of(node)));
         }
         if node.kind() == "type" || node.kind() == "generic_type" {
             let mut cursor = node.walk();
-            return node
-                .named_children(&mut cursor)
-                .find_map(|child| self.plain_name(child));
+            let children: Vec<Node<'_>> = node.named_children(&mut cursor).collect();
+            return children.into_iter().find_map(|child| self.name_of(child));
         }
         None
     }
@@ -786,16 +975,16 @@ impl Walker<'_> {
             .map_or_else(|| node.start_byte(), |declared| declared.end_byte())
     }
 
-    fn declarator_names(&self, node: Node<'_>) -> Vec<String> {
+    fn declarator_names(&self, node: Node<'_>) -> Vec<(String, SourceSpan)> {
         let mut names = Vec::new();
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
             if child.kind() == "variable_declarator" {
-                if let Some(name) = child
+                if let Some(named) = child
                     .child_by_field_name("name")
-                    .and_then(|node| self.plain_name(node))
+                    .and_then(|node| self.name_of(node))
                 {
-                    names.push(name);
+                    names.push(named);
                 }
             } else if child.kind() == "variable_declaration" {
                 names.extend(self.declarator_names(child));
@@ -941,6 +1130,30 @@ fn is_binding(kind: SymbolKind) -> bool {
         kind,
         SymbolKind::Constant | SymbolKind::Field | SymbolKind::Property
     )
+}
+
+/// Every named child of `node` under `field`, since a Python import can
+/// name several things in one statement.
+fn children_by_field<'tree>(node: Node<'tree>, field: &str) -> Vec<Node<'tree>> {
+    let mut cursor = node.walk();
+    let children: Vec<Node<'tree>> = node
+        .children_by_field_name(field, &mut cursor)
+        .filter(|child| child.is_named())
+        .collect();
+    children
+}
+
+/// Named descendants of `node` with the given kind.
+fn descendants<'tree>(node: Node<'tree>, kind: &str) -> Vec<Node<'tree>> {
+    let mut found = Vec::new();
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        if child.kind() == kind {
+            found.push(child);
+        }
+        found.extend(descendants(child, kind));
+    }
+    found
 }
 
 fn span_of(node: Node<'_>) -> SourceSpan {
@@ -1535,6 +1748,216 @@ export function top(
         assert!(
             !extraction.symbols.is_empty(),
             "what is still structurally clear is still extracted"
+        );
+    }
+
+    /// Every occurrence of `kind`, as `(text, containing qualified_name)`.
+    fn evidence(
+        extraction: &Extraction,
+        source: &str,
+        kind: OccurrenceKind,
+    ) -> Vec<(String, Option<String>)> {
+        extraction
+            .occurrences
+            .iter()
+            .filter(|occurrence| occurrence.kind == kind)
+            .map(|occurrence| {
+                (
+                    source[occurrence.span.start_byte..occurrence.span.end_byte].to_owned(),
+                    occurrence
+                        .containing
+                        .map(|index| extraction.symbols[index].qualified_name.clone()),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn every_declaration_is_evidence_of_itself_at_its_name_token() {
+        for (dialect, source) in [
+            (ParserDialect::Python, PYTHON),
+            (ParserDialect::TypeScript, TYPESCRIPT),
+            (ParserDialect::Rust, RUST),
+            (ParserDialect::CSharp, CSHARP),
+        ] {
+            let extraction = run(dialect, source);
+            let definitions: Vec<(String, Option<String>)> =
+                evidence(&extraction, source, OccurrenceKind::Definition);
+
+            assert_eq!(
+                definitions.len(),
+                extraction.symbols.len(),
+                "{dialect}: one DEFINITION per declaration"
+            );
+            for symbol in &extraction.symbols {
+                let (text, containing) = definitions
+                    .iter()
+                    .find(|(_, containing)| {
+                        containing.as_deref() == Some(symbol.qualified_name.as_str())
+                    })
+                    .unwrap_or_else(|| panic!("{dialect}: {} has no DEFINITION", symbol.name));
+                assert_eq!(
+                    text, &symbol.name,
+                    "{dialect}: the span must be the name token, not the declaration"
+                );
+                assert_eq!(containing.as_deref(), Some(symbol.qualified_name.as_str()));
+            }
+        }
+    }
+
+    #[test]
+    fn a_definition_span_is_narrower_than_its_declaration() {
+        let extraction = run(ParserDialect::Python, PYTHON);
+        let method = find(&extraction, "Thing.method");
+        let definition = extraction
+            .occurrences
+            .iter()
+            .find(|occurrence| {
+                occurrence.kind == OccurrenceKind::Definition
+                    && occurrence.containing
+                        == Some(
+                            extraction
+                                .symbols
+                                .iter()
+                                .position(|symbol| symbol.qualified_name == "Thing.method")
+                                .expect("method"),
+                        )
+            })
+            .expect("a definition");
+
+        assert_eq!(
+            &PYTHON[definition.span.start_byte..definition.span.end_byte],
+            "method"
+        );
+        assert!(definition.span.start_byte > method.span.start_byte);
+        assert!(definition.span.end_byte < method.span.end_byte);
+        assert_eq!(definition.span.start.line, method.span.start.line);
+        assert!(definition.span.start.column > method.span.start.column);
+    }
+
+    #[test]
+    fn imports_are_evidence_of_what_the_statement_names() {
+        let python = "import os\nfrom p.q import r, s as t\n";
+        assert_eq!(
+            evidence(
+                &run(ParserDialect::Python, python),
+                python,
+                OccurrenceKind::ImportSite
+            ),
+            vec![
+                ("os".to_owned(), None),
+                ("p.q".to_owned(), None),
+                ("r".to_owned(), None),
+                // `s as t` imports s; the alias is a local binding.
+                ("s".to_owned(), None),
+            ]
+        );
+
+        let typescript = "import { a, b as c } from './m'\n";
+        assert_eq!(
+            evidence(
+                &run(ParserDialect::TypeScript, typescript),
+                typescript,
+                OccurrenceKind::ImportSite
+            ),
+            vec![
+                ("a".to_owned(), None),
+                ("b".to_owned(), None),
+                ("'./m'".to_owned(), None),
+            ]
+        );
+
+        let csharp = "using System;\nusing Alias = System.Text;\n";
+        assert_eq!(
+            evidence(
+                &run(ParserDialect::CSharp, csharp),
+                csharp,
+                OccurrenceKind::ImportSite
+            ),
+            vec![
+                ("System".to_owned(), None),
+                ("System.Text".to_owned(), None),
+            ]
+        );
+
+        let rust = "use std::collections::HashMap;\n";
+        assert_eq!(
+            evidence(
+                &run(ParserDialect::Rust, rust),
+                rust,
+                OccurrenceKind::ImportSite
+            ),
+            vec![("std::collections::HashMap".to_owned(), None)]
+        );
+    }
+
+    #[test]
+    fn a_call_site_records_its_callee_and_its_smallest_enclosing_symbol() {
+        let source = "\
+def free():
+    return helper()
+
+
+class Thing:
+    def method(self):
+        def nested():
+            return deep()
+
+        return nested()
+
+
+outer()
+";
+        let extraction = run(ParserDialect::Python, source);
+
+        assert_eq!(
+            evidence(&extraction, source, OccurrenceKind::CallSite),
+            vec![
+                ("helper".to_owned(), Some("free".to_owned())),
+                // The innermost function owns the call, not its method.
+                ("deep".to_owned(), Some("Thing.method.nested".to_owned())),
+                ("nested".to_owned(), Some("Thing.method".to_owned())),
+                // Nothing lexically contains a file-level call.
+                ("outer".to_owned(), None),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_call_site_resolves_nothing() {
+        // Two calls written the same way, reaching different things, are
+        // indistinguishable here -- which is the point: this is evidence
+        // that a call is written, not a resolved target.
+        let source = "\
+import lib
+
+def one():
+    return lib.run()
+
+def two():
+    return lib.run()
+";
+        let extraction = run(ParserDialect::Python, source);
+        let calls = evidence(&extraction, source, OccurrenceKind::CallSite);
+
+        assert_eq!(
+            calls,
+            vec![
+                ("lib.run".to_owned(), Some("one".to_owned())),
+                ("lib.run".to_owned(), Some("two".to_owned())),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_container_dialect_invents_no_evidence() {
+        let source = "<script lang=\"ts\">\n  export function go() { run() }\n</script>\n";
+        let extraction = run(ParserDialect::Svelte, source);
+
+        assert_eq!(extraction.status, ExtractionStatus::ContainerOnly);
+        assert!(
+            extraction.occurrences.is_empty(),
+            "an unread embedded script yields no occurrences, true or false"
         );
     }
 
