@@ -27,7 +27,7 @@ macro_rules! define_stable_id {
         impl $name {
             /// Generate a new stable identity.
             #[must_use]
-            pub fn new() -> Self {
+            pub fn generate() -> Self {
                 Self(Uuid::new_v4())
             }
 
@@ -100,9 +100,9 @@ mod tests {
 
     #[test]
     fn ids_round_trip_through_bytes() {
-        let project_id = ProjectId::new();
-        let workspace_id = WorkspaceId::new();
-        let resource_id = ResourceId::new();
+        let project_id = ProjectId::generate();
+        let workspace_id = WorkspaceId::generate();
+        let resource_id = ResourceId::generate();
 
         assert_eq!(ProjectId::from_bytes(project_id.to_bytes()), project_id);
         assert_eq!(
