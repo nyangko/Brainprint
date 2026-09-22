@@ -50,12 +50,13 @@ use brainprint_core::{ResourceId, WorkspaceId};
 use brainprint_engine::{
     config::WorkspaceConfig,
     generation::GenerationStore,
+    logical_symbol::LogicalIdentity,
     relations::RelationIndex,
     resolution::Support,
     resource::{ResourceLanguage, ResourceStore},
     runtime::{
         CancelToken, HostConcurrency, HostError, HostHealth, RequestOptions, RuntimePolicy,
-        RuntimeRequest, RuntimeResponse, RuntimeState, SemanticBackendLauncher,
+        RuntimeRequest, RuntimeResponse, RuntimeState, SemanticBackendLauncher, SemanticRequestKey,
         SemanticRuntimeHost, SemanticRuntimeSupervisor, StartFailure,
     },
     scan::BaselineScan,
@@ -67,7 +68,7 @@ use brainprint_engine::{
         ConfigBasis, CurrentInputs, ObsoleteReason, SemanticBasis, SemanticIndex,
         SemanticIndexError, SemanticOwner, SemanticState,
     },
-    symbol::AnalysisProfile,
+    symbol::{AnalysisProfile, SymbolKind},
     trust::ProjectExecutionTrust,
 };
 
@@ -816,6 +817,92 @@ fn a_crash_in_one_worktree_is_invisible_in_the_other() {
     assert_eq!(fleet.ready, 1);
 }
 
+/// An identical question in two worktrees is two questions.
+///
+/// The dedupe key is built from the context key, and the context key
+/// carries the `WorkspaceId`, so this is a property rather than a
+/// policy -- but it is the property that would silently answer one
+/// checkout out of another's backend if it ever stopped holding.
+#[test]
+fn an_identical_question_in_two_worktrees_is_never_deduplicated() {
+    let here = context_in(8, "sha256:venv");
+    let there = context_in(9, "sha256:venv");
+
+    let ask = |context: &AnalysisContext| SemanticRequestKey {
+        context_key: context.context_key(),
+        capability: SemanticCapability::ImportBinding,
+        target: "src/app.py::go".to_owned(),
+        basis_token: Some("rev-1".to_owned()),
+    };
+    assert_ne!(
+        ask(&here).dedupe_key(),
+        ask(&there).dedupe_key(),
+        "same capability, same target, same basis -- different checkout"
+    );
+
+    // And the runtimes they would run on are different entries, so
+    // there is no shared in-flight map for them to meet in.
+    let launcher = FakeLauncher::new(SemanticBackendKind::Python);
+    let supervisor = SemanticRuntimeSupervisor::new(RuntimePolicy::default())
+        .with_backend(Arc::clone(&launcher) as Arc<dyn SemanticBackendLauncher>);
+    let mine = supervisor.acquire(&binding_of(&here)).expect("start");
+    let yours = supervisor.acquire(&binding_of(&there)).expect("start");
+    assert_ne!(mine.context_key(), yours.context_key());
+    assert_eq!(launcher.launch_count(), 2);
+}
+
+/// A logical symbol cannot be shared between worktrees either.
+///
+/// The grouping that lets one type keep several declarations is keyed
+/// by the context, and the context carries the Workspace. Two checkouts
+/// of one repository declaring the same fully qualified name in the
+/// same project file are still two types.
+#[test]
+fn a_logical_symbol_belongs_to_one_workspace() {
+    let here = context_in(8, "sha256:venv");
+    let there = context_in(9, "sha256:venv");
+    let identity = |context: &AnalysisContext| LogicalIdentity {
+        context_key: context.context_key(),
+        project_key: "src/Core/Core.csproj".to_owned(),
+        qualified_name: "Core.Runner".to_owned(),
+        kind: SymbolKind::Class,
+        arity: 0,
+        discriminator: String::new(),
+    };
+    assert_ne!(
+        identity(&here).fingerprint(),
+        identity(&there).fingerprint(),
+        "everything but the worktree is identical, and that is enough"
+    );
+}
+
+/// React is not a language and has no backend of its own.
+#[test]
+fn react_registers_no_backend() {
+    // The closed vocabulary is the proof: there is no React kind to
+    // register a launcher for, and JSX/TSX are served by the TS/JS
+    // backend as ordinary TypeScript.
+    let families = [
+        SemanticBackendKind::Python,
+        SemanticBackendKind::TypeScriptJavaScript,
+        SemanticBackendKind::Svelte,
+        SemanticBackendKind::CSharp,
+        SemanticBackendKind::Rust,
+    ];
+    for family in families {
+        assert!(
+            !format!("{family}").to_ascii_lowercase().contains("react"),
+            "{family} is a backend family; React is not"
+        );
+    }
+    assert!(
+        SemanticBackendKind::TypeScriptJavaScript
+            .languages()
+            .contains(&ResourceLanguage::TypeScript),
+        "a .tsx file is TypeScript, and that is the whole of React's backend story"
+    );
+}
+
 // ---------------------------------------------------------------------
 // Trust isolation
 // ---------------------------------------------------------------------
@@ -1361,6 +1448,98 @@ fn one_supervisor_serves_every_installed_backend_family() {
         );
     }
     drop(families);
+    let _ = fs::remove_dir_all(&base);
+}
+
+/// Trusted and untrusted C# and Rust are different semantic worlds.
+///
+/// Trust decides whether the backend may read the Workspace's own
+/// project definitions, which decides what environment the analysis was
+/// produced under, which is part of the context. So this is not a flag
+/// the fleet carries: it is an input, and two answers to it are two
+/// contexts that can never be handed each other's results.
+#[test]
+#[ignore = "needs the installed C# and Rust backends"]
+fn trusted_and_untrusted_csharp_and_rust_never_reuse_each_other() {
+    let base = env::temp_dir().join(format!("brainprint-i4fleettrust-{}", process::id()));
+    let _ = fs::remove_dir_all(&base);
+    let mut checked = 0;
+
+    if let Ok(install) = CSharpInstall::locate(&spike_root("csharp_semantic_spike")) {
+        let workspace = base.join("csharp").join("workspace");
+        copy_tree(&fixture_root("csharp-semantic-spike"), &workspace);
+        let db_path = base.join("csharp").join("data").join("index.db");
+        BaselineScan::open(&db_path)
+            .expect("index.db")
+            .run_initial_scan(&workspace, &WorkspaceConfig::default(), "workspace-rev-1")
+            .expect("baseline scan");
+        let index = SemanticIndex::open(&db_path).expect("index.db");
+        let mut keys = Vec::new();
+        for trust in [
+            ProjectExecutionTrust::Untrusted,
+            ProjectExecutionTrust::Trusted,
+        ] {
+            let projects = brainprint_engine::csharp_semantic::lifecycle::discover_projects_under(
+                index.connection(),
+                trust,
+                Some(&workspace),
+            )
+            .expect("projects");
+            let environment = brainprint_engine::csharp_semantic::lifecycle::environment_identity(
+                &install, &projects,
+            )
+            .expect("environment");
+            keys.push(
+                brainprint_engine::csharp_semantic::toolchain_identity(&install, &environment)
+                    .fingerprint(),
+            );
+        }
+        assert_ne!(
+            keys[0], keys[1],
+            "an untrusted C# world has not read the projects a trusted one has"
+        );
+        checked += 1;
+    }
+
+    if let Some(install) = rust_install() {
+        let workspace = base.join("rust").join("workspace");
+        copy_tree(&fixture_root("rust-semantic-spike"), &workspace);
+        let db_path = base.join("rust").join("data").join("index.db");
+        BaselineScan::open(&db_path)
+            .expect("index.db")
+            .run_initial_scan(&workspace, &WorkspaceConfig::default(), "workspace-rev-1")
+            .expect("baseline scan");
+        let index = SemanticIndex::open(&db_path).expect("index.db");
+        let mut keys = Vec::new();
+        for trust in [
+            ProjectExecutionTrust::Untrusted,
+            ProjectExecutionTrust::Trusted,
+        ] {
+            let packages = brainprint_engine::rust_semantic::lifecycle::discover_packages_under(
+                index.connection(),
+                trust,
+                Some(&workspace),
+            )
+            .expect("packages");
+            let environment = brainprint_engine::rust_semantic::lifecycle::environment_identity(
+                &install, &packages,
+            )
+            .expect("environment");
+            keys.push(
+                brainprint_engine::rust_semantic::toolchain_identity(&install, &environment)
+                    .fingerprint(),
+            );
+        }
+        assert_ne!(
+            keys[0], keys[1],
+            "an untrusted Rust world has not read the manifests a trusted one has"
+        );
+        checked += 1;
+    }
+
+    if checked == 0 {
+        println!("skipped: neither the C# nor the Rust backend is installed");
+    }
     let _ = fs::remove_dir_all(&base);
 }
 
