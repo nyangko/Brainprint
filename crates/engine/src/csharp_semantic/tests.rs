@@ -1445,7 +1445,7 @@ fn a_reopen_reads_persisted_truth_and_refuses_what_it_cannot_prove() {
 
     let context = context();
     let owner = crate::semantic_index::SemanticOwner::new(
-        &context.context_key(),
+        context.context_key(),
         fixture.resource(TEST_FILE).id,
     );
     let projects = lifecycle::discover_projects_under(
@@ -1639,4 +1639,44 @@ fn the_capability_matrix_is_what_was_measured() {
             "{capability:?} needs a loaded project"
         );
     }
+}
+
+/// Two worktrees are two analyses, and neither vouches for the other.
+///
+/// The companion to [`worktree_identity_is_independent_of_target_framework`]:
+/// that one says an absolute path is not identity, this one says the
+/// Workspace *is*. A group proved in one checkout must not be reused in
+/// another, however identical the source.
+#[test]
+fn a_logical_identity_belongs_to_one_workspace() {
+    let one = crate::semantic::AnalysisContext {
+        workspace: brainprint_core::WorkspaceId::from_bytes([1; 16]),
+        ..context()
+    };
+    let other = crate::semantic::AnalysisContext {
+        workspace: brainprint_core::WorkspaceId::from_bytes([2; 16]),
+        ..context()
+    };
+    assert_ne!(one.context_key(), other.context_key());
+
+    let identity = |context: &crate::semantic::AnalysisContext| logical_symbol::LogicalIdentity {
+        context_key: context.context_key(),
+        project_key: "src/Core/Core.csproj".to_owned(),
+        qualified_name: "Core.Runner".to_owned(),
+        kind: SymbolKind::Class,
+        arity: 0,
+        discriminator: String::new(),
+    };
+    assert_ne!(
+        identity(&one).fingerprint(),
+        identity(&other).fingerprint(),
+        "the same type in two worktrees is two semantic identities"
+    );
+
+    // And a capability report is bound to its context too, so one
+    // Workspace's matrix cannot be read as another's.
+    assert_ne!(
+        capability_report(&one, ProjectExecutionTrust::Trusted).context_key(),
+        capability_report(&other, ProjectExecutionTrust::Trusted).context_key()
+    );
 }

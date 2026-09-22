@@ -16,7 +16,7 @@ under one heading, each check is a row here.
 
 | suite | needs | count |
 |---|---|---|
-| `brainprint_engine::csharp_semantic::*` | nothing — no SDK, no server, no network | 71 |
+| `brainprint_engine::csharp_semantic::*` | nothing — no SDK, no server, no network | 72 |
 | `crates/engine/tests/i4_csharp_acceptance.rs` | the restored server (`./restore.sh`) and a .NET SDK | 13 |
 
 ```sh
@@ -192,7 +192,7 @@ stated, and one context never vouches for another framework.
 | 12.5 | semantic-required gaps stay explicit | PASS | same |
 | 12.6 | no false zero | PASS | `an_unavailable_backend_has_a_readable_capability_report` |
 | 12.7 | no daemon failure | PASS | the whole always-on suite runs with no SDK |
-| 12.8 | the always-on suite needs no SDK/backend | PASS | 71 tests, none `#[ignore]` |
+| 12.8 | the always-on suite needs no SDK/backend | PASS | 72 tests, none `#[ignore]` |
 | 12.9 | no global executable fallback, no auto-install | PASS | `a_missing_install_says_exactly_what_is_missing`, `a_missing_package_is_reported_rather_than_searched_for_on_path` |
 
 ## 13. Timeout / cancellation / withdrawn request
@@ -338,7 +338,7 @@ limitation named at the constant that declares it.
 | P13 | arity separates `Box` from `Box<T>` | PASS | `arity_separates_two_types_that_share_a_name`, `arity_comes_from_the_type_parameter_list` |
 | P14 | the project world separates same-named types | PASS | `arity_separates_two_types_that_share_a_name` |
 | P15 | no Roslyn `SymbolKey`/ProjectId/DocumentId in identity | PASS | by construction |
-| P16 | membership is generation-aware and worktree-isolated | PASS | `logical_symbol_declaration` carries `context_key` + `generation_id`; `worktree_identity_is_independent_of_target_framework` |
+| P16 | membership is generation-aware and worktree-isolated | PASS | `logical_symbol_declaration` carries `context_key` + `generation_id`; `a_logical_identity_belongs_to_one_workspace`, `worktree_identity_is_independent_of_target_framework` |
 | P17 | stale membership is removed on source replacement | PASS | `withdrawal_collects_emptied_groups` |
 | P18 | the identity dies with its last declaration | PASS | same — `collect_orphans` |
 | P19 | only genuine partial declarations group | PASS | `two_non_partial_types_are_never_grouped`, `partial_is_read_from_the_declaration_header`, `only_type_kinds_can_be_partial_declarations` |
