@@ -17,8 +17,9 @@ use rusqlite::{Connection, OptionalExtension, params};
 use crate::{
     evidence::OccurrenceRef,
     gaps::{IntendedRelation, PersistedUnresolved, UnresolvedReason},
+    graph::{GraphEndpoint, RelationKind},
     resource::Resource,
-    symbol::OccurrenceKind,
+    symbol::{Occurrence, OccurrenceKind},
 };
 
 /// What a byte span matched in the Symbol table.
@@ -236,4 +237,271 @@ pub fn displaced_gaps(
             })
         })
         .collect())
+}
+
+// ---------------------------------------------------------------------
+// The sites one Resource offers
+// ---------------------------------------------------------------------
+
+/// The relation kinds an adapter can resolve from a source occurrence.
+///
+/// Each one is a site I3 already recorded, so the answer has somewhere
+/// exact to anchor. `OVERRIDES` is absent because it is not written at
+/// a site at all -- it is derived from proven inheritance (see
+/// [`crate::semantic_overrides`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResolvableKind {
+    Imports,
+    Calls,
+    References,
+    UsesType,
+    Extends,
+    Implements,
+}
+
+impl ResolvableKind {
+    #[must_use]
+    pub const fn of_relation(kind: RelationKind) -> Option<Self> {
+        match kind {
+            RelationKind::Imports => Some(Self::Imports),
+            RelationKind::Calls => Some(Self::Calls),
+            RelationKind::References => Some(Self::References),
+            RelationKind::UsesType => Some(Self::UsesType),
+            RelationKind::Extends => Some(Self::Extends),
+            RelationKind::Implements => Some(Self::Implements),
+            RelationKind::Overrides | RelationKind::UsesEnv | RelationKind::UsesConfig => None,
+        }
+    }
+
+    #[must_use]
+    pub const fn of_intended(intended: IntendedRelation) -> Option<Self> {
+        match intended {
+            IntendedRelation::Known(kind) => Self::of_relation(kind),
+            // TypeScript states the distinction in syntax, so a base
+            // entry whose kind I3 could not settle is still an
+            // `extends` clause -- an `implements` clause is recorded as
+            // `IMPLEMENTS` or not at all.
+            IntendedRelation::Inheritance => Some(Self::Extends),
+        }
+    }
+
+    /// The default for an occurrence kind that carries no stated
+    /// relation. A type site is absent on purpose: `extends`,
+    /// `implements` and an annotation are three different relations and
+    /// the occurrence kind does not say which, so nothing is guessed.
+    #[must_use]
+    pub const fn of_occurrence(kind: OccurrenceKind) -> Option<Self> {
+        match kind {
+            OccurrenceKind::ImportSite => Some(Self::Imports),
+            OccurrenceKind::CallSite => Some(Self::Calls),
+            OccurrenceKind::ReferenceSite => Some(Self::References),
+            OccurrenceKind::TypeSite | OccurrenceKind::Definition | OccurrenceKind::KeySite => None,
+        }
+    }
+
+    /// The canonical relation this site becomes once it resolves.
+    #[must_use]
+    pub const fn relation_kind(self) -> RelationKind {
+        match self {
+            Self::Imports => RelationKind::Imports,
+            Self::Calls => RelationKind::Calls,
+            Self::References => RelationKind::References,
+            Self::UsesType => RelationKind::UsesType,
+            Self::Extends => RelationKind::Extends,
+            Self::Implements => RelationKind::Implements,
+        }
+    }
+}
+
+/// One site the adapter will ask about.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SemanticSite {
+    pub occurrence: OccurrenceRef,
+    pub kind: ResolvableKind,
+    /// The name the source writes, used only to name an external
+    /// target.
+    pub lookup_name: String,
+    /// The receiver a member call was written through, when there is
+    /// one.
+    pub module_hint: Option<String>,
+    /// What the structural tier said when it could not settle the site.
+    pub reason: UnresolvedReason,
+    /// Whether the written text is a quoted module specifier rather
+    /// than a name.
+    pub specifier: bool,
+}
+
+/// A site the adapter deliberately left to the structural tier.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RetainedExternal {
+    pub occurrence: OccurrenceRef,
+    pub kind: RelationKind,
+    /// Why. Constant today, and a field rather than a comment so a
+    /// report reads as evidence rather than as a bare list of spans.
+    pub reason: &'static str,
+}
+
+/// Why a site the structural tier bound to a package is left alone.
+pub const STRUCTURALLY_EXTERNAL: &str =
+    "the structural tier bound this site to a dependency package";
+
+/// A gap this tier does not answer, with the reason.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeferredGap {
+    pub occurrence: OccurrenceRef,
+    pub intended: IntendedRelation,
+    pub reason: &'static str,
+}
+
+/// Why an unanchored relation kind is left alone.
+const NO_STATED_RELATION: &str = "no gap and no canonical relation states what this site means";
+
+/// What the adapter will ask about for one Resource, and what it will
+/// not.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SiteSet {
+    pub sites: Vec<SemanticSite>,
+    pub retained_external: Vec<RetainedExternal>,
+    pub deferred: Vec<DeferredGap>,
+}
+
+/// Collect every site in `owner` this adapter may answer.
+///
+/// Driven by the Occurrence table rather than by the gap table alone,
+/// and that difference is the whole TypeScript story: `import { Service }
+/// from "@core/service"` leaves *no* gap for `Service` -- I3 recorded
+/// the import site and moved on -- so a gap-only pass would never prove
+/// what the name binds to. The set is still bounded by what I3
+/// recorded, which is what keeps this enrichment rather than a second
+/// index of the program.
+///
+/// # Errors
+/// When the index cannot be read.
+pub fn collect_sites(
+    connection: &Connection,
+    owner: &Resource,
+    owner_text: &str,
+    gaps: &[PersistedUnresolved],
+    context_key: &str,
+) -> Result<SiteSet, rusqlite::Error> {
+    let mut statement = connection.prepare(
+        "SELECT occurrence.kind, occurrence.start_byte, occurrence.end_byte, relation.kind, \
+                CASE WHEN target.external_entity_id IS NOT NULL THEN 1 ELSE 0 END, \
+                CASE WHEN semantic_evidence.occurrence_id IS NOT NULL THEN 1 ELSE 0 END \
+         FROM occurrence \
+         JOIN resource ON resource.id = occurrence.resource_id \
+         LEFT JOIN relation ON relation.id = occurrence.relation_id \
+         LEFT JOIN graph_entity AS target ON target.id = relation.target_entity_id \
+         LEFT JOIN semantic_evidence \
+                ON semantic_evidence.occurrence_id = occurrence.id \
+               AND semantic_evidence.context_key = ?2 \
+         WHERE resource.uid = ?1 \
+         ORDER BY occurrence.start_byte, occurrence.end_byte, occurrence.kind",
+    )?;
+    type Row = (String, i64, i64, Option<String>, i64, i64);
+    let rows: Vec<Row> = statement
+        .query_map(params![owner.id.to_bytes().to_vec(), context_key], |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+                row.get(5)?,
+            ))
+        })?
+        .collect::<Result<_, _>>()?;
+
+    let mut found = SiteSet::default();
+    for (raw_kind, start, end, bound_kind, external, ours) in rows {
+        let Ok(occurrence_kind) = OccurrenceKind::parse_public(&raw_kind) else {
+            continue;
+        };
+        let site = OccurrenceRef {
+            kind: occurrence_kind,
+            start_byte: usize::try_from(start).unwrap_or(0),
+            end_byte: usize::try_from(end).unwrap_or(0),
+        };
+        if ResolvableKind::of_occurrence(occurrence_kind).is_none()
+            && occurrence_kind != OccurrenceKind::TypeSite
+        {
+            continue;
+        }
+
+        let gap = gaps.iter().find(|gap| gap.occurrence == site);
+        let bound = bound_kind.as_deref().and_then(|kind| {
+            RelationKind::parse(kind)
+                .ok()
+                .and_then(ResolvableKind::of_relation)
+        });
+
+        // A binding this context established last time is this
+        // context's own previous answer, not the structural tier's
+        // claim: re-asking it is what makes a repeated refresh
+        // idempotent (task 4 `own_binding` agrees).
+        if external == 1 && ours == 0 {
+            if let Some(kind) = bound {
+                found.retained_external.push(RetainedExternal {
+                    occurrence: site,
+                    kind: kind.relation_kind(),
+                    reason: STRUCTURALLY_EXTERNAL,
+                });
+            }
+            continue;
+        }
+
+        let Some(kind) = gap
+            .and_then(|gap| ResolvableKind::of_intended(gap.intended))
+            .or(bound)
+            .or_else(|| ResolvableKind::of_occurrence(occurrence_kind))
+        else {
+            if let Some(gap) = gap {
+                found.deferred.push(DeferredGap {
+                    occurrence: site,
+                    intended: gap.intended,
+                    reason: NO_STATED_RELATION,
+                });
+            }
+            continue;
+        };
+
+        let written = owner_text
+            .get(site.start_byte..site.end_byte)
+            .unwrap_or_default();
+        found.sites.push(SemanticSite {
+            occurrence: site,
+            kind,
+            lookup_name: gap.map_or_else(|| written.to_owned(), |gap| gap.lookup_name.clone()),
+            module_hint: gap.and_then(|gap| gap.module_hint.clone()),
+            reason: gap.map_or(UnresolvedReason::NoStructuralBinding, |gap| gap.reason),
+            specifier: is_specifier(written),
+        });
+    }
+    Ok(found)
+}
+
+/// Whether the written text is a quoted module specifier.
+fn is_specifier(written: &str) -> bool {
+    let mut characters = written.chars();
+    matches!(characters.next(), Some('"' | '\'' | '`'))
+}
+
+/// The endpoint a site is *from*: the Symbol that lexically contains
+/// it, or the Resource at file level. The same rule I3 uses, so
+/// structural and semantic evidence for one edge agree on its source.
+#[must_use]
+pub fn source_endpoint(
+    owner: ResourceId,
+    occurrences: &[Occurrence],
+    site: OccurrenceRef,
+) -> GraphEndpoint {
+    occurrences
+        .iter()
+        .find(|occurrence| {
+            occurrence.kind == site.kind
+                && occurrence.span.start_byte == site.start_byte
+                && occurrence.span.end_byte == site.end_byte
+        })
+        .and_then(|occurrence| occurrence.containing_symbol_id)
+        .map_or(GraphEndpoint::Resource(owner), GraphEndpoint::Symbol)
 }

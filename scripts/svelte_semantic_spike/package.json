@@ -1,0 +1,13 @@
+{
+  "name": "brainprint-svelte-semantic-spike",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The pinned Svelte language tools #19 task 11 measured. Never PATH, never global. Its TypeScript is 6.0.3 on purpose: svelte-language-server 0.18.4 declares peer typescript ^5.9.2 || ^6.0.2, and forcing 7.0.2 crashes it at module load.",
+  "dependencies": {
+    "svelte": "5.57.1",
+    "svelte-language-server": "0.18.4",
+    "svelte2tsx": "0.7.61",
+    "typescript": "6.0.3"
+  }
+}
