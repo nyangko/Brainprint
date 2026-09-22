@@ -2,7 +2,8 @@
 //!
 //! Backend-neutral on purpose: it knows about framing, request ids,
 //! response correlation, server-initiated requests and notifications,
-//! and nothing about Pyright, Python, or LSP. The transport is two
+//! and nothing about any server, any language, or LSP itself. The
+//! transport is two
 //! streams, so a test can drive it over an in-process pipe and a
 //! launcher can drive it over a child process's stdio without either
 //! side knowing the difference.
@@ -346,13 +347,52 @@ fn read_frame(reader: &mut impl BufRead, inner: &Arc<Inner>) -> Option<Vec<u8>> 
     Some(body)
 }
 
+/// Route one decoded frame.
+///
+/// The shape of a JSON-RPC message is decided by which of `id` and
+/// `method` are present, so those are what this branches on -- and `id`
+/// is kept as the [`Value`] it is, never narrowed to an integer.
+///
+/// That distinction is load-bearing and cost #19 task 10 real debugging
+/// to find. JSON-RPC 2.0 and LSP both allow an id to be a string, and
+/// the TypeScript native server uses one: its `workspace/configuration`
+/// request arrives as `"id":"ts1"`. An earlier version read the id as an
+/// `i64`, so a string id read as *absent*, the request was dispatched as
+/// a notification, and no reply was ever sent. The server then waited
+/// forever for a configuration answer and stopped replying to anything
+/// -- including `shutdown` -- with a healthy connection, a live child
+/// and no error anywhere. Pyright happens to use integer ids, which is
+/// the only reason this survived task 5.
 fn dispatch(inner: &Arc<Inner>, message: &Value, handler: &dyn ServerHandler) {
-    let id = message.get("id").and_then(Value::as_i64);
+    // A JSON-RPC `null` id is not an id. It appears on an error reply to
+    // a request the peer could not parse, which matches nothing pending.
+    let id = message.get("id").filter(|id| !id.is_null());
     let method = message.get("method").and_then(Value::as_str);
 
     match (id, method) {
-        // A response to one of our requests.
+        // A request from the peer. Always answered, and answered with
+        // the peer's own id echoed back verbatim -- a reply carrying a
+        // re-encoded id matches nothing and is the same deadlock.
+        (Some(id), Some(method)) => {
+            let params = message.get("params").cloned().unwrap_or(Value::Null);
+            let reply = match handler.request(method, &params) {
+                Some(result) => json!({ "jsonrpc": "2.0", "id": id, "result": result }),
+                None => json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "error": { "code": -32601, "message": format!("method not found: {method}") },
+                }),
+            };
+            let _ = inner.send(&reply);
+        }
+        // A response to one of our requests. Our own ids are integers,
+        // because this client mints them; a response carrying anything
+        // else answers nothing this client sent.
         (Some(id), None) => {
+            let Some(id) = id.as_i64() else {
+                inner.malformed.fetch_add(1, Ordering::SeqCst);
+                return;
+            };
             let answer = if let Some(error) = message.get("error") {
                 Err(RemoteError {
                     code: error.get("code").and_then(Value::as_i64).unwrap_or(0),
@@ -376,19 +416,6 @@ fn dispatch(inner: &Arc<Inner>, message: &Value, handler: &dyn ServerHandler) {
             }
             drop(pending);
             inner.answered.notify_all();
-        }
-        // A request from the peer. Always answered.
-        (Some(id), Some(method)) => {
-            let params = message.get("params").cloned().unwrap_or(Value::Null);
-            let reply = match handler.request(method, &params) {
-                Some(result) => json!({ "jsonrpc": "2.0", "id": id, "result": result }),
-                None => json!({
-                    "jsonrpc": "2.0",
-                    "id": id,
-                    "error": { "code": -32601, "message": format!("method not found: {method}") },
-                }),
-            };
-            let _ = inner.send(&reply);
         }
         (None, Some(method)) => {
             let params = message.get("params").cloned().unwrap_or(Value::Null);
@@ -650,6 +677,56 @@ mod tests {
         assert_eq!(reply["id"], 100);
         assert_eq!(reply["result"][0]["pythonPath"], "/usr/bin/python3");
         assert_eq!(handler.requests.lock().expect("lock").len(), 1);
+        drop(client);
+    }
+
+    #[test]
+    fn a_peer_request_with_a_string_id_is_answered_with_that_same_id() {
+        // The regression that cost #19 task 10 a debugging session. The
+        // TypeScript native server asks for configuration with
+        // `"id":"ts1"`. Read as an integer, the id is *absent*, the
+        // request looks like a notification, and no reply is sent -- so
+        // the server waits forever for its answer and silently stops
+        // replying to everything, `shutdown` included.
+        let handler = Recording::new(Some(json!([{}])));
+        let (client, to_client, from_client) = wired(handler.clone());
+        to_client
+            .send(frame(&json!({
+                "jsonrpc": "2.0", "id": "ts1", "method": "workspace/configuration",
+                "params": {"items": [{"section": "typescript"}]},
+            })))
+            .expect("send");
+        let reply = body(
+            &from_client
+                .recv()
+                .expect("a string id must still be answered"),
+        );
+        assert_eq!(reply["id"], "ts1", "the peer's own id, echoed verbatim");
+        assert!(reply.get("result").is_some());
+        assert_eq!(handler.requests.lock().expect("lock").len(), 1);
+        drop(client);
+    }
+
+    #[test]
+    fn a_null_id_is_not_an_id() {
+        // A `null` id appears on an error reply to a request the peer
+        // could not parse. It answers nothing pending, and treating it
+        // as an id 0 would fill a slot that a real request owns.
+        let handler = Recording::new(None);
+        let (client, to_client, _from_client) = wired(handler.clone());
+        to_client
+            .send(frame(&json!({
+                "jsonrpc": "2.0", "id": Value::Null,
+                "error": { "code": -32700, "message": "Parse error" },
+            })))
+            .expect("send");
+        for _ in 0..100 {
+            if client.malformed_frames() > 0 {
+                break;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(client.malformed_frames(), 1);
         drop(client);
     }
 

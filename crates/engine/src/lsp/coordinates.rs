@@ -1,11 +1,16 @@
 //! Exact conversion between Brainprint byte offsets and LSP positions.
 //!
 //! Brainprint's [`SourceSpan`](crate::parser::SourceSpan) is byte-based,
-//! because tree-sitter is. Pyright speaks LSP, whose `character` is a
-//! count of **UTF-16 code units** inside a line -- it answers no
-//! `positionEncoding` in `initialize`, which under LSP means UTF-16 and
-//! nothing else (#19 task 5 tried negotiating `utf-8` and the server
-//! declined).
+//! because tree-sitter is. LSP counts a `character` in code units of
+//! whatever [`PositionEncoding`] the `initialize` handshake settled on,
+//! and the two backends settled on different ones: Pyright answers no
+//! `positionEncoding` at all, which under LSP means UTF-16 and nothing
+//! else (#19 task 5 tried negotiating `utf-8` and the server declined),
+//! while the TypeScript 7 native server accepts `utf-8` when the client
+//! offers it first (#19 task 10 measured it choosing `utf-8`). So the
+//! encoding is a parameter here, never an assumption -- and it is the
+//! *negotiated* one, read back out of the handshake, not the one the
+//! client asked for.
 //!
 //! Getting this wrong is not a visible failure. On the task 5 fixture
 //! `pkg/wide.py`, one identifier sits at UTF-16 offset 18, codepoint
@@ -19,6 +24,60 @@
 use std::{error::Error, fmt};
 
 use serde::{Deserialize, Serialize};
+
+/// The code unit an LSP `character` counts, as `initialize` settled it.
+///
+/// LSP names three (`utf-8`, `utf-16`, `utf-32`); a server picks one
+/// from the client's offered list and reports it back. UTF-16 is the
+/// protocol default and the only one a server that answers nothing may
+/// be assumed to mean.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum PositionEncoding {
+    /// Bytes. Brainprint's own unit, so the mapping is the identity on
+    /// every character -- which is why the TS/JS backend offers it first.
+    Utf8,
+    /// The LSP default, and what a server that reports no encoding
+    /// means.
+    #[default]
+    Utf16,
+    /// Codepoints.
+    Utf32,
+}
+
+impl PositionEncoding {
+    /// The wire name, as it appears in `initialize`.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Utf8 => "utf-8",
+            Self::Utf16 => "utf-16",
+            Self::Utf32 => "utf-32",
+        }
+    }
+
+    /// The encoding a wire name means, or `None` for one LSP does not
+    /// define. An unknown name is never rounded to the default: a
+    /// server naming an encoding this code cannot count in must not
+    /// have its positions read as if it had named UTF-16.
+    #[must_use]
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "utf-8" => Some(Self::Utf8),
+            "utf-16" => Some(Self::Utf16),
+            "utf-32" => Some(Self::Utf32),
+            _ => None,
+        }
+    }
+
+    /// How many code units one character occupies.
+    const fn units(self, character: char) -> usize {
+        match self {
+            Self::Utf8 => character.len_utf8(),
+            Self::Utf16 => character.len_utf16(),
+            Self::Utf32 => 1,
+        }
+    }
+}
 
 /// A zero-based LSP position: a line, and an offset into it counted in
 /// UTF-16 code units.
@@ -74,8 +133,10 @@ pub enum CoordinateError {
         character: u32,
         line_units: u32,
     },
-    /// The offset falls between the two halves of a surrogate pair --
-    /// inside one character, which is not a position.
+    /// The offset falls inside one character rather than between two
+    /// -- between the halves of a surrogate pair under UTF-16, or
+    /// between the bytes of a multi-byte character under UTF-8. Not a
+    /// position either way.
     SplitCodeUnit {
         line: u32,
         character: u32,
@@ -107,11 +168,11 @@ impl fmt::Display for CoordinateError {
                 line_units,
             } => write!(
                 formatter,
-                "character {character} is past the end of line {line} ({line_units} UTF-16 units)"
+                "character {character} is past the end of line {line} ({line_units} units)"
             ),
             Self::SplitCodeUnit { line, character } => write!(
                 formatter,
-                "character {character} on line {line} splits a surrogate pair"
+                "character {character} on line {line} splits a character"
             ),
             Self::ByteOutOfRange { byte, len } => {
                 write!(formatter, "byte {byte} is past the end of source ({len})")
@@ -137,17 +198,35 @@ pub struct LineMap<'a> {
     text: &'a str,
     /// Byte offset where each line begins. Always at least one entry.
     starts: Vec<usize>,
+    encoding: PositionEncoding,
 }
 
 impl<'a> LineMap<'a> {
+    /// A map over `text` in the LSP default encoding, UTF-16.
     #[must_use]
     pub fn new(text: &'a str) -> Self {
+        Self::with_encoding(text, PositionEncoding::Utf16)
+    }
+
+    /// A map over `text` in the encoding the handshake settled on.
+    #[must_use]
+    pub fn with_encoding(text: &'a str, encoding: PositionEncoding) -> Self {
         let mut starts = vec![0];
         starts.extend(
             text.match_indices('\n')
                 .map(|(index, separator)| index + separator.len()),
         );
-        Self { text, starts }
+        Self {
+            text,
+            starts,
+            encoding,
+        }
+    }
+
+    /// The encoding this map counts `character` offsets in.
+    #[must_use]
+    pub const fn encoding(&self) -> PositionEncoding {
+        self.encoding
     }
 
     #[must_use]
@@ -160,9 +239,9 @@ impl<'a> LineMap<'a> {
     /// A `\r\n` line ends at the `\r`: an LSP character offset counts
     /// the line's content, and the carriage return is part of the
     /// separator, not of the content. A lone `\r` is left alone -- LSP
-    /// allows it as a separator but Pyright reports lines split on
-    /// `\n`, and inventing a second line here would move every offset
-    /// after it.
+    /// allows it as a separator but both backends report lines split on
+    /// `\n` (#19 tasks 5 and 10 measured it), and inventing a second
+    /// line here would move every offset after it.
     fn line_text(&self, line: usize) -> Option<&'a str> {
         let start = *self.starts.get(line)?;
         let end = self
@@ -189,7 +268,7 @@ impl<'a> LineMap<'a> {
         let start = self.starts[line];
         let character: usize = self.text[start..byte]
             .chars()
-            .map(|character| character.len_utf16())
+            .map(|character| self.encoding.units(character))
             .sum();
         Ok(Position {
             line: u32::try_from(line).unwrap_or(u32::MAX),
@@ -214,9 +293,10 @@ impl<'a> LineMap<'a> {
             if units == wanted {
                 return Ok(start + offset);
             }
-            let next = units + character.len_utf16();
+            let next = units + self.encoding.units(character);
             if next > wanted {
-                // `wanted` points at the low half of a surrogate pair.
+                // `wanted` points inside `character` rather than at a
+                // boundary between two.
                 return Err(CoordinateError::SplitCodeUnit {
                     line: position.line,
                     character: position.character,
@@ -486,5 +566,82 @@ mod tests {
             map.span(range),
             Err(CoordinateError::InvertedRange { .. })
         ));
+    }
+
+    #[test]
+    fn utf8_positions_are_byte_offsets_on_every_script() {
+        // The TS/JS backend negotiates utf-8 (#19 task 10), so a
+        // `character` is a byte offset into the line and the mapping
+        // must be the identity -- including across Hangul and an
+        // astral-plane emoji, where the UTF-16 answer differs.
+        let text = "const 한글 = \"🎈\";\nconst after = 1;\n";
+        let map = LineMap::with_encoding(text, PositionEncoding::Utf8);
+        assert_eq!(map.encoding(), PositionEncoding::Utf8);
+        for (byte, _) in text.char_indices() {
+            let position = map.position(byte).expect("position");
+            assert_eq!(map.byte(position), Ok(byte), "byte {byte}");
+            let line_start = text[..byte].rfind('\n').map_or(0, |index| index + 1);
+            assert_eq!(
+                usize::try_from(position.character).expect("fits"),
+                byte - line_start,
+                "utf-8 character must be a byte offset at {byte}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_three_encodings_disagree_on_the_same_identifier() {
+        // The whole reason the encoding is a parameter: one identifier,
+        // three different `character` offsets. Reading a position in
+        // the wrong one lands on a different real symbol.
+        let text = "const 한글 = \"🎈\"; const target = 1;\n";
+        let byte = text.find("target").expect("needle");
+        let at = |encoding| {
+            LineMap::with_encoding(text, encoding)
+                .position(byte)
+                .expect("position")
+                .character
+        };
+        let (utf8, utf16, utf32) = (
+            at(PositionEncoding::Utf8),
+            at(PositionEncoding::Utf16),
+            at(PositionEncoding::Utf32),
+        );
+        assert_eq!(utf8, 29);
+        assert_eq!(utf16, 23);
+        assert_eq!(utf32, 22);
+    }
+
+    #[test]
+    fn a_utf8_offset_inside_a_multibyte_character_is_refused() {
+        let text = "const 한 = 1;\n";
+        let map = LineMap::with_encoding(text, PositionEncoding::Utf8);
+        // `한` starts at byte 6 and is three bytes wide; 7 is inside it.
+        assert_eq!(
+            map.byte(Position::new(0, 7)),
+            Err(CoordinateError::SplitCodeUnit {
+                line: 0,
+                character: 7,
+            })
+        );
+    }
+
+    #[test]
+    fn an_encoding_lsp_does_not_define_is_not_rounded_to_the_default() {
+        assert_eq!(
+            PositionEncoding::parse("utf-8"),
+            Some(PositionEncoding::Utf8)
+        );
+        assert_eq!(
+            PositionEncoding::parse("utf-16"),
+            Some(PositionEncoding::Utf16)
+        );
+        assert_eq!(
+            PositionEncoding::parse("utf-32"),
+            Some(PositionEncoding::Utf32)
+        );
+        assert_eq!(PositionEncoding::parse("UTF-8"), None);
+        assert_eq!(PositionEncoding::parse("latin-1"), None);
+        assert_eq!(PositionEncoding::default(), PositionEncoding::Utf16);
     }
 }

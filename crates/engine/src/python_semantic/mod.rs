@@ -40,13 +40,16 @@
 //! Declaring them here would be a capability claim nothing backs.
 
 pub mod adapter;
-pub mod coordinates;
 pub mod host;
-pub mod jsonrpc;
 pub mod launcher;
 pub mod lifecycle;
 pub mod overrides;
 pub mod protocol;
+
+/// The framing and coordinate mapping now live in [`crate::lsp`], shared
+/// with the TypeScript/JavaScript backend (#19 task 10). Re-exported so
+/// the paths this module already used keep meaning the same thing.
+pub use crate::lsp::{coordinates, jsonrpc};
 
 use std::{
     collections::{BTreeMap, BTreeSet},

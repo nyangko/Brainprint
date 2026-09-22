@@ -2,3 +2,4 @@
 .DS_Store
 /benchmarks/reports/*.jsonl
 /scripts/python_semantic_spike/node_modules/
+/scripts/typescript_semantic_spike/node_modules/

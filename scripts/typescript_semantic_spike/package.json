@@ -1,0 +1,10 @@
+{
+  "name": "brainprint-typescript-semantic-spike",
+  "version": "0.0.0",
+  "private": true,
+  "description": "The pinned TypeScript native language server #19 task 10 measured, plus the one external dependency the fixture resolves against. Never PATH, never global.",
+  "dependencies": {
+    "@types/node": "24.10.1",
+    "typescript": "7.0.2"
+  }
+}
