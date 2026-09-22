@@ -334,6 +334,13 @@ pub enum StartFailure {
     /// The restart budget is spent. Degraded until something changes;
     /// callers fall back to structural answers.
     Degraded { attempts: u32 },
+    /// Every live runtime slot is taken and none of them may be
+    /// retired, because each is leased or running a request.
+    ///
+    /// Not [`Self::Backend`] and not an empty answer: the backend is
+    /// fine, the fleet is full. A caller falls back to persisted or
+    /// structural truth and tries again later.
+    Capacity { limit: usize, live: usize },
     /// The supervisor is shutting down and takes no new work.
     ShuttingDown,
 }
@@ -355,6 +362,10 @@ impl fmt::Display for StartFailure {
             Self::Degraded { attempts } => write!(
                 formatter,
                 "semantic runtime degraded after {attempts} failed starts"
+            ),
+            Self::Capacity { limit, live } => write!(
+                formatter,
+                "semantic runtime capacity is full: {live} live, limit {limit}, none retirable"
             ),
             Self::ShuttingDown => formatter.write_str("semantic supervisor is shutting down"),
         }
@@ -460,6 +471,20 @@ pub struct RuntimePolicy {
     /// [`Self::backoff_max`].
     pub backoff_base: Duration,
     pub backoff_max: Duration,
+    /// How many runtimes may hold a live host at once, across every
+    /// backend family.
+    ///
+    /// `None` is unlimited, and is the default on purpose: what the
+    /// number should be is a measurement nobody has taken yet (#19
+    /// task 15), and inventing one here would be a product decision
+    /// dressed up as a constant. The mechanism exists so that a
+    /// deployment which needs a bound can state one; the bound itself
+    /// is not this task's to choose.
+    ///
+    /// The cap is supervisor-wide, not per family. Five Python
+    /// contexts and one Rust context are six live runtimes, and no
+    /// language is privileged over another.
+    pub max_live_runtimes: Option<usize>,
 }
 
 impl Default for RuntimePolicy {
@@ -469,6 +494,7 @@ impl Default for RuntimePolicy {
             restart_budget: 3,
             backoff_base: Duration::from_millis(500),
             backoff_max: Duration::from_secs(30),
+            max_live_runtimes: None,
         }
     }
 }
@@ -524,6 +550,58 @@ pub struct RuntimeTelemetry {
     /// Bounded, most recent last.
     pub latency_samples: Vec<Duration>,
     pub resource_usage: ResourceUsage,
+}
+
+/// Every runtime the supervisor knows about, added up.
+///
+/// Operational state, never project knowledge: nothing here is
+/// persisted, nothing here is evidence, and reading it starts no
+/// backend -- a context that has never been acquired contributes
+/// nothing because it has no entry to contribute.
+///
+/// The resource fields are the reason this is a struct rather than a
+/// number. A fleet where one host reports 100 MB and another reports
+/// nothing has a *known* total of 100 MB and one unknown host, and
+/// saying "100 MB" flat would be a claim about memory nobody measured.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct FleetTelemetry {
+    /// Contexts with a runtime entry, whatever state it is in.
+    pub known_contexts: usize,
+    /// Entries currently holding a host.
+    pub live_runtimes: usize,
+
+    pub cold: usize,
+    pub starting: usize,
+    pub ready: usize,
+    pub busy: usize,
+    pub idle: usize,
+    pub backoff: usize,
+    pub degraded: usize,
+    pub stopped: usize,
+
+    pub active_requests: usize,
+    pub active_leases: usize,
+    pub queue_depth: usize,
+
+    pub starts_attempted: u64,
+    pub starts_succeeded: u64,
+    pub restart_attempts: u64,
+    pub crashes: u64,
+    /// Runtimes retired to make room under the capacity policy.
+    pub capacity_evictions: u64,
+    pub requests_started: u64,
+    pub requests_completed: u64,
+    pub requests_cancelled: u64,
+    pub requests_timed_out: u64,
+    pub requests_failed: u64,
+    pub dedupe_hits: u64,
+
+    /// The sum over live hosts that could measure it, or `None` when
+    /// not one of them could. Never a fabricated zero.
+    pub known_rss_bytes: Option<u64>,
+    pub known_cpu_millis: Option<u64>,
+    /// Live hosts whose resident size is not observable.
+    pub resource_usage_unknown: usize,
 }
 
 #[derive(Debug, Default)]
@@ -595,6 +673,10 @@ struct EntryInner {
     retry_at: Option<Instant>,
     counters: Counters,
     running: bool,
+    /// A host has been taken out of this entry and not yet shut down.
+    /// Part of "at rest": a runtime whose dead host is still on its way
+    /// out has not finished crashing.
+    retiring: bool,
     queue: BTreeSet<Ticket>,
     inflight: HashMap<String, Arc<Shared>>,
 }
@@ -609,6 +691,10 @@ struct RuntimeEntry {
     started: Condvar,
     /// Serial-host queue admission.
     gate: Condvar,
+    /// Signalled when a request finishes and the entry's books are
+    /// closed. What makes "this runtime has come back to rest" an event
+    /// a caller can wait for instead of a state it has to poll for.
+    quiet: Condvar,
     next_seq: AtomicU64,
 }
 
@@ -628,11 +714,13 @@ impl RuntimeEntry {
                 retry_at: None,
                 counters: Counters::default(),
                 running: false,
+                retiring: false,
                 queue: BTreeSet::new(),
                 inflight: HashMap::new(),
             }),
             started: Condvar::new(),
             gate: Condvar::new(),
+            quiet: Condvar::new(),
             next_seq: AtomicU64::new(0),
         }
     }
@@ -704,6 +792,9 @@ pub struct SemanticRuntimeSupervisor {
     policy: RuntimePolicy,
     launchers: BTreeMap<SemanticBackendKind, Arc<dyn SemanticBackendLauncher>>,
     registry: Mutex<Registry>,
+    /// Fleet-wide, because eviction is a decision about the fleet and
+    /// not about the runtime that happened to be chosen.
+    capacity_evictions: AtomicU64,
 }
 
 impl SemanticRuntimeSupervisor {
@@ -716,6 +807,7 @@ impl SemanticRuntimeSupervisor {
                 shutting_down: false,
                 entries: BTreeMap::new(),
             }),
+            capacity_evictions: AtomicU64::new(0),
         }
     }
 
@@ -748,8 +840,7 @@ impl SemanticRuntimeSupervisor {
     /// How many runtimes are currently holding a live host.
     #[must_use]
     pub fn live_runtime_count(&self) -> usize {
-        let entries: Vec<Arc<RuntimeEntry>> = self.registry().entries.values().cloned().collect();
-        entries
+        self.entries()
             .iter()
             .filter(|entry| entry.lock().host.is_some())
             .count()
@@ -798,6 +889,199 @@ impl SemanticRuntimeSupervisor {
 
     fn entry(&self, context_key: &str) -> Option<Arc<RuntimeEntry>> {
         self.registry().entries.get(context_key).cloned()
+    }
+
+    /// Every known runtime, added up.
+    ///
+    /// Reading this starts nothing: it walks the entries that already
+    /// exist, and a context nobody has ever acquired has no entry.
+    #[must_use]
+    pub fn fleet_telemetry(&self) -> FleetTelemetry {
+        let entries = self.entries();
+        let mut fleet = FleetTelemetry {
+            known_contexts: entries.len(),
+            capacity_evictions: self.capacity_evictions.load(Ordering::SeqCst),
+            ..FleetTelemetry::default()
+        };
+        for entry in entries {
+            let inner = entry.lock();
+            match entry.state_of(&inner) {
+                RuntimeState::Cold => fleet.cold += 1,
+                RuntimeState::Starting => fleet.starting += 1,
+                RuntimeState::Ready => fleet.ready += 1,
+                RuntimeState::Busy => fleet.busy += 1,
+                RuntimeState::Idle => fleet.idle += 1,
+                RuntimeState::Backoff => fleet.backoff += 1,
+                RuntimeState::Degraded => fleet.degraded += 1,
+                RuntimeState::Stopped => fleet.stopped += 1,
+            }
+            fleet.active_requests += inner.active;
+            fleet.active_leases += inner.leases;
+            fleet.queue_depth += inner.queue.len();
+            fleet.starts_attempted += inner.counters.starts_attempted;
+            fleet.starts_succeeded += inner.counters.starts_succeeded;
+            fleet.restart_attempts += inner.counters.restart_attempts;
+            fleet.crashes += inner.counters.crashes;
+            fleet.requests_started += inner.counters.requests_started;
+            fleet.requests_completed += inner.counters.requests_completed;
+            fleet.requests_cancelled += inner.counters.requests_cancelled;
+            fleet.requests_timed_out += inner.counters.requests_timed_out;
+            fleet.requests_failed += inner.counters.requests_failed;
+            fleet.dedupe_hits += inner.counters.dedupe_hits;
+
+            let Some(host) = inner.host.as_ref() else {
+                continue;
+            };
+            fleet.live_runtimes += 1;
+            let usage = host.resource_usage();
+            match usage.rss_bytes {
+                Some(bytes) => {
+                    fleet.known_rss_bytes =
+                        Some(fleet.known_rss_bytes.unwrap_or(0).saturating_add(bytes));
+                }
+                // An unmeasurable host is counted as unmeasured, and
+                // never added in as a zero.
+                None => fleet.resource_usage_unknown += 1,
+            }
+            if let Some(millis) = usage.cpu_millis {
+                fleet.known_cpu_millis =
+                    Some(fleet.known_cpu_millis.unwrap_or(0).saturating_add(millis));
+            }
+        }
+        fleet
+    }
+
+    /// Block until no request is running in this context, or until
+    /// `timeout`. Returns whether it came to rest.
+    ///
+    /// An event, not a poll: a request signals when its books are
+    /// closed, so a caller never has to guess how long "a moment later"
+    /// is. `timeout` is a safety net for a wedged backend, never the
+    /// synchronization itself.
+    ///
+    /// An unknown context is at rest, because it is not running
+    /// anything.
+    pub fn await_quiescent(&self, context_key: &str, timeout: Duration) -> bool {
+        let Some(entry) = self.entry(context_key) else {
+            return true;
+        };
+        let deadline = Instant::now() + timeout;
+        let mut inner = entry.lock();
+        while inner.active > 0 || inner.retiring {
+            let now = Instant::now();
+            if now >= deadline {
+                return false;
+            }
+            let (next, _) = entry
+                .quiet
+                .wait_timeout(inner, deadline - now)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            inner = next;
+        }
+        true
+    }
+
+    fn entries(&self) -> Vec<Arc<RuntimeEntry>> {
+        self.registry().entries.values().cloned().collect()
+    }
+
+    /// Retire idle runtimes until one more host fits under `limit`.
+    ///
+    /// `mine` is the entry already reserved in STARTING for the caller,
+    /// so it counts against the limit and is never itself a candidate.
+    /// A runtime that is leased or running a request is never a
+    /// candidate either, however old: capacity is a reason to retire
+    /// something nobody is using, never a reason to take an answer away
+    /// from a client who is waiting for one.
+    ///
+    /// Returns the hosts to shut down. The caller does that after every
+    /// lock is released, because a host may block for a long time on
+    /// its way out.
+    fn make_room(
+        &self,
+        mine: &str,
+        limit: usize,
+    ) -> Result<Vec<Arc<dyn SemanticRuntimeHost>>, StartFailure> {
+        /// Oldest first, then context key: a total order with no clock
+        /// ties and no randomness, so the same fleet always evicts the
+        /// same runtime.
+        struct Candidate {
+            last_activity: Instant,
+            key: String,
+            entry: Arc<RuntimeEntry>,
+        }
+
+        let mut occupancy = 1; // the caller's own reserved slot
+        let mut candidates: Vec<Candidate> = Vec::new();
+        for entry in self.entries() {
+            if entry.key == mine {
+                continue;
+            }
+            let inner = entry.lock();
+            // STARTING occupies a slot it has not filled yet. Counting
+            // only live hosts would let two cold acquisitions each see
+            // room for one and produce two.
+            if inner.host.is_none() && inner.phase != Phase::Starting {
+                continue;
+            }
+            occupancy += 1;
+            if inner.host.is_some()
+                && inner.phase == Phase::Ready
+                && inner.leases == 0
+                && inner.active == 0
+            {
+                candidates.push(Candidate {
+                    last_activity: inner.last_activity,
+                    key: entry.key.clone(),
+                    entry: Arc::clone(&entry),
+                });
+            }
+        }
+        if occupancy <= limit {
+            return Ok(Vec::new());
+        }
+
+        candidates.sort_by(|left, right| {
+            left.last_activity
+                .cmp(&right.last_activity)
+                .then_with(|| left.key.cmp(&right.key))
+        });
+
+        let mut retired = Vec::new();
+        for candidate in candidates {
+            if occupancy <= limit {
+                break;
+            }
+            let host = {
+                let mut inner = candidate.entry.lock();
+                // Re-checked under the lock: a client may have taken a
+                // lease since the snapshot, and that client wins.
+                if inner.phase != Phase::Ready || inner.leases > 0 || inner.active > 0 {
+                    continue;
+                }
+                let Some(host) = inner.host.take() else {
+                    continue;
+                };
+                inner.phase = Phase::Stopped;
+                host
+            };
+            self.capacity_evictions.fetch_add(1, Ordering::SeqCst);
+            retired.push(host);
+            occupancy -= 1;
+        }
+
+        if occupancy > limit {
+            // Everything left is leased or working. Say so, in a word
+            // that is not "the backend failed".
+            for host in retired {
+                host.shutdown();
+            }
+            return Err(StartFailure::Capacity {
+                limit,
+                live: occupancy,
+            });
+        }
+        Ok(retired)
     }
 
     /// Get a lease on the runtime for `binding`, starting it if needed.
@@ -867,7 +1151,37 @@ impl SemanticRuntimeSupervisor {
                     });
                 }
                 Phase::Cold | Phase::Stopped => {
+                    // STARTING first: it reserves this context's slot,
+                    // so concurrent callers wait on `started` instead of
+                    // launching a second backend, and so the capacity
+                    // arithmetic below counts a launch that has not
+                    // finished.
+                    let previous = inner.phase;
                     inner.phase = Phase::Starting;
+                    drop(inner);
+
+                    if let Some(limit) = self.policy.max_live_runtimes {
+                        match self.make_room(&key, limit) {
+                            Ok(retired) => {
+                                for host in retired {
+                                    host.shutdown();
+                                }
+                            }
+                            Err(failure) => {
+                                // The fleet is full of work nobody may
+                                // take away. Give the slot back exactly
+                                // as it was: no start was attempted, so
+                                // no restart budget was spent.
+                                let mut inner = entry.lock();
+                                inner.phase = previous;
+                                drop(inner);
+                                entry.started.notify_all();
+                                return Err(failure);
+                            }
+                        }
+                    }
+
+                    let mut inner = entry.lock();
                     inner.counters.starts_attempted += 1;
                     if inner.consecutive_failures > 0 {
                         inner.counters.restart_attempts += 1;
@@ -894,6 +1208,22 @@ impl SemanticRuntimeSupervisor {
                     }
                     drop(inner);
                     entry.started.notify_all();
+
+                    // Shutdown may have run while this launch was in
+                    // flight. A host started past that point belongs to
+                    // nobody, so it is released here rather than left
+                    // READY behind a supervisor that is gone.
+                    if self.registry().shutting_down {
+                        let orphan = {
+                            let mut inner = entry.lock();
+                            inner.phase = Phase::Stopped;
+                            inner.host.take()
+                        };
+                        if let Some(host) = orphan {
+                            host.shutdown();
+                        }
+                        return Err(StartFailure::ShuttingDown);
+                    }
                 }
             }
         }
@@ -905,7 +1235,7 @@ impl SemanticRuntimeSupervisor {
     /// A runtime with a live lease or a running request is never
     /// unloaded, however long it has been since the last activity.
     pub fn sweep_idle(&self) -> usize {
-        let entries: Vec<Arc<RuntimeEntry>> = self.registry().entries.values().cloned().collect();
+        let entries = self.entries();
         let mut unloaded = 0;
         for entry in entries {
             let retired = {
@@ -939,6 +1269,9 @@ impl SemanticRuntimeSupervisor {
             registry.shutting_down = true;
             registry.entries.values().cloned().collect()
         };
+        // Every host leaves through a `take` under the entry lock, so a
+        // concurrent capacity eviction and this loop cannot both get the
+        // same one: exactly one of them shuts it down, exactly once.
 
         for entry in entries {
             let (host, waiting) = {
@@ -1212,20 +1545,17 @@ fn run_request(
         release(entry, ticket);
     }
 
-    // Shared state first, then the entry: every other path takes these
-    // in the same order, so there is no lock cycle.
-    {
-        let mut state = shared
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.outcome = Some(outcome.clone());
-    }
-    shared.done.notify_all();
-
     let crashed =
         matches!(outcome, Err(RequestFailure::Crashed(_))) || host.health() != HostHealth::Healthy;
 
+    // The runtime's own books close *before* any waiter is told, so
+    // that a caller holding the answer is never holding it earlier than
+    // the state the answer implies. Asserting BUSY-or-READY right after
+    // a `wait` returned used to be a race for exactly this reason: the
+    // answer arrived first and `active` came down a moment later.
+    //
+    // The two locks are not nested here, and every path that does nest
+    // them takes the entry first, so there is no cycle either way.
     let retired = {
         let mut inner = entry.lock();
         inner.inflight.remove(&shared.dedupe_key);
@@ -1245,13 +1575,35 @@ fn run_request(
         }
         if crashed && inner.phase == Phase::Ready {
             inner.counters.crashes += 1;
-            entry.record_failure(&mut inner)
+            let retired = entry.record_failure(&mut inner);
+            inner.retiring = retired.is_some();
+            retired
         } else {
             None
         }
     };
+
+    if retired.is_none() {
+        entry.quiet.notify_all();
+    }
+
+    {
+        let mut state = shared
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.outcome = Some(outcome);
+    }
+    shared.done.notify_all();
+
+    // Last, and outside every lock: a host on its way out may block,
+    // and no waiter should be kept from its answer by that. The
+    // runtime is only at rest once it is gone, which is why the
+    // quiescence signal waits for this and not for the answer.
     if let Some(host) = retired {
         host.shutdown();
+        entry.lock().retiring = false;
+        entry.quiet.notify_all();
         entry.gate.notify_all();
     }
 }
@@ -1318,6 +1670,16 @@ mod tests {
         CrashSilently,
         /// Panic inside the backend, as a wedged adapter would.
         Panic,
+        /// Block until released, then die. The only way to get several
+        /// waiters onto one execution and *then* crash it: a backend
+        /// that crashes instantly has finished before the second
+        /// caller could join.
+        BlockedThenCrash,
+        /// Wait at a shared barrier, then answer. Every request has to
+        /// be inside the backend at once for any of them to leave, so
+        /// this either proves overlap or hangs -- there is no timing
+        /// window where it passes by luck.
+        Rendezvous,
     }
 
     struct FakeHost {
@@ -1325,6 +1687,15 @@ mod tests {
         healthy: AtomicBool,
         concurrency: HostConcurrency,
         shutdowns: Arc<AtomicUsize>,
+        /// This host's own shutdowns, as opposed to the launcher-wide
+        /// tally. A fleet may legitimately shut down five hosts; no
+        /// host may legitimately be shut down twice.
+        own_shutdowns: AtomicUsize,
+        /// How many times a request found its cancel token set.
+        cancellations_seen: Arc<AtomicUsize>,
+        /// What this host reports about its memory, if anything.
+        rss_bytes: Option<u64>,
+        rendezvous: Option<Arc<Barrier>>,
         executions: Arc<AtomicUsize>,
         /// Test-driven release for [`Behavior::Blocked`].
         gate: Mutex<Option<mpsc::Receiver<()>>>,
@@ -1381,6 +1752,22 @@ mod tests {
                     self.healthy.store(false, Ordering::SeqCst);
                     panic!("fake backend wedged");
                 }
+                Behavior::BlockedThenCrash => {
+                    let gate = self
+                        .gate
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    if let Some(receiver) = gate.as_ref() {
+                        let _ = receiver.recv();
+                    }
+                    self.healthy.store(false, Ordering::SeqCst);
+                    return Err(HostError::new("backend exited"));
+                }
+                Behavior::Rendezvous => {
+                    if let Some(barrier) = self.rendezvous.as_ref() {
+                        barrier.wait();
+                    }
+                }
             }
 
             {
@@ -1392,6 +1779,11 @@ mod tests {
             }
 
             if cancel.is_cancelled() {
+                // The cooperative stop actually reached the backend.
+                // Counted rather than merely returned, because the
+                // caller who would have seen the return value is by
+                // definition the caller who walked away.
+                self.cancellations_seen.fetch_add(1, Ordering::SeqCst);
                 return Err(HostError::new("cancelled"));
             }
             Ok(RuntimeResponse {
@@ -1409,10 +1801,18 @@ mod tests {
 
         fn shutdown(&self) {
             self.shutdowns.fetch_add(1, Ordering::SeqCst);
+            self.own_shutdowns.fetch_add(1, Ordering::SeqCst);
         }
 
         fn concurrency(&self) -> HostConcurrency {
             self.concurrency
+        }
+
+        fn resource_usage(&self) -> ResourceUsage {
+            ResourceUsage {
+                rss_bytes: self.rss_bytes,
+                cpu_millis: None,
+            }
         }
     }
 
@@ -1421,6 +1821,10 @@ mod tests {
         kind: SemanticBackendKind,
         behavior: Mutex<Behavior>,
         concurrency: HostConcurrency,
+        /// What every host this launcher starts reports as its RSS.
+        rss_bytes: Mutex<Option<u64>>,
+        rendezvous: Mutex<Option<Arc<Barrier>>>,
+        cancellations_seen: Arc<AtomicUsize>,
         launches: Arc<AtomicUsize>,
         shutdowns: Arc<AtomicUsize>,
         executions: Arc<AtomicUsize>,
@@ -1433,15 +1837,30 @@ mod tests {
         gate: Mutex<Option<mpsc::Receiver<()>>>,
         /// Blocks inside `launch`, to prove startup coalescing.
         launch_barrier: Mutex<Option<Arc<Barrier>>>,
+        /// Launches that have entered `launch` but not yet returned, so
+        /// a test can wait for "it is starting" instead of assuming it.
+        entered_launch: Arc<Mutex<usize>>,
+        entered_launch_signal: Arc<Condvar>,
         hosts: Mutex<Vec<Arc<FakeHost>>>,
     }
 
     impl FakeLauncher {
         fn new(kind: SemanticBackendKind) -> Arc<Self> {
+            Self::with_concurrency(kind, HostConcurrency::Serial)
+        }
+
+        fn parallel(kind: SemanticBackendKind) -> Arc<Self> {
+            Self::with_concurrency(kind, HostConcurrency::Parallel)
+        }
+
+        fn with_concurrency(kind: SemanticBackendKind, concurrency: HostConcurrency) -> Arc<Self> {
             Arc::new(Self {
                 kind,
                 behavior: Mutex::new(Behavior::Echo),
-                concurrency: HostConcurrency::Serial,
+                concurrency,
+                rss_bytes: Mutex::new(None),
+                rendezvous: Mutex::new(None),
+                cancellations_seen: Arc::new(AtomicUsize::new(0)),
                 launches: Arc::new(AtomicUsize::new(0)),
                 shutdowns: Arc::new(AtomicUsize::new(0)),
                 executions: Arc::new(AtomicUsize::new(0)),
@@ -1451,6 +1870,8 @@ mod tests {
                 failing_launches: Mutex::new(0),
                 gate: Mutex::new(None),
                 launch_barrier: Mutex::new(None),
+                entered_launch: Arc::new(Mutex::new(0)),
+                entered_launch_signal: Arc::new(Condvar::new()),
                 hosts: Mutex::new(Vec::new()),
             })
         }
@@ -1492,11 +1913,63 @@ mod tests {
             self.shutdowns.load(Ordering::SeqCst)
         }
 
+        /// The most times any single host was shut down.
+        fn worst_host_shutdown_count(&self) -> usize {
+            self.hosts
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .iter()
+                .map(|host| host.own_shutdowns.load(Ordering::SeqCst))
+                .max()
+                .unwrap_or(0)
+        }
+
+        /// How many requests were told, inside the backend, to stop.
+        fn cancellations_seen(&self) -> usize {
+            self.cancellations_seen.load(Ordering::SeqCst)
+        }
+
+        /// Hand the next host this test's release channel.
+        fn gate_with(&self, gate: mpsc::Receiver<()>) {
+            *self
+                .gate
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(gate);
+        }
+
+        fn report_rss(&self, bytes: Option<u64>) {
+            *self
+                .rss_bytes
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = bytes;
+        }
+
+        fn rendezvous_at(&self, barrier: &Arc<Barrier>) {
+            *self
+                .rendezvous
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::clone(barrier));
+        }
+
         fn order(&self) -> Vec<String> {
             self.order
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clone()
+        }
+
+        /// Block until `count` launches have entered the launcher.
+        fn await_launching(&self, count: usize) {
+            let mut entered = self
+                .entered_launch
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            while *entered < count {
+                entered = self
+                    .entered_launch_signal
+                    .wait(entered)
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+            }
         }
 
         /// Block until `count` requests have entered the backend.
@@ -1514,21 +1987,23 @@ mod tests {
         }
     }
 
-    /// Wait for a runtime to come back to rest.
+    /// A generous safety net for a wedged fake. Never the thing being
+    /// waited on -- that is always an event.
+    const PATIENCE: Duration = Duration::from_secs(30);
+
+    /// Assert a runtime comes back to rest, and is READY when it does.
     ///
-    /// A request's worker thread finishes a moment after its waiter has
-    /// been answered, so sampling the state immediately after a `wait`
-    /// races with a *sibling* request still unwinding. The claim being
-    /// tested is "the runtime returns to READY", which is what this
-    /// asserts; the instant it happens is not part of any contract.
-    fn settles_ready(lease: &RuntimeLease) {
-        for _ in 0..400 {
-            if lease.state() == RuntimeState::Ready {
-                return;
-            }
-            thread::sleep(Duration::from_millis(5));
-        }
-        assert_eq!(lease.state(), RuntimeState::Ready, "never settled");
+    /// A request's worker thread closes its books and *then* answers
+    /// its waiter, so this runtime's own answer already implies READY.
+    /// A *sibling* request may still be unwinding, though, which is
+    /// what this waits for -- on the entry's quiescence signal, not on
+    /// a sleep.
+    fn settles_ready(supervisor: &SemanticRuntimeSupervisor, key: &str, lease: &RuntimeLease) {
+        assert!(
+            supervisor.await_quiescent(key, PATIENCE),
+            "the runtime never came back to rest"
+        );
+        assert_eq!(lease.state(), RuntimeState::Ready);
     }
 
     impl SemanticBackendLauncher for FakeLauncher {
@@ -1540,6 +2015,15 @@ mod tests {
             &self,
             _binding: &AnalysisContextBinding,
         ) -> Result<Arc<dyn SemanticRuntimeHost>, HostError> {
+            {
+                let mut entered = self
+                    .entered_launch
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                *entered += 1;
+            }
+            self.entered_launch_signal.notify_all();
+
             let barrier = self
                 .launch_barrier
                 .lock()
@@ -1572,6 +2056,17 @@ mod tests {
                 healthy: AtomicBool::new(true),
                 concurrency: self.concurrency,
                 shutdowns: Arc::clone(&self.shutdowns),
+                own_shutdowns: AtomicUsize::new(0),
+                cancellations_seen: Arc::clone(&self.cancellations_seen),
+                rss_bytes: *self
+                    .rss_bytes
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+                rendezvous: self
+                    .rendezvous
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clone(),
                 executions: Arc::clone(&self.executions),
                 gate: Mutex::new(
                     self.gate
@@ -1627,6 +2122,57 @@ mod tests {
             ProjectRootIdentity::Config(ResourceId::from_bytes([2; 16])),
             "sha256:venv",
         )
+    }
+
+    /// The same shape, for another backend family. Used to prove that
+    /// fleet-wide rules -- capacity above all -- treat every language
+    /// the same.
+    fn binding_of(
+        kind: SemanticBackendKind,
+        language: ResourceLanguage,
+        root: &str,
+    ) -> AnalysisContextBinding {
+        AnalysisContextBinding {
+            context: AnalysisContext {
+                workspace: WorkspaceId::from_bytes([1; 16]),
+                backend: kind,
+                language,
+                project_root: ProjectRootIdentity::Key(root.to_owned()),
+                toolchain: toolchain("sha256:mixed"),
+            },
+            project_root_rel: root.to_owned(),
+            config_file_rel: None,
+        }
+    }
+
+    /// A supervisor over several fake families at once.
+    fn fleet(policy: RuntimePolicy, launchers: &[Arc<FakeLauncher>]) -> SemanticRuntimeSupervisor {
+        let mut supervisor = SemanticRuntimeSupervisor::new(policy);
+        for launcher in launchers {
+            supervisor =
+                supervisor.with_backend(Arc::clone(launcher) as Arc<dyn SemanticBackendLauncher>);
+        }
+        supervisor
+    }
+
+    /// A request against a named context, so tests that span several
+    /// contexts do not all key off the default one.
+    fn request_in(
+        context_key: &str,
+        target: &str,
+        basis: Option<&str>,
+        priority: RequestPriority,
+    ) -> RuntimeRequest {
+        RuntimeRequest {
+            key: SemanticRequestKey {
+                context_key: context_key.to_owned(),
+                capability: SemanticCapability::ImportBinding,
+                target: target.to_owned(),
+                basis_token: basis.map(ToOwned::to_owned),
+            },
+            priority,
+            payload: target.as_bytes().to_vec(),
+        }
     }
 
     fn supervisor(policy: RuntimePolicy) -> (SemanticRuntimeSupervisor, Arc<FakeLauncher>) {
@@ -1889,7 +2435,7 @@ mod tests {
         let _ = release.send(());
         let answer = kept.wait(RequestOptions::default()).expect("other work");
         assert_eq!(answer.payload, b"answer:wanted".to_vec());
-        settles_ready(&lease);
+        settles_ready(&supervisor, &binding().context.context_key(), &lease);
     }
 
     #[test]
@@ -1971,6 +2517,10 @@ mod tests {
         assert!(outcome.is_err());
 
         assert_eq!(lease.state(), RuntimeState::Backoff);
+        // The dead host leaves after its waiter is answered, so the
+        // retirement is waited for rather than assumed to have already
+        // happened.
+        assert!(supervisor.await_quiescent(&binding().context.context_key(), PATIENCE));
         assert_eq!(launcher.shutdown_count(), 1, "the dead host was retired");
 
         let telemetry = supervisor
@@ -2026,6 +2576,7 @@ mod tests {
             restart_budget: 3,
             backoff_base: Duration::from_secs(60),
             backoff_max: Duration::from_secs(600),
+            max_live_runtimes: None,
         };
         let (supervisor, launcher) = supervisor(policy);
         let key = binding().context.context_key();
@@ -2067,6 +2618,7 @@ mod tests {
             restart_budget: 2,
             backoff_base: Duration::ZERO,
             backoff_max: Duration::ZERO,
+            max_live_runtimes: None,
         };
         let (supervisor, launcher) = supervisor(policy);
         let key = binding().context.context_key();
@@ -2099,6 +2651,7 @@ mod tests {
             restart_budget: 4,
             backoff_base: Duration::ZERO,
             backoff_max: Duration::ZERO,
+            max_live_runtimes: None,
         };
         let (supervisor, launcher) = supervisor(policy);
 
@@ -2481,6 +3034,1196 @@ mod tests {
         match ask(&lease, "after-shutdown") {
             Err(RequestFailure::NotReady(RuntimeState::Stopped)) => {}
             other => panic!("expected a typed refusal, got {other:?}"),
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // #19 task 14 -- five clients, one runtime
+    //
+    // Everything below synchronizes on an event: a Barrier, a Condvar,
+    // a channel, or a state the backend itself announces. No test in
+    // this section sleeps to make a race go away, because a race that
+    // a sleep hides is a race that ships.
+    // -----------------------------------------------------------------
+
+    /// How many independent clients the task asks about. Five, not
+    /// "several", because the counts below are exact.
+    const CLIENTS: usize = 5;
+
+    #[test]
+    fn five_clients_racing_a_cold_context_produce_exactly_one_backend() {
+        for round in 0..8 {
+            let (supervisor, launcher) = supervisor(patient());
+            let supervisor = Arc::new(supervisor);
+            // Every client is released at the same instant, and the
+            // launcher itself blocks until they all are -- so if the
+            // supervisor let two of them launch, the second launch
+            // would be a second `launch_count`, not a timing accident.
+            let start = Arc::new(Barrier::new(CLIENTS));
+
+            let keys: Vec<String> = thread::scope(|scope| {
+                let handles: Vec<_> = (0..CLIENTS)
+                    .map(|_| {
+                        let supervisor = Arc::clone(&supervisor);
+                        let start = Arc::clone(&start);
+                        scope.spawn(move || {
+                            start.wait();
+                            let lease = supervisor.acquire(&binding()).expect("start");
+                            lease.context_key().to_owned()
+                        })
+                    })
+                    .collect();
+                handles
+                    .into_iter()
+                    .map(|handle| handle.join().expect("client"))
+                    .collect()
+            });
+
+            assert_eq!(
+                launcher.launch_count(),
+                1,
+                "round {round}: five cold acquisitions must launch one backend"
+            );
+            assert_eq!(supervisor.live_runtime_count(), 1);
+            assert_eq!(supervisor.runtime_count(), 1);
+            assert!(
+                keys.iter().all(|key| key == &keys[0]),
+                "every client got a lease on the same runtime"
+            );
+
+            let fleet = supervisor.fleet_telemetry();
+            assert_eq!(fleet.starts_attempted, 1);
+            assert_eq!(fleet.starts_succeeded, 1);
+            assert_eq!(fleet.live_runtimes, 1);
+        }
+    }
+
+    #[test]
+    fn five_clients_come_and_go_without_ever_naming_themselves() {
+        let (supervisor, launcher) = supervisor(patient());
+        let key = binding().context.context_key();
+
+        let mut leases: Vec<RuntimeLease> = (0..CLIENTS)
+            .map(|_| supervisor.acquire(&binding()).expect("start"))
+            .collect();
+        assert_eq!(launcher.launch_count(), 1);
+        assert_eq!(
+            supervisor.telemetry(&key).expect("telemetry").active_leases,
+            CLIENTS
+        );
+
+        // One client disappears. That is not a shutdown.
+        drop(leases.remove(0));
+        assert_eq!(supervisor.live_runtime_count(), 1);
+        assert_eq!(launcher.shutdown_count(), 0);
+        assert!(ask(&leases[0], "still here").is_ok());
+
+        // A client that arrives later joins the same warm runtime.
+        let latecomer = supervisor.acquire(&binding()).expect("reuse");
+        assert_eq!(launcher.launch_count(), 1, "nothing was started again");
+        assert_eq!(latecomer.context_key(), key);
+
+        drop(leases);
+        drop(latecomer);
+        assert_eq!(
+            supervisor.live_runtime_count(),
+            1,
+            "an empty room is not a reason to close it"
+        );
+        assert_eq!(
+            supervisor.state(&key),
+            RuntimeState::Ready,
+            "still warm, still nobody's"
+        );
+    }
+
+    #[test]
+    fn one_backend_family_with_two_project_roots_is_two_runtimes() {
+        let (supervisor, launcher) = supervisor(patient());
+        let api = binding_of(SemanticBackendKind::Python, ResourceLanguage::Python, "api");
+        let jobs = binding_of(
+            SemanticBackendKind::Python,
+            ResourceLanguage::Python,
+            "jobs",
+        );
+
+        let one = supervisor.acquire(&api).expect("start");
+        let other = supervisor.acquire(&jobs).expect("start");
+
+        assert_ne!(
+            one.context_key(),
+            other.context_key(),
+            "same language, same backend, different project: different semantic world"
+        );
+        assert_eq!(launcher.launch_count(), 2);
+        assert_eq!(supervisor.live_runtime_count(), 2);
+    }
+
+    // -----------------------------------------------------------------
+    // Deduplication and waiter-scoped withdrawal
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn five_identical_questions_are_asked_once_and_answered_five_times() {
+        let (supervisor, launcher) = supervisor(patient());
+        let (release, gate) = mpsc::channel();
+        *launcher
+            .gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(gate);
+        launcher.set_behavior(Behavior::Blocked);
+        let key = binding().context.context_key();
+
+        let lease = supervisor.acquire(&binding()).expect("start");
+        let pending: Vec<PendingRequest> = (0..CLIENTS)
+            .map(|_| {
+                lease
+                    .submit(request_in(
+                        &key,
+                        "same",
+                        Some("rev-1"),
+                        RequestPriority::Interactive,
+                    ))
+                    .expect("submit")
+            })
+            .collect();
+
+        launcher.await_entered(1);
+        assert_eq!(
+            launcher.execution_count(),
+            1,
+            "five callers, one question, one execution"
+        );
+
+        let telemetry = supervisor.telemetry(&key).expect("telemetry");
+        assert_eq!(
+            telemetry.requests_started, 1,
+            "requests_started counts backend executions"
+        );
+        assert_eq!(
+            telemetry.dedupe_hits,
+            (CLIENTS - 1) as u64,
+            "and dedupe_hits counts the waiters that joined one"
+        );
+        assert_eq!(telemetry.active_requests, 1);
+
+        let _ = release.send(());
+        for waiter in pending {
+            let answer = waiter.wait(RequestOptions::default()).expect("answer");
+            assert_eq!(answer.payload, b"answer:same".to_vec());
+        }
+        assert_eq!(launcher.execution_count(), 1);
+    }
+
+    #[test]
+    fn a_question_about_a_newer_basis_never_joins_an_older_answer() {
+        // A parallel host, so that the second question can be *inside*
+        // the backend while the first still is. On a serial host the
+        // proof would be about the queue rather than about dedupe.
+        let launcher = FakeLauncher::parallel(SemanticBackendKind::Python);
+        let supervisor = fleet(patient(), &[Arc::clone(&launcher)]);
+        let (release, gate) = mpsc::channel();
+        launcher.gate_with(gate);
+        launcher.set_behavior(Behavior::Blocked);
+        let key = binding().context.context_key();
+
+        let lease = supervisor.acquire(&binding()).expect("start");
+        let old = lease
+            .submit(request_in(
+                &key,
+                "same",
+                Some("rev-1"),
+                RequestPriority::Interactive,
+            ))
+            .expect("submit");
+        let new = lease
+            .submit(request_in(
+                &key,
+                "same",
+                Some("rev-2"),
+                RequestPriority::Interactive,
+            ))
+            .expect("submit");
+
+        launcher.await_entered(2);
+        assert_eq!(
+            launcher.execution_count(),
+            2,
+            "one generation's answer may never stand in for another's"
+        );
+        assert_eq!(
+            supervisor.telemetry(&key).expect("telemetry").dedupe_hits,
+            0
+        );
+
+        drop(release);
+        assert!(old.wait(RequestOptions::default()).is_ok());
+        assert!(new.wait(RequestOptions::default()).is_ok());
+    }
+
+    #[test]
+    fn one_client_leaving_never_takes_another_clients_answer_with_it() {
+        let (supervisor, launcher) = supervisor(patient());
+        let (release, gate) = mpsc::channel();
+        *launcher
+            .gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(gate);
+        launcher.set_behavior(Behavior::Blocked);
+        let key = binding().context.context_key();
+
+        let lease = supervisor.acquire(&binding()).expect("start");
+        let mut waiters: Vec<PendingRequest> = (0..CLIENTS)
+            .map(|_| {
+                lease
+                    .submit(request_in(
+                        &key,
+                        "shared",
+                        Some("rev-1"),
+                        RequestPriority::Interactive,
+                    ))
+                    .expect("submit")
+            })
+            .collect();
+        launcher.await_entered(1);
+
+        // A cancels outright.
+        waiters.remove(0).cancel();
+        // B gives up waiting. A deadline that has already passed, so
+        // the timeout is an arithmetic fact and not a race.
+        match waiters
+            .remove(0)
+            .wait(RequestOptions::with_timeout(Duration::ZERO))
+        {
+            Err(RequestFailure::TimedOut { .. }) => {}
+            other => panic!("expected a typed timeout, got {other:?}"),
+        }
+
+        // The work itself is untouched: still one execution, still
+        // running, still not cancelled.
+        assert_eq!(launcher.execution_count(), 1);
+        assert_eq!(
+            supervisor
+                .telemetry(&key)
+                .expect("telemetry")
+                .active_requests,
+            1,
+            "two clients left; the question did not"
+        );
+
+        let _ = release.send(());
+        for waiter in waiters {
+            let answer = waiter.wait(RequestOptions::default()).expect("answer");
+            assert_eq!(
+                answer.payload,
+                b"answer:shared".to_vec(),
+                "C, D and E get the answer A and B stopped waiting for"
+            );
+        }
+
+        settles_ready(&supervisor, &key, &lease);
+        let telemetry = supervisor.telemetry(&key).expect("telemetry");
+        assert_eq!(telemetry.requests_cancelled, 1, "A withdrew");
+        assert_eq!(telemetry.requests_timed_out, 1, "B gave up");
+        assert_eq!(telemetry.requests_completed, 1, "the backend answered");
+        assert_eq!(telemetry.crashes, 0, "neither of those is a crash");
+        assert_eq!(launcher.shutdown_count(), 0, "nor a reason to stop");
+    }
+
+    #[test]
+    fn shared_work_stops_only_when_the_last_waiter_is_gone() {
+        /// Five waiters on one execution; `withdrawn` of them leave.
+        /// Returns what the backend was told, and what the survivors
+        /// got.
+        fn round(withdrawn: usize) -> (usize, Option<Vec<u8>>) {
+            let (supervisor, launcher) = supervisor(patient());
+            let (release, gate) = mpsc::channel();
+            launcher.gate_with(gate);
+            launcher.set_behavior(Behavior::Blocked);
+            let key = binding().context.context_key();
+
+            let lease = supervisor.acquire(&binding()).expect("start");
+            let mut waiters: Vec<PendingRequest> = (0..CLIENTS)
+                .map(|_| {
+                    lease
+                        .submit(request_in(
+                            &key,
+                            "shared",
+                            Some("rev-1"),
+                            RequestPriority::Interactive,
+                        ))
+                        .expect("submit")
+                })
+                .collect();
+            launcher.await_entered(1);
+
+            for _ in 0..withdrawn {
+                waiters.remove(0).cancel();
+            }
+            let _ = release.send(());
+            let answer = waiters.pop().map(|last| {
+                last.wait(RequestOptions::default())
+                    .expect("answer")
+                    .payload
+            });
+            drop(waiters);
+            assert!(
+                supervisor.await_quiescent(&key, PATIENCE),
+                "the execution never finished"
+            );
+            (launcher.cancellations_seen(), answer)
+        }
+
+        // Four leave, one stays: the backend is never told to stop, and
+        // the client who stayed gets the answer the other four paid for.
+        let (told_to_stop, answer) = round(CLIENTS - 1);
+        assert_eq!(told_to_stop, 0, "one client still wanted this answer");
+        assert_eq!(answer, Some(b"answer:shared".to_vec()));
+
+        // All five leave: now, and only now, the work may stop.
+        let (told_to_stop, answer) = round(CLIENTS);
+        assert_eq!(
+            told_to_stop, 1,
+            "the last withdrawal is what reaches the backend"
+        );
+        assert_eq!(answer, None);
+    }
+
+    // -----------------------------------------------------------------
+    // Scheduling
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn a_parallel_host_really_overlaps_and_still_refuses_to_ask_twice() {
+        let launcher = FakeLauncher::parallel(SemanticBackendKind::Python);
+        let supervisor = fleet(patient(), &[Arc::clone(&launcher)]);
+        let key = binding().context.context_key();
+
+        // One barrier for three: none of them can leave the backend
+        // until all three are inside it. Serialized execution would
+        // never finish, so finishing *is* the proof of overlap.
+        let barrier = Arc::new(Barrier::new(3));
+        launcher.rendezvous_at(&barrier);
+        launcher.set_behavior(Behavior::Rendezvous);
+
+        let lease = supervisor.acquire(&binding()).expect("start");
+        let first = lease
+            .submit(request_in(&key, "one", None, RequestPriority::Interactive))
+            .expect("submit");
+        let second = lease
+            .submit(request_in(&key, "two", None, RequestPriority::Interactive))
+            .expect("submit");
+        launcher.await_entered(2);
+
+        // Two of three have arrived, so neither can have finished:
+        // "one" is certainly still in flight, and a fourth caller
+        // asking it joins rather than asks again.
+        let joiner = lease
+            .submit(request_in(&key, "one", None, RequestPriority::Interactive))
+            .expect("submit");
+        assert_eq!(
+            supervisor.telemetry(&key).expect("telemetry").dedupe_hits,
+            1,
+            "dedupe is not a property of serial hosts"
+        );
+        assert_eq!(
+            supervisor
+                .telemetry(&key)
+                .expect("telemetry")
+                .active_requests,
+            2,
+            "a parallel host's active count is what is really running"
+        );
+
+        // The third distinct question trips the barrier.
+        let third = lease
+            .submit(request_in(
+                &key,
+                "three",
+                None,
+                RequestPriority::Interactive,
+            ))
+            .expect("submit");
+
+        assert!(first.wait(RequestOptions::default()).is_ok());
+        assert!(second.wait(RequestOptions::default()).is_ok());
+        assert!(third.wait(RequestOptions::default()).is_ok());
+        assert_eq!(
+            joiner
+                .wait(RequestOptions::default())
+                .expect("answer")
+                .payload,
+            b"answer:one".to_vec()
+        );
+        assert_eq!(
+            launcher.execution_count(),
+            3,
+            "four callers, three distinct questions"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // Capacity
+    // -----------------------------------------------------------------
+
+    /// A cap of `limit` live runtimes, and warm runtimes that stay warm
+    /// until capacity itself retires them.
+    fn capped(limit: usize) -> RuntimePolicy {
+        RuntimePolicy {
+            max_live_runtimes: Some(limit),
+            ..patient()
+        }
+    }
+
+    #[test]
+    fn the_default_policy_caps_nothing_because_nobody_has_measured_yet() {
+        assert_eq!(RuntimePolicy::default().max_live_runtimes, None);
+    }
+
+    #[test]
+    fn capacity_retires_what_nobody_is_using_and_starts_what_is_wanted() {
+        let (supervisor, launcher) = supervisor(capped(2));
+        let first = binding_of(SemanticBackendKind::Python, ResourceLanguage::Python, "a");
+        let second = binding_of(SemanticBackendKind::Python, ResourceLanguage::Python, "b");
+        let third = binding_of(SemanticBackendKind::Python, ResourceLanguage::Python, "c");
+
+        let idle_one = supervisor.acquire(&first).expect("start");
+        let kept = supervisor.acquire(&second).expect("start");
+        assert_eq!(supervisor.live_runtime_count(), 2);
+
+        // A is released entirely; B is still leased.
+        drop(idle_one);
+
+        let newcomer = supervisor.acquire(&third).expect("start under the cap");
+        assert_eq!(
+            supervisor.live_runtime_count(),
+            2,
+            "a completed acquisition never leaves the fleet over its cap"
+        );
+        assert_eq!(
+            supervisor.state(&first.context.context_key()),
+            RuntimeState::Stopped,
+            "the unused runtime made room"
+        );
+        assert_eq!(
+            supervisor.state(&second.context.context_key()),
+            RuntimeState::Ready,
+            "the leased one was never a candidate"
+        );
+        assert_eq!(newcomer.state(), RuntimeState::Ready);
+        assert_eq!(launcher.shutdown_count(), 1);
+        assert_eq!(
+            supervisor.fleet_telemetry().capacity_evictions,
+            1,
+            "and the fleet says why it is one short"
+        );
+        drop(kept);
+    }
+
+    #[test]
+    fn a_fleet_where_every_runtime_is_working_refuses_rather_than_kills() {
+        let (supervisor, launcher) = supervisor(capped(2));
+        let first = binding_of(SemanticBackendKind::Python, ResourceLanguage::Python, "a");
+        let second = binding_of(SemanticBackendKind::Python, ResourceLanguage::Python, "b");
+        let third = binding_of(SemanticBackendKind::Python, ResourceLanguage::Python, "c");
+
+        // A is protected by a lease.
+        let leased = supervisor.acquire(&first).expect("start");
+
+        // B is protected by a request it is running. The release
+        // channel is installed after A's host was built, so it reaches
+        // B's -- the one that has to block.
+        let (release, gate) = mpsc::channel();
+        launcher.gate_with(gate);
+        let busy = supervisor.acquire(&second).expect("start");
+        launcher.set_behavior(Behavior::Blocked);
+        let running = busy
+            .submit(request_in(
+                &second.context.context_key(),
+                "slow",
+                None,
+                RequestPriority::Background,
+            ))
+            .expect("submit");
+        launcher.await_entered(1);
+        drop(busy); // no lease left, but the request is still running
+
+        match supervisor.acquire(&third) {
+            Err(StartFailure::Capacity { limit, live }) => {
+                assert_eq!(limit, 2);
+                assert_eq!(live, 3, "the caller's own slot is counted honestly");
+            }
+            other => panic!("expected an explicit capacity refusal, got {other:?}"),
+        }
+
+        assert_eq!(launcher.launch_count(), 2, "nothing was started");
+        assert_eq!(launcher.shutdown_count(), 0, "and nothing was killed");
+        assert_eq!(leased.state(), RuntimeState::Ready);
+        assert_eq!(supervisor.live_runtime_count(), 2);
+        // A capacity refusal is not a failed start: no budget was spent.
+        let telemetry = supervisor
+            .telemetry(&third.context.context_key())
+            .expect("the entry exists");
+        assert_eq!(telemetry.starts_attempted, 0);
+        assert_eq!(telemetry.consecutive_failures, 0);
+        assert_eq!(telemetry.state, RuntimeState::Cold);
+
+        let _ = release.send(());
+        assert!(running.wait(RequestOptions::default()).is_ok());
+    }
+
+    #[test]
+    fn eviction_order_is_oldest_first_and_never_a_coin_toss() {
+        // Three idle runtimes, acquired in a known order, so the oldest
+        // last activity is a fact rather than a guess.
+        let (supervisor, launcher) = supervisor(capped(3));
+        let roots = ["a", "b", "c"];
+        let bindings: Vec<AnalysisContextBinding> = roots
+            .iter()
+            .map(|root| binding_of(SemanticBackendKind::Python, ResourceLanguage::Python, root))
+            .collect();
+        for binding in &bindings {
+            drop(supervisor.acquire(binding).expect("start"));
+        }
+        // Touch the first one, so it is no longer the oldest.
+        drop(supervisor.acquire(&bindings[0]).expect("reuse"));
+        assert_eq!(launcher.launch_count(), 3);
+
+        let fourth = binding_of(SemanticBackendKind::Python, ResourceLanguage::Python, "d");
+        let _newcomer = supervisor.acquire(&fourth).expect("start");
+
+        assert_eq!(
+            supervisor.state(&bindings[1].context.context_key()),
+            RuntimeState::Stopped,
+            "the least recently used runtime is the one that goes"
+        );
+        assert_eq!(
+            supervisor.state(&bindings[0].context.context_key()),
+            RuntimeState::Ready
+        );
+        assert_eq!(
+            supervisor.state(&bindings[2].context.context_key()),
+            RuntimeState::Ready
+        );
+        assert_eq!(supervisor.live_runtime_count(), 3);
+    }
+
+    #[test]
+    fn the_capacity_cap_is_fleet_wide_and_privileges_no_language() {
+        let python = FakeLauncher::new(SemanticBackendKind::Python);
+        let rust = FakeLauncher::new(SemanticBackendKind::Rust);
+        let csharp = FakeLauncher::new(SemanticBackendKind::CSharp);
+        let supervisor = fleet(
+            capped(2),
+            &[Arc::clone(&python), Arc::clone(&rust), Arc::clone(&csharp)],
+        );
+
+        let py = binding_of(SemanticBackendKind::Python, ResourceLanguage::Python, "py");
+        let rs = binding_of(SemanticBackendKind::Rust, ResourceLanguage::Rust, "rs");
+        let cs = binding_of(SemanticBackendKind::CSharp, ResourceLanguage::CSharp, "cs");
+
+        drop(supervisor.acquire(&py).expect("start"));
+        drop(supervisor.acquire(&rs).expect("start"));
+        assert_eq!(supervisor.live_runtime_count(), 2);
+
+        // Not "two per family": two, full stop.
+        let _held = supervisor.acquire(&cs).expect("start");
+        assert_eq!(
+            supervisor.live_runtime_count(),
+            2,
+            "a third family does not get a third slot"
+        );
+        assert_eq!(
+            supervisor.state(&py.context.context_key()),
+            RuntimeState::Stopped,
+            "the oldest went, and it being Python is not why"
+        );
+        assert_eq!(python.shutdown_count(), 1);
+        assert_eq!(rust.shutdown_count(), 0);
+        assert_eq!(csharp.shutdown_count(), 0);
+    }
+
+    #[test]
+    fn two_worktrees_are_two_runtimes_against_one_cap() {
+        let (supervisor, _launcher) = supervisor(capped(2));
+        let one = binding_for(
+            [10; 16],
+            ProjectRootIdentity::Config(ResourceId::from_bytes([2; 16])),
+            "sha256:venv",
+        );
+        let two = binding_for(
+            [11; 16],
+            ProjectRootIdentity::Config(ResourceId::from_bytes([2; 16])),
+            "sha256:venv",
+        );
+
+        let _first = supervisor.acquire(&one).expect("start");
+        let _second = supervisor.acquire(&two).expect("start");
+
+        assert_ne!(one.context.context_key(), two.context.context_key());
+        assert_eq!(
+            supervisor.live_runtime_count(),
+            2,
+            "identical project, identical toolchain, two worktrees, two runtimes"
+        );
+        let third = binding_of(SemanticBackendKind::Python, ResourceLanguage::Python, "x");
+        match supervisor.acquire(&third) {
+            Err(StartFailure::Capacity { .. }) => {}
+            other => panic!("both worktrees count against the cap, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_idle_sweep_shuts_a_host_down_once_and_only_once() {
+        let (supervisor, launcher) = supervisor(impatient());
+        drop(supervisor.acquire(&binding()).expect("start"));
+
+        assert_eq!(supervisor.sweep_idle(), 1);
+        assert_eq!(supervisor.sweep_idle(), 0, "there is nothing left to sweep");
+        supervisor.shutdown();
+
+        assert_eq!(launcher.shutdown_count(), 1);
+        assert_eq!(launcher.worst_host_shutdown_count(), 1);
+    }
+
+    // -----------------------------------------------------------------
+    // Failure, isolation and recovery
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn one_crash_with_five_waiters_is_one_crash_and_five_failures() {
+        let (supervisor, launcher) = supervisor(patient());
+        let (release, gate) = mpsc::channel();
+        launcher.gate_with(gate);
+        let key = binding().context.context_key();
+        let lease = supervisor.acquire(&binding()).expect("start");
+        // Blocked first, so all five join one execution, and only then
+        // does that execution die.
+        launcher.set_behavior(Behavior::BlockedThenCrash);
+
+        let waiters: Vec<PendingRequest> = (0..CLIENTS)
+            .map(|_| {
+                lease
+                    .submit(request_in(
+                        &key,
+                        "doomed",
+                        Some("rev-1"),
+                        RequestPriority::Interactive,
+                    ))
+                    .expect("submit")
+            })
+            .collect();
+        launcher.await_entered(1);
+        assert_eq!(
+            supervisor.telemetry(&key).expect("telemetry").dedupe_hits,
+            (CLIENTS - 1) as u64
+        );
+        let _ = release.send(());
+
+        for waiter in waiters {
+            match waiter.wait(RequestOptions::default()) {
+                Err(RequestFailure::Backend(_) | RequestFailure::Crashed(_)) => {}
+                Ok(response) => panic!("a crash became an answer: {response:?}"),
+                other => panic!("unexpected {other:?}"),
+            }
+        }
+
+        assert!(
+            supervisor.await_quiescent(&key, PATIENCE),
+            "the dead host never finished leaving"
+        );
+        let telemetry = supervisor.telemetry(&key).expect("telemetry");
+        assert_eq!(telemetry.crashes, 1, "one backend died, not five");
+        assert_eq!(
+            telemetry.consecutive_failures, 1,
+            "and five clients did not spend five restarts"
+        );
+        assert_eq!(telemetry.state, RuntimeState::Backoff);
+        assert_eq!(launcher.shutdown_count(), 1);
+        assert_eq!(launcher.worst_host_shutdown_count(), 1);
+    }
+
+    #[test]
+    fn a_crash_in_one_context_leaves_another_ready_deterministically() {
+        // The task 11 flake, reconstructed. The old assertion sampled
+        // the healthy runtime's state the instant its own `wait`
+        // returned, and a request's books used to close a moment after
+        // that -- so READY and BUSY were both reachable and neither was
+        // wrong. The runtime now closes its books before it answers,
+        // which makes the state the answer implies the state that is
+        // observable. No sleep, no retry, no settle window.
+        for round in 0..16 {
+            let (supervisor, launcher) = supervisor(patient());
+            let healthy = binding_for(
+                [5; 16],
+                ProjectRootIdentity::Config(ResourceId::from_bytes([2; 16])),
+                "sha256:venv",
+            );
+
+            let good = supervisor.acquire(&healthy).expect("start");
+            launcher.set_behavior(Behavior::CrashSilently);
+            let bad = supervisor.acquire(&binding()).expect("start");
+            assert!(ask(&bad, "boom").is_err());
+            assert_eq!(bad.state(), RuntimeState::Backoff, "round {round}");
+
+            launcher.set_behavior(Behavior::Echo);
+            assert!(ask(&good, "fine").is_ok(), "round {round}");
+            assert_eq!(
+                good.state(),
+                RuntimeState::Ready,
+                "round {round}: an unrelated context is READY the moment it answers"
+            );
+            assert_eq!(
+                supervisor
+                    .telemetry(&healthy.context.context_key())
+                    .expect("telemetry")
+                    .crashes,
+                0,
+                "round {round}: the crash belonged to the other context"
+            );
+        }
+    }
+
+    #[test]
+    fn five_clients_racing_a_restart_start_one_replacement() {
+        let policy = RuntimePolicy {
+            restart_budget: 5,
+            backoff_base: Duration::ZERO,
+            backoff_max: Duration::ZERO,
+            ..patient()
+        };
+        let (supervisor, launcher) = supervisor(policy);
+        let supervisor = Arc::new(supervisor);
+        let key = binding().context.context_key();
+
+        launcher.set_behavior(Behavior::CrashSilently);
+        let broken = supervisor.acquire(&binding()).expect("start");
+        assert!(ask(&broken, "boom").is_err());
+        drop(broken);
+        assert_eq!(supervisor.state(&key), RuntimeState::Backoff);
+        launcher.set_behavior(Behavior::Echo);
+
+        // The backoff window is zero, so every client is eligible at
+        // once -- which is exactly the storm this must not become.
+        let start = Arc::new(Barrier::new(CLIENTS));
+        thread::scope(|scope| {
+            for _ in 0..CLIENTS {
+                let supervisor = Arc::clone(&supervisor);
+                let start = Arc::clone(&start);
+                scope.spawn(move || {
+                    start.wait();
+                    supervisor.acquire(&binding()).expect("restart");
+                });
+            }
+        });
+
+        assert_eq!(
+            launcher.launch_count(),
+            2,
+            "one original, one replacement -- not one per client"
+        );
+        let telemetry = supervisor.telemetry(&key).expect("telemetry");
+        assert_eq!(telemetry.restart_attempts, 1);
+        assert_eq!(telemetry.starts_succeeded, 2);
+        assert_eq!(supervisor.live_runtime_count(), 1);
+    }
+
+    #[test]
+    fn a_degraded_context_stops_trying_and_leaves_the_rest_of_the_fleet_alone() {
+        let policy = RuntimePolicy {
+            restart_budget: 2,
+            backoff_base: Duration::ZERO,
+            backoff_max: Duration::ZERO,
+            ..patient()
+        };
+        let broken = FakeLauncher::new(SemanticBackendKind::Python);
+        let working = FakeLauncher::new(SemanticBackendKind::Rust);
+        let supervisor = fleet(policy, &[Arc::clone(&broken), Arc::clone(&working)]);
+
+        let failing = binding_of(SemanticBackendKind::Python, ResourceLanguage::Python, "py");
+        let healthy = binding_of(SemanticBackendKind::Rust, ResourceLanguage::Rust, "rs");
+
+        broken.fail_next_launches(100);
+        for _ in 0..2 {
+            assert!(supervisor.acquire(&failing).is_err());
+        }
+        assert_eq!(
+            supervisor.state(&failing.context.context_key()),
+            RuntimeState::Degraded
+        );
+
+        // Five more clients ask. A degraded context answers all five
+        // the same way, and reaches the launcher none of the times.
+        for _ in 0..CLIENTS {
+            match supervisor.acquire(&failing) {
+                Err(StartFailure::Degraded { attempts }) => assert_eq!(attempts, 2),
+                other => panic!("expected degraded, got {other:?}"),
+            }
+        }
+        assert_eq!(
+            broken.launch_count(),
+            2,
+            "a spent budget is not an invitation to loop"
+        );
+
+        let alive = supervisor
+            .acquire(&healthy)
+            .expect("another family is fine");
+        assert!(ask(&alive, "unaffected").is_ok());
+        assert_eq!(working.launch_count(), 1);
+
+        let fleet = supervisor.fleet_telemetry();
+        assert_eq!(fleet.degraded, 1);
+        assert_eq!(fleet.ready, 1);
+        assert_eq!(fleet.live_runtimes, 1, "partial availability, stated");
+    }
+
+    #[test]
+    fn a_context_that_is_still_starting_does_not_hold_up_another() {
+        let slow = FakeLauncher::new(SemanticBackendKind::CSharp);
+        let quick = FakeLauncher::new(SemanticBackendKind::TypeScriptJavaScript);
+        let supervisor = Arc::new(fleet(patient(), &[Arc::clone(&slow), Arc::clone(&quick)]));
+
+        // The slow family's launch blocks until this test releases it.
+        let held = Arc::new(Barrier::new(2));
+        *slow
+            .launch_barrier
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::clone(&held));
+
+        let slow_binding = binding_of(SemanticBackendKind::CSharp, ResourceLanguage::CSharp, "cs");
+        let quick_binding = binding_of(
+            SemanticBackendKind::TypeScriptJavaScript,
+            ResourceLanguage::TypeScript,
+            "ts",
+        );
+
+        thread::scope(|scope| {
+            let starting = {
+                let supervisor = Arc::clone(&supervisor);
+                let slow_binding = slow_binding.clone();
+                scope.spawn(move || supervisor.acquire(&slow_binding).expect("start"))
+            };
+
+            // Wait for C# to actually be inside `launch`, rather than
+            // assuming the thread above got there first.
+            slow.await_launching(1);
+
+            // While C# is stuck inside `launch`, TypeScript starts and
+            // answers. If the registry lock were held across a launch,
+            // this would block until the barrier below released it.
+            let ready = supervisor.acquire(&quick_binding).expect("start");
+            assert_eq!(ready.state(), RuntimeState::Ready);
+            assert!(ask(&ready, "not waiting").is_ok());
+            assert_eq!(
+                supervisor.state(&slow_binding.context.context_key()),
+                RuntimeState::Starting,
+                "the other one is still coming up"
+            );
+
+            held.wait();
+            let arrived = starting.join().expect("slow start");
+            assert_eq!(arrived.state(), RuntimeState::Ready);
+        });
+
+        assert_eq!(supervisor.live_runtime_count(), 2);
+    }
+
+    #[test]
+    fn one_missing_backend_family_does_not_make_the_fleet_unavailable() {
+        let present = FakeLauncher::new(SemanticBackendKind::Python);
+        let supervisor = fleet(patient(), &[Arc::clone(&present)]);
+
+        // Svelte has no launcher here at all -- the shape of a
+        // toolchain that is simply not installed.
+        let missing = binding_of(SemanticBackendKind::Svelte, ResourceLanguage::Svelte, "web");
+        match supervisor.acquire(&missing) {
+            Err(StartFailure::NoBackendRegistered(SemanticBackendKind::Svelte)) => {}
+            other => panic!("expected a typed refusal, got {other:?}"),
+        }
+
+        let usable = supervisor
+            .acquire(&binding_of(
+                SemanticBackendKind::Python,
+                ResourceLanguage::Python,
+                "py",
+            ))
+            .expect("the installed family still starts");
+        assert!(ask(&usable, "fine").is_ok());
+
+        let fleet = supervisor.fleet_telemetry();
+        assert_eq!(
+            fleet.known_contexts, 1,
+            "a family with no launcher never became a runtime entry"
+        );
+        assert_eq!(fleet.live_runtimes, 1);
+    }
+
+    // -----------------------------------------------------------------
+    // Fleet telemetry
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn fleet_telemetry_adds_up_what_the_runtimes_say_and_nothing_else() {
+        let python = FakeLauncher::new(SemanticBackendKind::Python);
+        let rust = FakeLauncher::new(SemanticBackendKind::Rust);
+        let supervisor = fleet(patient(), &[Arc::clone(&python), Arc::clone(&rust)]);
+        let (release, gate) = mpsc::channel();
+        *python
+            .gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(gate);
+
+        let py = binding_of(SemanticBackendKind::Python, ResourceLanguage::Python, "py");
+        let rs = binding_of(SemanticBackendKind::Rust, ResourceLanguage::Rust, "rs");
+
+        let busy_lease = supervisor.acquire(&py).expect("start");
+        let ready_lease = supervisor.acquire(&rs).expect("start");
+        assert!(ask(&ready_lease, "quick").is_ok());
+
+        python.set_behavior(Behavior::Blocked);
+        let waiters: Vec<PendingRequest> = (0..3)
+            .map(|_| {
+                busy_lease
+                    .submit(request_in(
+                        &py.context.context_key(),
+                        "slow",
+                        Some("rev-1"),
+                        RequestPriority::Interactive,
+                    ))
+                    .expect("submit")
+            })
+            .collect();
+        python.await_entered(1);
+
+        let fleet = supervisor.fleet_telemetry();
+        assert_eq!(fleet.known_contexts, 2);
+        assert_eq!(fleet.live_runtimes, 2);
+        assert_eq!(fleet.busy, 1);
+        assert_eq!(fleet.ready, 1);
+        assert_eq!(fleet.active_leases, 2);
+        assert_eq!(
+            fleet.active_requests, 1,
+            "three waiters, one execution: the fleet counts executions"
+        );
+        assert_eq!(fleet.dedupe_hits, 2);
+        assert_eq!(fleet.starts_attempted, 2);
+        assert_eq!(fleet.starts_succeeded, 2);
+        assert_eq!(fleet.crashes, 0);
+        assert_eq!(fleet.restart_attempts, 0);
+        assert_eq!(fleet.requests_started, 2, "one quick, one slow");
+        assert_eq!(fleet.requests_completed, 1);
+
+        let _ = release.send(());
+        for waiter in waiters {
+            assert!(waiter.wait(RequestOptions::default()).is_ok());
+        }
+    }
+
+    #[test]
+    fn a_fleet_that_cannot_measure_its_memory_says_so_instead_of_saying_zero() {
+        let measured = FakeLauncher::new(SemanticBackendKind::Python);
+        let unmeasured = FakeLauncher::new(SemanticBackendKind::Rust);
+        measured.report_rss(Some(100));
+        let supervisor = fleet(patient(), &[Arc::clone(&measured), Arc::clone(&unmeasured)]);
+
+        let _py = supervisor
+            .acquire(&binding_of(
+                SemanticBackendKind::Python,
+                ResourceLanguage::Python,
+                "py",
+            ))
+            .expect("start");
+        let known_only = supervisor.fleet_telemetry();
+        assert_eq!(known_only.known_rss_bytes, Some(100));
+        assert_eq!(known_only.resource_usage_unknown, 0);
+
+        let _rs = supervisor
+            .acquire(&binding_of(
+                SemanticBackendKind::Rust,
+                ResourceLanguage::Rust,
+                "rs",
+            ))
+            .expect("start");
+        let mixed = supervisor.fleet_telemetry();
+        assert_eq!(
+            mixed.known_rss_bytes,
+            Some(100),
+            "the unmeasurable host was not added in as a zero"
+        );
+        assert_eq!(
+            mixed.resource_usage_unknown, 1,
+            "and the fleet says one host's memory is unknown"
+        );
+        assert_eq!(mixed.known_cpu_millis, None, "nothing measured CPU at all");
+    }
+
+    #[test]
+    fn two_measured_hosts_are_a_sum_and_two_unmeasured_ones_are_not_a_zero() {
+        let first = FakeLauncher::new(SemanticBackendKind::Python);
+        let second = FakeLauncher::new(SemanticBackendKind::Rust);
+        first.report_rss(Some(100));
+        second.report_rss(Some(200));
+        let supervisor = fleet(patient(), &[Arc::clone(&first), Arc::clone(&second)]);
+        let _a = supervisor
+            .acquire(&binding_of(
+                SemanticBackendKind::Python,
+                ResourceLanguage::Python,
+                "py",
+            ))
+            .expect("start");
+        let _b = supervisor
+            .acquire(&binding_of(
+                SemanticBackendKind::Rust,
+                ResourceLanguage::Rust,
+                "rs",
+            ))
+            .expect("start");
+        assert_eq!(supervisor.fleet_telemetry().known_rss_bytes, Some(300));
+
+        let blind = FakeLauncher::new(SemanticBackendKind::CSharp);
+        let dark = fleet(patient(), &[Arc::clone(&blind)]);
+        let _c = dark
+            .acquire(&binding_of(
+                SemanticBackendKind::CSharp,
+                ResourceLanguage::CSharp,
+                "cs",
+            ))
+            .expect("start");
+        let nothing = dark.fleet_telemetry();
+        assert_eq!(
+            nothing.known_rss_bytes, None,
+            "no measurement is not a measurement of none"
+        );
+        assert_eq!(nothing.resource_usage_unknown, 1);
+    }
+
+    #[test]
+    fn reading_telemetry_never_starts_a_backend() {
+        let (supervisor, launcher) = supervisor(patient());
+        let key = binding().context.context_key();
+
+        assert_eq!(supervisor.fleet_telemetry(), FleetTelemetry::default());
+        assert!(supervisor.telemetry(&key).is_none());
+        assert_eq!(supervisor.state(&key), RuntimeState::Cold);
+        assert_eq!(supervisor.live_runtime_count(), 0);
+        assert_eq!(launcher.launch_count(), 0);
+
+        drop(supervisor.acquire(&binding()).expect("start"));
+        assert_eq!(supervisor.sweep_idle(), 0, "a patient runtime stays");
+        for _ in 0..5 {
+            let _ = supervisor.fleet_telemetry();
+        }
+        assert_eq!(
+            launcher.launch_count(),
+            1,
+            "looking at the fleet is not asking it for anything"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // Shutdown
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn shutdown_releases_a_mixed_fleet_exactly_once_and_takes_no_more_work() {
+        let python = FakeLauncher::new(SemanticBackendKind::Python);
+        let rust = FakeLauncher::new(SemanticBackendKind::Rust);
+        let supervisor = fleet(patient(), &[Arc::clone(&python), Arc::clone(&rust)]);
+        let (release, gate) = mpsc::channel();
+        *python
+            .gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(gate);
+
+        let py = binding_of(SemanticBackendKind::Python, ResourceLanguage::Python, "py");
+        let rs = binding_of(SemanticBackendKind::Rust, ResourceLanguage::Rust, "rs");
+        let busy = supervisor.acquire(&py).expect("start");
+        let _idle = supervisor.acquire(&rs).expect("start");
+
+        python.set_behavior(Behavior::Blocked);
+        let inflight = busy
+            .submit(request_in(
+                &py.context.context_key(),
+                "queued",
+                None,
+                RequestPriority::Background,
+            ))
+            .expect("submit");
+        python.await_entered(1);
+
+        supervisor.shutdown();
+
+        assert!(matches!(
+            supervisor.acquire(&py),
+            Err(StartFailure::ShuttingDown)
+        ));
+        assert!(matches!(
+            supervisor.acquire(&rs),
+            Err(StartFailure::ShuttingDown)
+        ));
+        assert_eq!(supervisor.live_runtime_count(), 0);
+        for key in [py.context.context_key(), rs.context.context_key()] {
+            assert_eq!(
+                supervisor.state(&key),
+                RuntimeState::Stopped,
+                "no runtime is READY behind a supervisor that is gone"
+            );
+        }
+        assert_eq!(python.shutdown_count(), 1);
+        assert_eq!(rust.shutdown_count(), 1);
+        assert_eq!(python.worst_host_shutdown_count(), 1);
+        assert_eq!(rust.worst_host_shutdown_count(), 1);
+
+        // The in-flight request is released rather than deadlocked.
+        let _ = release.send(());
+        let outcome = inflight.wait(RequestOptions::default());
+        assert!(
+            outcome.is_err() || outcome.is_ok(),
+            "it finished one way or the other, and did not hang"
+        );
+
+        // Shutting down twice is not shutting a host down twice.
+        supervisor.shutdown();
+        assert_eq!(python.worst_host_shutdown_count(), 1);
+        assert_eq!(rust.worst_host_shutdown_count(), 1);
+    }
+
+    #[test]
+    fn capacity_eviction_racing_shutdown_never_shuts_one_host_down_twice() {
+        for round in 0..24 {
+            let launcher = FakeLauncher::new(SemanticBackendKind::Python);
+            let supervisor = Arc::new(fleet(capped(1), &[Arc::clone(&launcher)]));
+            let first = binding_of(SemanticBackendKind::Python, ResourceLanguage::Python, "a");
+            let second = binding_of(SemanticBackendKind::Python, ResourceLanguage::Python, "b");
+            drop(supervisor.acquire(&first).expect("start"));
+
+            // One thread needs the single slot; the other is closing
+            // the whole fleet. Both reach for the same live host.
+            let collide = Arc::new(Barrier::new(2));
+            thread::scope(|scope| {
+                {
+                    let supervisor = Arc::clone(&supervisor);
+                    let collide = Arc::clone(&collide);
+                    let second = second.clone();
+                    scope.spawn(move || {
+                        collide.wait();
+                        let _ = supervisor.acquire(&second);
+                    });
+                }
+                collide.wait();
+                supervisor.shutdown();
+            });
+
+            assert_eq!(
+                launcher.worst_host_shutdown_count(),
+                1,
+                "round {round}: every host left exactly once"
+            );
+            assert_eq!(supervisor.live_runtime_count(), 0, "round {round}");
+            let fleet = supervisor.fleet_telemetry();
+            assert_eq!(fleet.active_requests, 0, "round {round}");
+            assert_eq!(fleet.active_leases, 0, "round {round}");
         }
     }
 }
