@@ -28,14 +28,14 @@ use brainprint_engine::{
     graph::{GraphEndpoint, RelationKind},
     python_semantic::{
         BatchPolicy, LeaseQueries, PyrightInstall, PythonLauncher, PythonSettings, RefreshRequest,
-        capability_report, config_basis, refresh_resource, toolchain_identity,
+        capability_report, config_basis, lifecycle, refresh_resource, toolchain_identity,
     },
     relations::RelationIndex,
     resource::{ResourceLanguage, ResourceStore},
     runtime::{RequestOptions, RuntimePolicy, SemanticRuntimeSupervisor},
     scan::BaselineScan,
     semantic::{AnalysisContext, AnalysisContextBinding, ProjectRootIdentity, SemanticBackendKind},
-    semantic_index::{SemanticIndex, SemanticState},
+    semantic_index::{SemanticIndex, SemanticOwner, SemanticState},
     symbol::SymbolStore,
 };
 
@@ -102,7 +102,10 @@ fn the_real_type_server_resolves_the_task_five_fixture() {
         backend: SemanticBackendKind::Python,
         language: ResourceLanguage::Python,
         project_root: ProjectRootIdentity::Key("python-semantic-spike".to_owned()),
-        toolchain: toolchain_identity(&install, &settings),
+        toolchain: toolchain_identity(
+            &install,
+            &lifecycle::environment_identity(&workspace, &settings),
+        ),
     };
     let binding = AnalysisContextBinding {
         context: context.clone(),
@@ -180,7 +183,10 @@ fn the_real_type_server_resolves_the_task_five_fixture() {
         "the program-wide snapshot makes the module set part of the basis"
     );
     assert_eq!(
-        index.status(&context.context_key()).expect("status").state,
+        index
+            .status(&SemanticOwner::new(context.context_key(), owner.id))
+            .expect("status")
+            .state,
         SemanticState::Current
     );
 
@@ -453,6 +459,222 @@ fn the_real_type_server_resolves_the_task_five_fixture() {
         overrides_of("pkg/impl.py", "Impl.run").len(),
         1,
         "and the derived edge survives an identical refresh"
+    );
+
+    drop(lease);
+    supervisor.shutdown();
+    let _ = fs::remove_dir_all(&base);
+}
+
+/// The task 8 lifecycle, end to end, against the real backend.
+///
+/// What a fake host cannot show: that Pyright actually notices a
+/// `workspace/didChangeWatchedFiles` batch and answers differently
+/// afterwards, without a single document overlay being sent.
+#[test]
+#[ignore = "needs the pinned pyright-typeserver install; see the module docs"]
+fn the_real_backend_follows_a_workspace_change_through_the_lifecycle() {
+    let root = install_root();
+    let Ok(install) = PyrightInstall::locate(&root, "node") else {
+        println!("skipped: no pinned install under {}", root.display());
+        return;
+    };
+
+    let base = env::temp_dir().join(format!("brainprint-pyright-lifecycle-{}", process::id()));
+    let _ = fs::remove_dir_all(&base);
+    let workspace = base.join("workspace");
+    copy_tree(&fixture_source(), &workspace);
+    let db_path = base.join("data").join("index.db");
+    BaselineScan::open(&db_path)
+        .expect("index.db")
+        .run_initial_scan(&workspace, &WorkspaceConfig::default(), "workspace-rev-1")
+        .expect("baseline scan");
+
+    let settings = PythonSettings::default();
+    let environment = lifecycle::environment_identity(&workspace, &settings);
+    let context = AnalysisContext {
+        workspace: WorkspaceId::from_bytes([13; 16]),
+        backend: SemanticBackendKind::Python,
+        language: ResourceLanguage::Python,
+        project_root: ProjectRootIdentity::Key("python-semantic-spike".to_owned()),
+        toolchain: toolchain_identity(&install, &environment),
+    };
+    let binding = AnalysisContextBinding {
+        context: context.clone(),
+        project_root_rel: String::new(),
+        config_file_rel: Some("pyrightconfig.json".to_owned()),
+    };
+    let supervisor =
+        SemanticRuntimeSupervisor::new(RuntimePolicy::default()).with_backend(Arc::new(
+            PythonLauncher::new(install, workspace.clone(), settings.clone()),
+        ));
+    let lease = supervisor
+        .acquire(&binding)
+        .expect("the type server starts");
+    let queries = LeaseQueries::new(
+        &lease,
+        RequestOptions::with_timeout(Duration::from_secs(30)),
+    );
+
+    // The configuration the backend will actually use, discovered the
+    // same way the lifecycle does.
+    let index = SemanticIndex::open(&db_path).expect("index.db");
+    let discovered =
+        lifecycle::discover_config(index.connection(), &workspace, "").expect("discover config");
+    assert_eq!(discovered.source, lifecycle::ConfigSource::PyrightConfig);
+    let config = discovered.basis(&settings);
+    let capabilities = capability_report(&context);
+
+    let resources = ResourceStore::open(&db_path).expect("index.db");
+    let resource_of = |rel: &str| {
+        resources
+            .list_active()
+            .expect("resources")
+            .into_iter()
+            .find(|resource| resource.path_key == rel)
+            .unwrap_or_else(|| panic!("{rel}"))
+    };
+    let refresh_one = |rel: &str| {
+        refresh_resource(
+            &index,
+            &queries,
+            &RefreshRequest {
+                context: &context,
+                workspace_root: &workspace,
+                owner: resource_of(rel).id,
+                config: &config,
+                capabilities: &capabilities,
+                policy: BatchPolicy { max_attempts: 12 },
+            },
+        )
+        .unwrap_or_else(|error| panic!("{rel}: {error}"))
+    };
+
+    refresh_one("pkg/impl.py");
+    let impl_owner = SemanticOwner::new(context.context_key(), resource_of("pkg/impl.py").id);
+    assert_eq!(
+        index.status(&impl_owner).expect("status").state,
+        SemanticState::Current
+    );
+    let overrides = |rel: &str, name: &str| -> usize {
+        let symbol = SymbolStore::open(&db_path)
+            .expect("index.db")
+            .list_for_resource(resource_of(rel).id)
+            .expect("symbols")
+            .into_iter()
+            .find(|symbol| symbol.qualified_name == name)
+            .unwrap_or_else(|| panic!("{name}"));
+        RelationIndex::open(&db_path)
+            .expect("index.db")
+            .outgoing(
+                &GraphEndpoint::Symbol(symbol.id),
+                &[RelationKind::Overrides],
+            )
+            .expect("outgoing")
+            .confirmed
+            .len()
+    };
+    assert_eq!(overrides("pkg/impl.py", "Impl.run"), 1);
+
+    // --- the change: `Base.run` is renamed, and impl.py never moves.
+    let affected: std::collections::BTreeSet<SemanticOwner> = index
+        .owners_depending_on(resource_of("pkg/base.py").id)
+        .expect("owners")
+        .into_iter()
+        .collect();
+    assert!(affected.contains(&impl_owner), "affected: {affected:?}");
+
+    // 1. withdraw before any destructive structural work.
+    lifecycle::withdraw_affected(&index, &affected, "SEMANTIC_SOURCE_MOVED").expect("withdraw");
+    assert_eq!(overrides("pkg/impl.py", "Impl.run"), 0);
+
+    // 2. the filesystem holds the new truth before the backend is told.
+    fs::write(
+        workspace.join("pkg/base.py"),
+        "class Base:\n    def renamed(self, value: int) -> str:\n        ...\n",
+    )
+    .expect("rewrite");
+
+    // 3. structural replacement.
+    BaselineScan::open(&db_path)
+        .expect("index.db")
+        .run_initial_scan(&workspace, &WorkspaceConfig::default(), "workspace-rev-2")
+        .expect("structural replacement");
+
+    // 4. one deterministic notification batch, and no overlay.
+    let changes = vec![lifecycle::ResourceChange::new(
+        resource_of("pkg/base.py").id,
+        lifecycle::ChangeKind::Changed,
+        "pkg/base.py",
+    )];
+    let watched = lifecycle::watched_changes(&workspace, &changes);
+    assert_eq!(watched.len(), 1);
+    brainprint_engine::python_semantic::adapter::notify_watched_files(&queries, watched)
+        .expect("notify");
+
+    // 5. refresh only the affected owner, and the edge does not return
+    //    because the member it pointed at is gone.
+    let after = refresh_one("pkg/impl.py");
+    println!(
+        "after rename: {} evidence, {} created, {} removed",
+        after.evidence_count, after.merged.relations_created, after.merged.relations_removed
+    );
+    assert_eq!(
+        overrides("pkg/impl.py", "Impl.run"),
+        0,
+        "the real backend agrees the ancestor member is gone"
+    );
+
+    // Put it back and the targeted refresh restores the edge.
+    fs::write(
+        workspace.join("pkg/base.py"),
+        "class Base:\n    def run(self, value: int) -> str:\n        ...\n",
+    )
+    .expect("restore");
+    let affected: std::collections::BTreeSet<SemanticOwner> = index
+        .owners_depending_on(resource_of("pkg/base.py").id)
+        .expect("owners")
+        .into_iter()
+        .collect();
+    lifecycle::withdraw_affected(&index, &affected, "SEMANTIC_SOURCE_MOVED").expect("withdraw");
+    BaselineScan::open(&db_path)
+        .expect("index.db")
+        .run_initial_scan(&workspace, &WorkspaceConfig::default(), "workspace-rev-3")
+        .expect("structural replacement");
+    brainprint_engine::python_semantic::adapter::notify_watched_files(
+        &queries,
+        lifecycle::watched_changes(&workspace, &changes),
+    )
+    .expect("notify");
+    refresh_one("pkg/impl.py");
+    assert_eq!(
+        overrides("pkg/impl.py", "Impl.run"),
+        1,
+        "and it comes back when the proof does"
+    );
+
+    // Idempotent: the same refresh again changes nothing.
+    let again = refresh_one("pkg/impl.py");
+    assert_eq!(again.merged.relations_created, 0);
+    assert_eq!(again.merged.relations_removed, 0);
+
+    // A reopen with an unchanged basis needs no process at all.
+    let inventory = brainprint_engine::python_semantic::inventory_fingerprint(
+        index.connection(),
+        ResourceLanguage::Python,
+    )
+    .expect("inventory");
+    let answers = lifecycle::revalidate_context(
+        &index,
+        &context,
+        &lifecycle::current_inputs(&context, &config, &capabilities, &inventory),
+    )
+    .expect("revalidate");
+    assert!(
+        answers
+            .iter()
+            .any(|(owner, status)| owner == &impl_owner && status.is_current()),
+        "revalidated: {answers:?}"
     );
 
     drop(lease);

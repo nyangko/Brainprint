@@ -45,7 +45,7 @@ use crate::{
         SemanticBackendLauncher, SemanticRuntimeHost, SemanticRuntimeSupervisor, StartFailure,
     },
     semantic::{AnalysisContextBinding, SemanticBackendKind, SemanticCapability, SemanticOutcome},
-    semantic_index::{SemanticIndex, SemanticIndexError, SemanticState},
+    semantic_index::{SemanticIndex, SemanticIndexError, SemanticOwner, SemanticState},
     symbol::{OccurrenceKind, list_occurrences_for_resource},
 };
 
@@ -514,7 +514,12 @@ fn snapshot_retry_is_bounded_and_exhaustion_publishes_nothing() {
     // Nothing was published, and a retryable failure is not zero
     // semantic results.
     let index = SemanticIndex::open(&fixture.db_path()).expect("index.db");
-    let status = index.status(&context().context_key()).expect("status");
+    let status = index
+        .status(&SemanticOwner::new(
+            context().context_key(),
+            fixture.resource("pkg/impl.py").id,
+        ))
+        .expect("status");
     assert_eq!(status.state, SemanticState::None);
     assert_eq!(count(&fixture, "semantic_publication"), 0);
     assert_eq!(count(&fixture, "semantic_evidence"), 0);
@@ -534,7 +539,12 @@ fn the_backend_snapshot_never_becomes_canonical_identity() {
 
     let read = |fixture: &Fixture| {
         let index = SemanticIndex::open(&fixture.db_path()).expect("index.db");
-        let status = index.status(&context().context_key()).expect("status");
+        let status = index
+            .status(&SemanticOwner::new(
+                context().context_key(),
+                fixture.resource("pkg/impl.py").id,
+            ))
+            .expect("status");
         let basis = status.basis.expect("published basis");
         (
             basis.config_fingerprint,
@@ -1142,7 +1152,10 @@ fn a_refresh_publishes_a_complete_basis_and_merges_into_the_one_graph() {
     let index = SemanticIndex::open(&fixture.db_path()).expect("index.db");
     assert_eq!(
         index
-            .status(&context().context_key())
+            .status(&SemanticOwner::new(
+                context().context_key(),
+                fixture.resource("pkg/impl.py").id,
+            ))
             .expect("status")
             .state,
         SemanticState::Current
@@ -1365,9 +1378,10 @@ fn identity_and_basis_inputs_move_only_when_their_inputs_do() {
         python_path: Some("/venv/bin/python".to_owned()),
         ..PythonSettings::default()
     };
+    let environment = lifecycle::environment_identity(&fixture.root, &settings);
     assert_ne!(
-        environment_fingerprint(&settings),
-        environment_fingerprint(&PythonSettings::default()),
+        environment.fingerprint,
+        lifecycle::environment_identity(&fixture.root, &PythonSettings::default()).fingerprint,
         "the interpreter decides what an import resolves to"
     );
     let install = PyrightInstall {
@@ -1380,12 +1394,12 @@ fn identity_and_basis_inputs_move_only_when_their_inputs_do() {
         ..install.clone()
     };
     assert_eq!(
-        toolchain_identity(&install, &settings),
-        toolchain_identity(&elsewhere, &settings),
+        toolchain_identity(&install, &environment),
+        toolchain_identity(&elsewhere, &environment),
         "where the type server is installed does not change what Python means"
     );
     assert_eq!(
-        toolchain_identity(&install, &settings).backend_compatibility_class,
+        toolchain_identity(&install, &environment).backend_compatibility_class,
         PythonLauncher::compatibility_class()
     );
 }
@@ -1996,9 +2010,9 @@ fn an_ancestor_change_makes_the_publication_not_current() {
     let fixture = Fixture::create("invalidate");
     refresh(&fixture, &impl_backend(&fixture), "pkg/impl.py").expect("published");
     let index = SemanticIndex::open(&fixture.db_path()).expect("index.db");
-    let key = context().context_key();
+    let owner = SemanticOwner::new(context().context_key(), fixture.resource("pkg/impl.py").id);
     assert_eq!(
-        index.status(&key).expect("status").state,
+        index.status(&owner).expect("status").state,
         SemanticState::Current
     );
 
@@ -2009,9 +2023,9 @@ fn an_ancestor_change_makes_the_publication_not_current() {
     let touched = index
         .invalidate_resource(fixture.resource("pkg/base.py").id)
         .expect("invalidate");
-    assert!(touched.contains(&key), "invalidated {touched:?}");
+    assert!(touched.contains(&owner), "invalidated {touched:?}");
     assert_eq!(
-        index.status(&key).expect("status").state,
+        index.status(&owner).expect("status").state,
         SemanticState::Dirty
     );
 }

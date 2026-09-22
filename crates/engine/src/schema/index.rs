@@ -415,6 +415,67 @@ pub const INDEX_MIGRATIONS: &[Migration] = &[
               ); \
               CREATE INDEX idx_semantic_conflict_occurrence ON semantic_conflict (occurrence_id);",
     },
+    Migration {
+        version: 8,
+        name: "scope_semantic_publication_to_its_owner",
+        // #19 task 8. Task 3 keyed a publication by AnalysisContext,
+        // which is the right key for the *runtime* -- one Pyright
+        // serves the whole project -- but the wrong one for
+        // currentness. Task 4 already replaces a contribution per
+        // (context, owner Resource), and task 6 refreshes one Resource
+        // at a time, so a context-wide CURRENT flag lets one owner's
+        // publication vouch for another's:
+        //
+        //   B published at generation 10, A changes, A republishes at
+        //   11 and marks the context CURRENT -- and B's untouched
+        //   generation-10 contribution starts reading as current too.
+        //
+        // The key becomes (context_key, owner_resource_id), which is
+        // the unit that was always being replaced. The runtime stays
+        // shared: nothing here is per-Resource backend state.
+        //
+        // The old rows are dropped rather than migrated. A publication
+        // is a claim about which inputs a result was computed from, and
+        // there is no honest way to split a context-wide claim into
+        // per-owner ones after the fact -- so this fails toward
+        // "needs revalidation", never toward CURRENT. The semantic
+        // evidence rows stay exactly where they are: they are anchored
+        // to Occurrences and owned by task 4's replacement, and with no
+        // publication vouching for them every contributing scope reads
+        // NOT CURRENT until its owner is refreshed. That is the honest
+        // state, and it is what `semantic_scope` reports.
+        sql: "DROP TABLE semantic_publication_source; \
+              DROP TABLE semantic_publication; \
+              CREATE TABLE semantic_publication ( \
+                  id INTEGER PRIMARY KEY, \
+                  context_key TEXT NOT NULL, \
+                  owner_resource_id INTEGER NOT NULL REFERENCES resource (id), \
+                  workspace_uid BLOB NOT NULL, \
+                  analysis_profile_id INTEGER NOT NULL REFERENCES analysis_profile (id), \
+                  generation_id INTEGER NOT NULL REFERENCES generation (id), \
+                  basis_workspace_revision TEXT NOT NULL, \
+                  basis_fingerprint TEXT NOT NULL, \
+                  config_fingerprint TEXT NOT NULL, \
+                  environment_fingerprint TEXT NOT NULL, \
+                  inventory_fingerprint TEXT, \
+                  support TEXT NOT NULL, \
+                  published_at TEXT NOT NULL, \
+                  UNIQUE (context_key, owner_resource_id) \
+              ); \
+              CREATE INDEX idx_semantic_publication_owner \
+              ON semantic_publication (owner_resource_id); \
+              CREATE TABLE semantic_publication_source ( \
+                  publication_id INTEGER NOT NULL \
+                      REFERENCES semantic_publication (id) ON DELETE CASCADE, \
+                  resource_id INTEGER NOT NULL REFERENCES resource (id), \
+                  resource_revision TEXT NOT NULL, \
+                  PRIMARY KEY (publication_id, resource_id) \
+              ); \
+              CREATE INDEX idx_semantic_publication_source_resource \
+              ON semantic_publication_source (resource_id); \
+              DELETE FROM component_state \
+              WHERE component_kind = 'SEMANTIC_INDEX' AND scope_kind = 'ANALYSIS_CONTEXT';",
+    },
 ];
 
 /// Open (creating and migrating if needed) an `index.db` at `path`.
@@ -501,7 +562,7 @@ mod tests {
     fn fresh_rebuildable_index_db_can_be_created() {
         let dir = TestDir::create("fresh");
         let opened = open(&dir.db_path()).expect("fresh index.db should migrate");
-        assert_eq!(opened.schema_version, 7);
+        assert_eq!(opened.schema_version, 8);
     }
 
     #[test]
@@ -728,14 +789,14 @@ mod tests {
         open(&dir.db_path()).expect("first open should migrate");
         let reopened = open(&dir.db_path()).expect("reopen should be a no-op");
 
-        assert_eq!(reopened.schema_version, 7);
+        assert_eq!(reopened.schema_version, 8);
         let ledger_count: u32 = reopened
             .connection
             .query_row("SELECT COUNT(*) FROM schema_migration", [], |row| {
                 row.get(0)
             })
             .expect("ledger should be queryable");
-        assert_eq!(ledger_count, 7, "migration must not reapply on reopen");
+        assert_eq!(ledger_count, 8, "migration must not reapply on reopen");
     }
 
     #[test]

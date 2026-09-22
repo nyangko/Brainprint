@@ -51,6 +51,13 @@ pub const RESOURCE_SCOPE_KIND: &str = "RESOURCE";
 /// Scope kind for a component that describes one semantic
 /// AnalysisContext. The scope key is that context's `context_key`.
 pub const ANALYSIS_CONTEXT_SCOPE_KIND: &str = "ANALYSIS_CONTEXT";
+/// Scope kind for one semantic contribution: an AnalysisContext's
+/// results *for one owner Resource* (#19 task 8). The runtime is shared
+/// per context, but currentness is not -- one owner republishing must
+/// not vouch for another's untouched contribution, which is what a
+/// context-wide flag did. The scope key is
+/// [`semantic_index::owner_scope_key`](crate::semantic_index::owner_scope_key).
+pub const SEMANTIC_OWNER_SCOPE_KIND: &str = "SEMANTIC_OWNER";
 /// The component covers the whole Workspace rather than one path, and the
 /// column is NOT NULL.
 pub const WORKSPACE_SCOPE_KEY: &str = "*";

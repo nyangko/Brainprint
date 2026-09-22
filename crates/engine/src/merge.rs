@@ -615,12 +615,19 @@ pub fn semantic_scope(
 
     let mut not_current = false;
     for context_key in &contexts {
+        // Owner-level, not context-level (#19 task 8). Every
+        // contribution to this Resource's Occurrences is owned by this
+        // Resource, and a sibling file republishing under the same
+        // context says nothing about whether *this* one is current.
         let state: Option<String> = connection
             .query_row(
                 "SELECT detail_state FROM component_state \
-                 WHERE component_kind = 'SEMANTIC_INDEX' AND scope_kind = 'ANALYSIS_CONTEXT' \
+                 WHERE component_kind = 'SEMANTIC_INDEX' AND scope_kind = 'SEMANTIC_OWNER' \
                    AND scope_key = ?1",
-                params![context_key],
+                params![crate::semantic_index::owner_scope_key(
+                    context_key,
+                    resource
+                )],
                 |row| row.get(0),
             )
             .optional()?
@@ -1608,6 +1615,7 @@ export function testsWired(): void {
             basis: Some(SemanticBasis::new(
                 context,
                 &crate::semantic_index::ConfigBasis::new(),
+                brainprint_core::ResourceId::from_bytes([0; 16]),
             )),
             last_error_code: None,
         }

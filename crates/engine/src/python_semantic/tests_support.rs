@@ -113,6 +113,15 @@ impl Fixture {
         fixture
     }
 
+    /// Write a file into the copied Workspace.
+    pub fn write(&self, rel: &str, contents: &str) {
+        let path = self.root.join(rel);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).expect("parent");
+        }
+        fs::write(path, contents).expect("fixture file");
+    }
+
     #[must_use]
     pub fn db_path(&self) -> PathBuf {
         self.base.join("data").join("index.db")

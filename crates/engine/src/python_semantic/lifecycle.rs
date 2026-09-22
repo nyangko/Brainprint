@@ -1,0 +1,861 @@
+//! Wiring the Python semantic tier to the Workspace lifecycle.
+//!
+//! Tasks 6 and 7 can answer questions about a file. This is what
+//! decides *which* files to ask about, *when*, and in what order --
+//! composing the pieces that already exist rather than reimplementing
+//! them:
+//!
+//! ```text
+//! filesystem change
+//!   → affected owners, from persisted basis
+//!   → withdraw their semantic contributions
+//!   → structural replacement (I2/I3)
+//!   → invalidate owner publications
+//!   → tell the backend the filesystem moved
+//!   → refresh only the affected owners
+//!   → publish (task 3) → merge (task 4)
+//! ```
+//!
+//! ## Why withdrawal comes first
+//!
+//! `semantic_evidence.relation_id` deliberately has no
+//! `ON DELETE CASCADE`. A cascade would silently drop the displaced
+//! gaps task 4 restores on withdrawal, so a semantic edge would vanish
+//! and leave a *silence* where an honest unresolved site belongs. The
+//! price is an ordering obligation: a contribution pointing at
+//! relations the structural replacement is about to remove has to be
+//! withdrawn before that replacement runs. That is a contract, not an
+//! FK error to catch.
+//!
+//! ## The backend is optional
+//!
+//! Every entry point here works with no Pyright at all. Missing,
+//! incompatible, crashed, in backoff or simply cold: the structural
+//! answer stays current, the semantic-required gaps stay visible, and
+//! the coverage says so. What never happens is an empty semantic
+//! success, and what never happens is a stale semantic-only edge
+//! served as current.
+
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    error::Error,
+    fmt, fs,
+    path::{Path, PathBuf},
+};
+
+use brainprint_core::ResourceId;
+use rusqlite::{Connection, OptionalExtension, params};
+
+use super::{
+    PythonSemanticError, RefreshOutcome, RefreshRequest, adapter,
+    host::PythonSettings,
+    protocol::{WatchedChange, WatchedChangeKind, path_to_uri},
+};
+use crate::{
+    db,
+    merge::{self, MergeOutcome},
+    resolution::Support,
+    resource::{Resource, ResourceLanguage},
+    runtime::RuntimeState,
+    semantic::{AnalysisContext, CapabilityReport},
+    semantic_index::{
+        BACKEND_UNAVAILABLE_CODE, CONFIG_CHANGED_CODE, ConfigBasis, CurrentInputs, SemanticIndex,
+        SemanticIndexError, SemanticOwner, SemanticState, SemanticStatus,
+    },
+};
+
+// ---------------------------------------------------------------------
+// Configuration discovery
+// ---------------------------------------------------------------------
+
+/// Which file decides what the backend analyzes.
+///
+/// Pyright's own precedence, not a merge of the two: a
+/// `pyrightconfig.json` next to the project root wins outright, and a
+/// `pyproject.toml` counts only when it actually carries a
+/// `[tool.pyright]` table. Inventing a combined view would make
+/// Brainprint's config basis describe a project the launched process
+/// does not analyze.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigSource {
+    PyrightConfig,
+    PyProject,
+    /// Neither file selects the project; the backend uses its defaults
+    /// over the project root.
+    Defaults,
+}
+
+impl ConfigSource {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::PyrightConfig => "PYRIGHTCONFIG_JSON",
+            Self::PyProject => "PYPROJECT_TOML",
+            Self::Defaults => "DEFAULTS",
+        }
+    }
+}
+
+/// The configuration one AnalysisContext is analyzed under.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PythonProjectConfig {
+    pub source: ConfigSource,
+    /// The Resource that decides it, when a file does.
+    pub resource: Option<Resource>,
+}
+
+impl PythonProjectConfig {
+    /// The task 3 [`ConfigBasis`] this configuration contributes.
+    ///
+    /// The selected source is part of it: adding a
+    /// `pyrightconfig.json` next to an existing `pyproject.toml`
+    /// changes which file governs, and that is a different basis even
+    /// if neither file's bytes changed afterwards.
+    #[must_use]
+    pub fn basis(&self, settings: &PythonSettings) -> ConfigBasis {
+        let mut basis = ConfigBasis::new()
+            .with("config_source", self.source.as_str())
+            .with(
+                "config_content",
+                self.resource.as_ref().map_or_else(String::new, |resource| {
+                    resource
+                        .content_hash
+                        .clone()
+                        .unwrap_or_else(|| resource.fingerprint.clone())
+                }),
+            )
+            .with(
+                "config_path",
+                self.resource
+                    .as_ref()
+                    .map_or_else(String::new, |resource| resource.path_key.clone()),
+            );
+        for (name, value) in settings.basis_inputs() {
+            if name != "python_path" && name != "venv_path" {
+                basis = basis.with(name, value);
+            }
+        }
+        basis
+    }
+}
+
+/// The file names Pyright reads, in its own precedence order.
+pub const CONFIG_FILE_NAMES: [(&str, ConfigSource); 2] = [
+    ("pyrightconfig.json", ConfigSource::PyrightConfig),
+    ("pyproject.toml", ConfigSource::PyProject),
+];
+
+/// Find the configuration the launched backend will actually use.
+///
+/// Only Workspace Resources are considered, and only at the project
+/// root: no editor settings, no user profile, no ambient state.
+pub fn discover_config(
+    connection: &Connection,
+    workspace_root: &Path,
+    project_root_rel: &str,
+) -> Result<PythonProjectConfig, LifecycleError> {
+    for (name, source) in CONFIG_FILE_NAMES {
+        let path_key = if project_root_rel.is_empty() || project_root_rel == "." {
+            name.to_owned()
+        } else {
+            format!("{project_root_rel}/{name}")
+        };
+        let Some(resource) = active_resource_by_path(connection, &path_key)? else {
+            continue;
+        };
+        if source == ConfigSource::PyProject && !declares_pyright(workspace_root, &resource) {
+            // A pyproject.toml without a `[tool.pyright]` table
+            // configures something else entirely, and Pyright ignores
+            // it. Treating it as the project config would make the
+            // basis move on edits that change nothing semantic.
+            continue;
+        }
+        return Ok(PythonProjectConfig {
+            source,
+            resource: Some(resource),
+        });
+    }
+    Ok(PythonProjectConfig {
+        source: ConfigSource::Defaults,
+        resource: None,
+    })
+}
+
+fn declares_pyright(workspace_root: &Path, resource: &Resource) -> bool {
+    let Ok(text) = fs::read_to_string(workspace_root.join(&resource.path_rel)) else {
+        return false;
+    };
+    text.lines().any(|line| {
+        let trimmed = line.trim();
+        trimmed == "[tool.pyright]" || trimmed.starts_with("[tool.pyright.")
+    })
+}
+
+// ---------------------------------------------------------------------
+// Environment identity
+// ---------------------------------------------------------------------
+
+/// What could be established about the installed environment.
+///
+/// The interpreter path alone is not proof: the same `.venv` can hold
+/// a different set of packages tomorrow, and an import that resolved
+/// to one stub can start resolving to another. So the identity covers
+/// the *resolution* environment -- which distributions are installed
+/// and at which versions -- and never the dependency source itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EnvironmentProbe {
+    /// Distribution metadata was readable.
+    Observed { distributions: usize },
+    /// It was not, so the environment is not proven unchanged. The
+    /// fingerprint still covers the settings, so nothing churns; what
+    /// this carries is that a caller should revalidate rather than
+    /// assume.
+    Unknown { reason: &'static str },
+}
+
+impl EnvironmentProbe {
+    #[must_use]
+    pub const fn is_proven(&self) -> bool {
+        matches!(self, Self::Observed { .. })
+    }
+}
+
+/// The environment a semantic result depends on, as identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnvironmentIdentity {
+    pub fingerprint: String,
+    pub probe: EnvironmentProbe,
+}
+
+/// Fingerprint the interpreter and the distributions it resolves.
+///
+/// Reads directory *names* under `site-packages` -- `name-version.dist-info`
+/// is the installed-distribution record, and its name already carries
+/// both. No dependency file is opened, hashed, or indexed: the goal is
+/// a dependency-resolution identity, not a dependency code index.
+#[must_use]
+pub fn environment_identity(
+    workspace_root: &Path,
+    settings: &PythonSettings,
+) -> EnvironmentIdentity {
+    let mut fields: Vec<(String, String)> = vec![
+        (
+            "python_path".to_owned(),
+            settings.python_path.clone().unwrap_or_default(),
+        ),
+        (
+            "venv_path".to_owned(),
+            settings.venv_path.clone().unwrap_or_default(),
+        ),
+    ];
+
+    let (probe, distributions) = match settings
+        .venv_path
+        .as_ref()
+        .map(|venv| resolve_under(workspace_root, venv))
+    {
+        None => (
+            EnvironmentProbe::Unknown {
+                reason: "no venv path is configured",
+            },
+            Vec::new(),
+        ),
+        Some(venv) => match site_packages(&venv) {
+            None => (
+                EnvironmentProbe::Unknown {
+                    reason: "no site-packages under the configured venv",
+                },
+                Vec::new(),
+            ),
+            Some(directory) => {
+                let found = distributions_in(&directory);
+                (
+                    EnvironmentProbe::Observed {
+                        distributions: found.len(),
+                    },
+                    found,
+                )
+            }
+        },
+    };
+    for name in &distributions {
+        fields.push(("distribution".to_owned(), name.clone()));
+    }
+
+    let borrowed: Vec<(&str, &str)> = fields
+        .iter()
+        .map(|(name, value)| (name.as_str(), value.as_str()))
+        .collect();
+    EnvironmentIdentity {
+        fingerprint: db::fingerprint("python-semantic-env-2", &borrowed),
+        probe,
+    }
+}
+
+fn resolve_under(workspace_root: &Path, candidate: &str) -> PathBuf {
+    let path = Path::new(candidate);
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        workspace_root.join(path)
+    }
+}
+
+/// `<venv>/lib/pythonX.Y/site-packages`, or the Windows layout.
+fn site_packages(venv: &Path) -> Option<PathBuf> {
+    let windows = venv.join("Lib").join("site-packages");
+    if windows.is_dir() {
+        return Some(windows);
+    }
+    let lib = venv.join("lib");
+    let mut candidates: Vec<PathBuf> = fs::read_dir(lib)
+        .ok()?
+        .filter_map(|entry| entry.ok().map(|entry| entry.path().join("site-packages")))
+        .filter(|path| path.is_dir())
+        .collect();
+    candidates.sort();
+    candidates.into_iter().next()
+}
+
+/// Every installed distribution's `name-version`, sorted.
+fn distributions_in(site_packages: &Path) -> Vec<String> {
+    let Ok(entries) = fs::read_dir(site_packages) else {
+        return Vec::new();
+    };
+    let mut found: Vec<String> = entries
+        .filter_map(|entry| entry.ok())
+        .filter_map(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let stem = name
+                .strip_suffix(".dist-info")
+                .or_else(|| name.strip_suffix(".egg-info"))?;
+            Some(stem.to_owned())
+        })
+        .collect();
+    found.sort();
+    found.dedup();
+    found
+}
+
+// ---------------------------------------------------------------------
+// Change sets
+// ---------------------------------------------------------------------
+
+/// What happened to one Resource.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ChangeKind {
+    Added,
+    Changed,
+    Deleted,
+    /// Identity preserved, locator moved. The Resource is the same one;
+    /// its module path may not be.
+    Moved,
+}
+
+impl ChangeKind {
+    const fn watched(self) -> WatchedChangeKind {
+        match self {
+            Self::Added => WatchedChangeKind::Created,
+            Self::Changed | Self::Moved => WatchedChangeKind::Changed,
+            Self::Deleted => WatchedChangeKind::Deleted,
+        }
+    }
+
+    /// Whether this change can move a module in or out of the project,
+    /// which Pyright resolves program-wide.
+    const fn moves_inventory(self) -> bool {
+        matches!(self, Self::Added | Self::Deleted | Self::Moved)
+    }
+}
+
+/// One Workspace change, as the lifecycle sees it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResourceChange {
+    pub resource: ResourceId,
+    pub kind: ChangeKind,
+    /// The current Workspace-relative path. For a move, the new one.
+    pub path_rel: String,
+    /// The path the Resource used to be at, for a move or a delete.
+    pub previous_path_rel: Option<String>,
+    pub language: Option<ResourceLanguage>,
+}
+
+impl ResourceChange {
+    #[must_use]
+    pub fn new(resource: ResourceId, kind: ChangeKind, path_rel: impl Into<String>) -> Self {
+        Self {
+            resource,
+            kind,
+            path_rel: path_rel.into(),
+            previous_path_rel: None,
+            language: Some(ResourceLanguage::Python),
+        }
+    }
+
+    #[must_use]
+    pub fn from_previous(mut self, path_rel: impl Into<String>) -> Self {
+        self.previous_path_rel = Some(path_rel.into());
+        self
+    }
+
+    #[must_use]
+    pub const fn with_language(mut self, language: Option<ResourceLanguage>) -> Self {
+        self.language = language;
+        self
+    }
+
+    const fn is_python(&self) -> bool {
+        matches!(self.language, Some(ResourceLanguage::Python))
+    }
+}
+
+/// What one batch of Workspace changes means for one context.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ChangePlan {
+    /// The owner contributions that must stop being current.
+    pub affected: BTreeSet<SemanticOwner>,
+    /// Whether the Python module inventory moved, which can change
+    /// import resolution for owners that did not change at all.
+    pub inventory_moved: bool,
+    /// Whether the selected configuration moved.
+    pub config_moved: bool,
+}
+
+impl ChangePlan {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.affected.is_empty() && !self.inventory_moved && !self.config_moved
+    }
+}
+
+/// Which owner contributions a change batch invalidates.
+///
+/// Driven by the persisted basis, so a Resource nobody read invalidates
+/// nobody. An inventory move is the one thing that reaches further:
+/// Pyright resolves modules program-wide, so adding or removing one can
+/// change what an untouched file's imports mean.
+pub fn plan_changes(
+    index: &SemanticIndex,
+    context: &AnalysisContext,
+    changes: &[ResourceChange],
+    config: &PythonProjectConfig,
+) -> Result<ChangePlan, LifecycleError> {
+    let context_key = context.context_key();
+    let mut plan = ChangePlan::default();
+
+    for change in changes {
+        for owner in index.owners_depending_on(change.resource)? {
+            if owner.context_key == context_key {
+                plan.affected.insert(owner);
+            }
+        }
+        if change.is_python() && change.kind.moves_inventory() {
+            plan.inventory_moved = true;
+        }
+        if config
+            .resource
+            .as_ref()
+            .is_some_and(|selected| selected.id == change.resource)
+            || is_config_candidate(&change.path_rel)
+            || change
+                .previous_path_rel
+                .as_deref()
+                .is_some_and(is_config_candidate)
+        {
+            plan.config_moved = true;
+        }
+    }
+
+    if plan.inventory_moved || plan.config_moved {
+        // Module resolution and project configuration are properties of
+        // the whole project, so every owner published under it has to
+        // be re-proved rather than assumed.
+        plan.affected.extend(index.owners_of_context(&context_key)?);
+    }
+    Ok(plan)
+}
+
+fn is_config_candidate(path_rel: &str) -> bool {
+    let name = path_rel.rsplit('/').next().unwrap_or(path_rel);
+    CONFIG_FILE_NAMES
+        .iter()
+        .any(|(candidate, _)| *candidate == name)
+}
+
+// ---------------------------------------------------------------------
+// Watched-file notification
+// ---------------------------------------------------------------------
+
+/// The backend notification for one change batch.
+///
+/// Deduped by URI and ordered, so one logical Workspace operation
+/// produces one deterministic batch however many owners it touches.
+/// A move is two events, because on the filesystem it is two.
+#[must_use]
+pub fn watched_changes(workspace_root: &Path, changes: &[ResourceChange]) -> Vec<WatchedChange> {
+    let mut by_uri: BTreeMap<String, WatchedChangeKind> = BTreeMap::new();
+    for change in changes {
+        if let Some(previous) = &change.previous_path_rel
+            && previous != &change.path_rel
+        {
+            by_uri.insert(
+                path_to_uri(&workspace_root.join(previous)),
+                WatchedChangeKind::Deleted,
+            );
+        }
+        let uri = path_to_uri(&workspace_root.join(&change.path_rel));
+        let kind = change.kind.watched();
+        // A file both created and changed in one batch is created once.
+        by_uri
+            .entry(uri)
+            .and_modify(|held| {
+                if *held != kind && *held == WatchedChangeKind::Changed {
+                    *held = kind;
+                }
+            })
+            .or_insert(kind);
+    }
+    by_uri
+        .into_iter()
+        .map(|(uri, kind)| WatchedChange { uri, kind })
+        .collect()
+}
+
+// ---------------------------------------------------------------------
+// Availability
+// ---------------------------------------------------------------------
+
+/// What a reader can expect of one owner's semantics right now.
+///
+/// One projection, not a second confidence score: it combines the
+/// persisted publication state with the runtime's, because "current
+/// but the process is cold" and "the process is up but the answer is
+/// stale" are different situations and only one of them needs work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SemanticAvailability {
+    /// Published, current, and the runtime is up.
+    Current,
+    /// Published and current; the backend is not running and does not
+    /// need to. Task 3 already separated these axes -- a dead process
+    /// does not invalidate a proof whose inputs still hold.
+    CurrentRuntimeCold,
+    /// Published and current, with the backend covering only part of
+    /// the Resource.
+    Partial,
+    /// A refresh is owed: the basis moved, or nothing was ever
+    /// published.
+    RefreshRequired,
+    /// No semantic answer is obtainable at all -- no install, an
+    /// incompatible protocol, or a spent restart budget.
+    Unavailable,
+}
+
+impl SemanticAvailability {
+    /// Whether a semantic result may be served as current.
+    #[must_use]
+    pub const fn serves_current(self) -> bool {
+        matches!(
+            self,
+            Self::Current | Self::CurrentRuntimeCold | Self::Partial
+        )
+    }
+}
+
+/// Project one owner's availability from what is persisted and what
+/// the runtime is doing.
+#[must_use]
+pub fn availability(
+    status: &SemanticStatus,
+    runtime: RuntimeState,
+    backend: BackendReadiness,
+) -> SemanticAvailability {
+    match backend {
+        BackendReadiness::Unavailable => {
+            if status.state == SemanticState::Current {
+                // A proof whose inputs still hold is still a proof. The
+                // process being gone is a reason it cannot be *renewed*,
+                // not a reason to disbelieve it.
+                return SemanticAvailability::CurrentRuntimeCold;
+            }
+            SemanticAvailability::Unavailable
+        }
+        BackendReadiness::Available => match status.state {
+            SemanticState::Current if status.support == Some(Support::Partial) => {
+                SemanticAvailability::Partial
+            }
+            SemanticState::Current => match runtime {
+                RuntimeState::Ready | RuntimeState::Busy | RuntimeState::Idle => {
+                    SemanticAvailability::Current
+                }
+                _ => SemanticAvailability::CurrentRuntimeCold,
+            },
+            SemanticState::Unavailable => SemanticAvailability::Unavailable,
+            _ => SemanticAvailability::RefreshRequired,
+        },
+    }
+}
+
+/// Whether a backend could be used at all, independent of whether one
+/// is running.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BackendReadiness {
+    /// An install exists and its protocol is one the adapter reads.
+    Available,
+    /// No install, an unreadable one, or a protocol outside the tested
+    /// compatibility class.
+    Unavailable,
+}
+
+// ---------------------------------------------------------------------
+// Lifecycle steps
+// ---------------------------------------------------------------------
+
+/// Why a lifecycle step could not complete.
+#[derive(Debug)]
+pub enum LifecycleError {
+    Index(SemanticIndexError),
+    Merge(merge::MergeError),
+    Sqlite(rusqlite::Error),
+    Refresh(Box<PythonSemanticError>),
+}
+
+impl fmt::Display for LifecycleError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Index(error) => write!(formatter, "semantic index: {error}"),
+            Self::Merge(error) => write!(formatter, "semantic merge: {error}"),
+            Self::Sqlite(error) => write!(formatter, "index: {error}"),
+            Self::Refresh(error) => write!(formatter, "python refresh: {error}"),
+        }
+    }
+}
+
+impl Error for LifecycleError {}
+
+impl From<SemanticIndexError> for LifecycleError {
+    fn from(error: SemanticIndexError) -> Self {
+        Self::Index(error)
+    }
+}
+impl From<merge::MergeError> for LifecycleError {
+    fn from(error: merge::MergeError) -> Self {
+        Self::Merge(error)
+    }
+}
+impl From<rusqlite::Error> for LifecycleError {
+    fn from(error: rusqlite::Error) -> Self {
+        Self::Sqlite(error)
+    }
+}
+impl From<PythonSemanticError> for LifecycleError {
+    fn from(error: PythonSemanticError) -> Self {
+        Self::Refresh(Box::new(error))
+    }
+}
+
+/// What one withdrawal pass removed.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WithdrawReport {
+    pub owners: Vec<SemanticOwner>,
+    pub gaps_restored: usize,
+    pub relations_removed: usize,
+}
+
+/// Withdraw every affected owner's contribution, then mark it dirty.
+///
+/// Runs *before* structural replacement. Withdrawal is what restores
+/// the displaced structural gaps and garbage-collects semantic-only
+/// edges; doing it afterwards would either fail on the relation foreign
+/// key or, with a cascade in place, lose the gaps silently.
+pub fn withdraw_affected(
+    index: &SemanticIndex,
+    owners: &BTreeSet<SemanticOwner>,
+    error_code: &str,
+) -> Result<WithdrawReport, LifecycleError> {
+    let connection = index.connection();
+    let mut report = WithdrawReport::default();
+    for owner in owners {
+        let transaction = connection.unchecked_transaction()?;
+        let outcome = merge::withdraw(&transaction, &owner.context_key, Some(owner.owner))?;
+        transaction.commit()?;
+        report.gaps_restored += outcome.gaps_restored;
+        report.relations_removed += outcome.relations_removed;
+        index.mark_dirty(owner, error_code)?;
+        report.owners.push(owner.clone());
+    }
+    Ok(report)
+}
+
+/// Mark every affected owner unavailable, keeping its last valid
+/// publication readable.
+pub fn mark_unavailable(
+    index: &SemanticIndex,
+    owners: &BTreeSet<SemanticOwner>,
+    error_code: &str,
+) -> Result<(), LifecycleError> {
+    for owner in owners {
+        index.mark_unavailable(owner, error_code)?;
+    }
+    Ok(())
+}
+
+/// Re-check every owner published for one context against the inputs as
+/// they are now.
+///
+/// What a daemon reopen runs. Nothing is launched: a publication whose
+/// sources, config, environment, inventory and profile all still hold
+/// proves itself from disk, and one whose inputs moved reads DIRTY
+/// before any backend exists to ask.
+pub fn revalidate_context(
+    index: &SemanticIndex,
+    context: &AnalysisContext,
+    current: &CurrentInputs,
+) -> Result<Vec<(SemanticOwner, SemanticStatus)>, LifecycleError> {
+    let mut answers = Vec::new();
+    for owner in index.owners_of_context(&context.context_key())? {
+        let status = index.revalidate(&owner, current)?;
+        answers.push((owner, status));
+    }
+    Ok(answers)
+}
+
+/// The inputs one owner's publication is validated against.
+#[must_use]
+pub fn current_inputs(
+    context: &AnalysisContext,
+    config: &ConfigBasis,
+    capabilities: &CapabilityReport,
+    inventory: &str,
+) -> CurrentInputs {
+    CurrentInputs::new(context, config, capabilities).with_inventory(inventory)
+}
+
+/// One owner's refresh outcome, or why it did not happen.
+#[derive(Debug)]
+pub enum OwnerOutcome {
+    Refreshed(Box<RefreshOutcome>),
+    /// The refresh was attempted and failed. The owner keeps its
+    /// last-valid publication and is marked, never replaced with an
+    /// empty success.
+    Failed {
+        owner: SemanticOwner,
+        error: Box<PythonSemanticError>,
+    },
+}
+
+impl OwnerOutcome {
+    #[must_use]
+    pub const fn succeeded(&self) -> bool {
+        matches!(self, Self::Refreshed(_))
+    }
+}
+
+/// Refresh a set of owners, one at a time, on the shared runtime.
+///
+/// One owner's failure marks that owner and moves on: a backend
+/// hiccup on `a.py` is not a reason to tear down a still-valid
+/// publication for `b.py`.
+pub fn refresh_owners(
+    index: &SemanticIndex,
+    queries: &dyn adapter::PythonQueries,
+    request: &mut RefreshRequest<'_>,
+    owners: &BTreeSet<SemanticOwner>,
+) -> Result<Vec<OwnerOutcome>, LifecycleError> {
+    let mut outcomes = Vec::new();
+    for owner in owners {
+        request.owner = owner.owner;
+        match super::refresh_resource(index, queries, request) {
+            Ok(outcome) => outcomes.push(OwnerOutcome::Refreshed(Box::new(outcome))),
+            Err(error) => {
+                // The publication that is already there stays readable;
+                // it just stops describing itself as current.
+                index.mark_dirty(owner, BACKEND_UNAVAILABLE_CODE)?;
+                outcomes.push(OwnerOutcome::Failed {
+                    owner: owner.clone(),
+                    error: Box::new(error),
+                });
+            }
+        }
+    }
+    Ok(outcomes)
+}
+
+/// Mark every owner in a context not current because the configuration
+/// that governs it changed.
+pub fn invalidate_for_config(
+    index: &SemanticIndex,
+    context: &AnalysisContext,
+) -> Result<BTreeSet<SemanticOwner>, LifecycleError> {
+    let owners: BTreeSet<SemanticOwner> = index
+        .owners_of_context(&context.context_key())?
+        .into_iter()
+        .collect();
+    for owner in &owners {
+        index.mark_dirty(owner, CONFIG_CHANGED_CODE)?;
+    }
+    Ok(owners)
+}
+
+/// What a whole merge pass did, summed.
+#[must_use]
+pub fn total_merged(outcomes: &[OwnerOutcome]) -> MergeOutcome {
+    let mut total = MergeOutcome::default();
+    for outcome in outcomes {
+        if let OwnerOutcome::Refreshed(refreshed) = outcome {
+            total.gaps_resolved += refreshed.merged.gaps_resolved;
+            total.gaps_restored += refreshed.merged.gaps_restored;
+            total.corroborated += refreshed.merged.corroborated;
+            total.relations_created += refreshed.merged.relations_created;
+            total.relations_removed += refreshed.merged.relations_removed;
+            total.conflicts += refreshed.merged.conflicts;
+        }
+    }
+    total
+}
+
+fn active_resource_by_path(
+    connection: &Connection,
+    path_key: &str,
+) -> Result<Option<Resource>, LifecycleError> {
+    /// `(uid, path_rel, revision, content_hash, fingerprint)`.
+    type ConfigRow = (Vec<u8>, String, String, Option<String>, String);
+    let row: Option<ConfigRow> = connection
+        .query_row(
+            "SELECT uid, path_rel, resource_revision, content_hash, fingerprint \
+             FROM resource WHERE path_key = ?1 AND state = 'ACTIVE'",
+            params![path_key],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((uid, path_rel, revision, content_hash, fingerprint)) = row else {
+        return Ok(None);
+    };
+    let bytes: [u8; 16] = uid
+        .as_slice()
+        .try_into()
+        .map_err(|_| rusqlite::Error::InvalidQuery)?;
+    Ok(Some(Resource {
+        id: ResourceId::from_bytes(bytes),
+        path_rel,
+        path_key: path_key.to_owned(),
+        kind: crate::resource::ResourceKind::File,
+        role: crate::resource::ResourceRole::Config,
+        language: None,
+        size_bytes: 0,
+        mtime_ns: 0,
+        fingerprint,
+        content_hash,
+        state: crate::resource::ResourceState::Active,
+        resource_revision: revision,
+        generated_kind: None,
+        container_resource_id: None,
+    }))
+}

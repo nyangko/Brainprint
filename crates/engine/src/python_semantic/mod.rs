@@ -44,6 +44,7 @@ pub mod coordinates;
 pub mod host;
 pub mod jsonrpc;
 pub mod launcher;
+pub mod lifecycle;
 pub mod overrides;
 pub mod protocol;
 
@@ -63,6 +64,10 @@ pub use adapter::{
 };
 pub use host::{PyrightHost, PythonSettings};
 pub use launcher::{InstallError, PyrightInstall, PythonLauncher, Readiness};
+pub use lifecycle::{
+    BackendReadiness, ChangeKind, ChangePlan, ConfigSource, EnvironmentIdentity, EnvironmentProbe,
+    LifecycleError, OwnerOutcome, PythonProjectConfig, ResourceChange, SemanticAvailability,
+};
 pub use overrides::{Derivation, UnprovenOverride, UnprovenReason};
 pub use protocol::{COMPATIBILITY_CLASS, ProtocolCompatibility, TESTED_PROTOCOL_VERSION};
 
@@ -77,7 +82,7 @@ use crate::{
     },
     semantic_index::{
         ConfigBasis, CurrentInputs, SemanticBasis, SemanticIndex, SemanticIndexError,
-        SemanticPublication,
+        SemanticOwner, SemanticPublication,
     },
     symbol::{self, AnalysisProfile},
 };
@@ -156,6 +161,14 @@ pub fn capability_report(context: &AnalysisContext) -> CapabilityReport {
 
 /// The toolchain a Python semantic result depends on.
 ///
+/// The Node runtime and the install directory are deliberately absent
+/// from the environment half: where the type server lives does not
+/// change what Python code means, and a machine path in identity would
+/// make the same project a different context on every machine. What
+/// *is* in it is the dependency-resolution environment
+/// ([`lifecycle::environment_identity`]), because the same `.venv` path
+/// resolves imports differently after an install.
+///
 /// Every field is known before anything is started, which it has to be:
 /// the [`AnalysisContext`] built from it is what *selects* the runtime,
 /// so it cannot depend on a running one. The negotiated protocol
@@ -166,30 +179,13 @@ pub fn capability_report(context: &AnalysisContext) -> CapabilityReport {
 #[must_use]
 pub fn toolchain_identity(
     install: &PyrightInstall,
-    settings: &PythonSettings,
+    environment: &lifecycle::EnvironmentIdentity,
 ) -> ToolchainIdentity {
     ToolchainIdentity {
         backend_version: install.package_version.clone(),
         backend_compatibility_class: COMPATIBILITY_CLASS.to_owned(),
-        environment_fingerprint: environment_fingerprint(settings),
+        environment_fingerprint: environment.fingerprint.clone(),
     }
-}
-
-/// The interpreter and dependency set, as identity.
-///
-/// The Node runtime and the install directory are deliberately absent:
-/// where the type server lives does not change what Python code means,
-/// and putting a machine path in identity would make the same project a
-/// different context on every machine.
-#[must_use]
-pub fn environment_fingerprint(settings: &PythonSettings) -> String {
-    db::fingerprint(
-        "python-semantic-env-1",
-        &[
-            ("python_path", settings.python_path.as_deref().unwrap_or("")),
-            ("venv_path", settings.venv_path.as_deref().unwrap_or("")),
-        ],
-    )
 }
 
 /// The configuration a Python semantic result depends on.
@@ -460,7 +456,7 @@ pub fn refresh_resource(
     }
     produced.evidence.append(&mut derived.evidence);
 
-    let mut basis = SemanticBasis::new(request.context, request.config)
+    let mut basis = SemanticBasis::new(request.context, request.config, owner.id)
         .with_source(owner.id, owner.resource_revision.clone());
     for (resource, revision) in extra_sources {
         basis = basis.with_source(resource, revision);
@@ -479,7 +475,7 @@ pub fn refresh_resource(
 
     // Only a CURRENT publication may change canonical truth; merge
     // enforces it too, and this is where it becomes true.
-    let status = index.status(&context_key)?;
+    let status = index.status(&SemanticOwner::new(&context_key, owner.id))?;
     let merged = merge_evidence(
         connection,
         request,
@@ -563,6 +559,9 @@ fn merge_evidence(
 
 #[cfg(test)]
 pub(crate) mod tests_support;
+
+#[cfg(test)]
+mod lifecycle_tests;
 
 #[cfg(test)]
 mod tests;

@@ -337,6 +337,12 @@ impl ConfigBasis {
 pub struct SemanticBasis {
     pub workspace: WorkspaceId,
     pub context_key: String,
+    /// The Resource whose contribution this is. Publication and
+    /// currentness are keyed by `(context_key, owner)`, because that is
+    /// the unit task 4 replaces and task 6 refreshes -- a context-wide
+    /// claim would let one owner's republication vouch for another's
+    /// untouched results (#19 task 8).
+    pub owner: ResourceId,
     /// Exact Resource revisions the analysis read.
     pub sources: BTreeMap<ResourceId, String>,
     pub config_fingerprint: String,
@@ -348,12 +354,14 @@ pub struct SemanticBasis {
 }
 
 impl SemanticBasis {
-    /// A basis for `context` over no sources yet.
+    /// A basis for `owner`'s contribution to `context`, over no sources
+    /// yet.
     #[must_use]
-    pub fn new(context: &AnalysisContext, config: &ConfigBasis) -> Self {
+    pub fn new(context: &AnalysisContext, config: &ConfigBasis, owner: ResourceId) -> Self {
         Self {
             workspace: context.workspace,
             context_key: context.context_key(),
+            owner,
             sources: BTreeMap::new(),
             config_fingerprint: config.fingerprint(),
             environment_fingerprint: context.toolchain.fingerprint(),
@@ -380,6 +388,7 @@ impl SemanticBasis {
         let mut fields: Vec<(String, String)> = vec![
             ("workspace".to_owned(), self.workspace.to_string()),
             ("context".to_owned(), self.context_key.clone()),
+            ("owner".to_owned(), self.owner.to_string()),
             ("config".to_owned(), self.config_fingerprint.clone()),
             (
                 "environment".to_owned(),
@@ -403,6 +412,47 @@ impl SemanticBasis {
             .collect();
         db::fingerprint("semantic-basis-1", &borrowed)
     }
+}
+
+/// One semantic contribution's identity: whose results, for which
+/// Resource.
+///
+/// The runtime is shared per [`AnalysisContext`]; this is the unit that
+/// is published, invalidated and refreshed.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SemanticOwner {
+    pub context_key: String,
+    pub owner: ResourceId,
+}
+
+impl SemanticOwner {
+    #[must_use]
+    pub fn new(context_key: impl Into<String>, owner: ResourceId) -> Self {
+        Self {
+            context_key: context_key.into(),
+            owner,
+        }
+    }
+
+    #[must_use]
+    pub fn scope_key(&self) -> String {
+        owner_scope_key(&self.context_key, self.owner)
+    }
+}
+
+impl fmt::Display for SemanticOwner {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}@{}", self.context_key, self.owner)
+    }
+}
+
+/// The `component_state` scope key for one owner's contribution.
+///
+/// A unit separator, so no context key or Resource id can spell another
+/// pair's key.
+#[must_use]
+pub fn owner_scope_key(context_key: &str, owner: ResourceId) -> String {
+    format!("{context_key}\u{1f}{owner}")
 }
 
 /// The inputs as they are *now*, to validate a basis against.
@@ -686,6 +736,7 @@ impl SemanticCandidate {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SemanticPublication {
     pub context_key: String,
+    pub owner: ResourceId,
     pub generation_id: i64,
     pub basis: SemanticBasis,
     pub basis_workspace_revision: String,
@@ -855,7 +906,7 @@ impl SemanticIndex {
         )?;
         write_component(
             &transaction,
-            &candidate.basis.context_key,
+            &SemanticOwner::new(&candidate.basis.context_key, candidate.basis.owner),
             SemanticState::Current,
             grant.basis_workspace_revision(),
             Some(record.id),
@@ -866,6 +917,7 @@ impl SemanticIndex {
 
         Ok(SemanticPublication {
             context_key: candidate.basis.context_key.clone(),
+            owner: candidate.basis.owner,
             generation_id: record.id,
             basis: candidate.basis,
             basis_workspace_revision: record.basis_workspace_revision,
@@ -886,19 +938,19 @@ impl SemanticIndex {
         Ok(())
     }
 
-    /// What a reader sees for one context.
+    /// What a reader sees for one owner's contribution.
     ///
     /// CURRENT is reported only while the component's basis Workspace
     /// revision is still the clock's. A publication whose Workspace moved
     /// on -- while the daemon was down, for instance -- reads DIRTY
     /// without anything having to mark it, because over-claiming is the
     /// one failure mode this axis exists to prevent.
-    pub fn status(&self, context_key: &str) -> Result<SemanticStatus, SemanticIndexError> {
+    pub fn status(&self, owner: &SemanticOwner) -> Result<SemanticStatus, SemanticIndexError> {
         let Some(row) = component::read_scoped(
             &self.connection,
             component::SEMANTIC_INDEX,
-            component::ANALYSIS_CONTEXT_SCOPE_KIND,
-            context_key,
+            component::SEMANTIC_OWNER_SCOPE_KIND,
+            &owner.scope_key(),
         )?
         else {
             return Ok(SemanticStatus::none());
@@ -916,7 +968,7 @@ impl SemanticIndex {
             (state, _) => state,
         };
 
-        let publication = read_publication(&self.connection, context_key)?;
+        let publication = read_publication(&self.connection, owner)?;
         Ok(SemanticStatus {
             state,
             support: publication.as_ref().map(|stored| stored.support),
@@ -926,12 +978,12 @@ impl SemanticIndex {
         })
     }
 
-    /// The stored profile a context's publication was produced under.
+    /// The stored profile an owner's publication was produced under.
     pub fn published_profile(
         &self,
-        context_key: &str,
+        owner: &SemanticOwner,
     ) -> Result<Option<StoredProfile>, SemanticIndexError> {
-        let Some(stored) = read_publication(&self.connection, context_key)? else {
+        let Some(stored) = read_publication(&self.connection, owner)? else {
             return Ok(None);
         };
         read_profile(&self.connection, stored.profile_id)?
@@ -941,40 +993,41 @@ impl SemanticIndex {
             .map(Some)
     }
 
-    /// Mark one context not current, preserving its last valid
-    /// publication.
+    /// Mark one owner's contribution not current, preserving its last
+    /// valid publication.
     ///
-    /// Targeted by design: dirtying a Python context says nothing about
-    /// the TypeScript context beside it.
+    /// Targeted by design: dirtying one Resource's Python contribution
+    /// says nothing about the file beside it, let alone about the
+    /// TypeScript context.
     pub fn mark_dirty(
         &self,
-        context_key: &str,
+        owner: &SemanticOwner,
         error_code: &str,
     ) -> Result<(), SemanticIndexError> {
-        self.mark(context_key, SemanticState::Dirty, error_code)
+        self.mark(owner, SemanticState::Dirty, error_code)
     }
 
     /// Mark one context unable to produce current semantic truth. Its
     /// last valid publication stays readable.
     pub fn mark_unavailable(
         &self,
-        context_key: &str,
+        owner: &SemanticOwner,
         error_code: &str,
     ) -> Result<(), SemanticIndexError> {
-        self.mark(context_key, SemanticState::Unavailable, error_code)
+        self.mark(owner, SemanticState::Unavailable, error_code)
     }
 
     fn mark(
         &self,
-        context_key: &str,
+        owner: &SemanticOwner,
         state: SemanticState,
         error_code: &str,
     ) -> Result<(), SemanticIndexError> {
         let Some(row) = component::read_scoped(
             &self.connection,
             component::SEMANTIC_INDEX,
-            component::ANALYSIS_CONTEXT_SCOPE_KIND,
-            context_key,
+            component::SEMANTIC_OWNER_SCOPE_KIND,
+            &owner.scope_key(),
         )?
         else {
             // Nothing published, nothing to invalidate. Writing a DIRTY
@@ -984,7 +1037,7 @@ impl SemanticIndex {
         };
         write_component(
             &self.connection,
-            context_key,
+            owner,
             state,
             &row.basis_workspace_revision,
             row.stable_generation_id,
@@ -992,30 +1045,75 @@ impl SemanticIndex {
         )
     }
 
-    /// Mark every context whose publication read `resource` not current.
+    /// Every owner contribution whose publication read `resource`.
     ///
-    /// Returns the context keys affected. Contexts that never read it
-    /// are left alone: invalidation is scoped by what a publication
-    /// actually depended on, not by the Workspace having changed at all.
+    /// The affected-owner query the lifecycle plans from: an owner is
+    /// affected when the Resource is in its persisted basis, whether
+    /// that is its own source or a declaration it depended on. Read
+    /// only -- nothing is marked.
+    pub fn owners_depending_on(
+        &self,
+        resource: ResourceId,
+    ) -> Result<Vec<SemanticOwner>, SemanticIndexError> {
+        let mut statement = self.connection.prepare(
+            "SELECT p.context_key, owner.uid FROM semantic_publication p \
+             JOIN semantic_publication_source s ON s.publication_id = p.id \
+             JOIN resource dependency ON dependency.id = s.resource_id \
+             JOIN resource owner ON owner.id = p.owner_resource_id \
+             WHERE dependency.uid = ?1 ORDER BY p.context_key, owner.uid",
+        )?;
+        let rows: Vec<(String, Vec<u8>)> = statement
+            .query_map(params![resource.to_bytes().to_vec()], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })?
+            .collect::<Result<_, _>>()?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|(context_key, uid)| {
+                <[u8; 16]>::try_from(uid.as_slice())
+                    .ok()
+                    .map(|bytes| SemanticOwner::new(context_key, ResourceId::from_bytes(bytes)))
+            })
+            .collect())
+    }
+
+    /// Every owner contribution published for one context.
+    pub fn owners_of_context(
+        &self,
+        context_key: &str,
+    ) -> Result<Vec<SemanticOwner>, SemanticIndexError> {
+        let mut statement = self.connection.prepare(
+            "SELECT owner.uid FROM semantic_publication p \
+             JOIN resource owner ON owner.id = p.owner_resource_id \
+             WHERE p.context_key = ?1 ORDER BY owner.uid",
+        )?;
+        let rows: Vec<Vec<u8>> = statement
+            .query_map(params![context_key], |row| row.get(0))?
+            .collect::<Result<_, _>>()?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|uid| {
+                <[u8; 16]>::try_from(uid.as_slice())
+                    .ok()
+                    .map(|bytes| SemanticOwner::new(context_key, ResourceId::from_bytes(bytes)))
+            })
+            .collect())
+    }
+
+    /// Mark every owner whose publication read `resource` not current.
+    ///
+    /// Returns the owners affected. Owners that never read it are left
+    /// alone: invalidation is scoped by what a publication actually
+    /// depended on, not by the Workspace having changed at all.
     pub fn invalidate_resource(
         &self,
         resource: ResourceId,
-    ) -> Result<Vec<String>, SemanticIndexError> {
-        let mut statement = self.connection.prepare(
-            "SELECT p.context_key FROM semantic_publication p \
-             JOIN semantic_publication_source s ON s.publication_id = p.id \
-             JOIN resource r ON r.id = s.resource_id \
-             WHERE r.uid = ?1 ORDER BY p.context_key",
-        )?;
-        let keys: Vec<String> = statement
-            .query_map(params![resource.to_bytes().to_vec()], |row| row.get(0))?
-            .collect::<Result<_, _>>()?;
-        drop(statement);
-
-        for key in &keys {
-            self.mark_dirty(key, SOURCE_MOVED_CODE)?;
+    ) -> Result<Vec<SemanticOwner>, SemanticIndexError> {
+        let owners = self.owners_depending_on(resource)?;
+        for owner in &owners {
+            self.mark_dirty(owner, SOURCE_MOVED_CODE)?;
         }
-        Ok(keys)
+        Ok(owners)
     }
 
     /// Re-check a persisted publication against the inputs as they are
@@ -1028,10 +1126,10 @@ impl SemanticIndex {
     /// profile is still [`BackendCompatibility::Compatible`].
     pub fn revalidate(
         &self,
-        context_key: &str,
+        owner: &SemanticOwner,
         current: &CurrentInputs,
     ) -> Result<SemanticStatus, SemanticIndexError> {
-        let Some(stored) = read_publication(&self.connection, context_key)? else {
+        let Some(stored) = read_publication(&self.connection, owner)? else {
             return Ok(SemanticStatus::none());
         };
 
@@ -1040,13 +1138,13 @@ impl SemanticIndex {
             None => BackendCompatibility::Unknown,
         };
         if !compatibility.keeps_publication() {
-            self.mark_dirty(context_key, PROFILE_INCOMPATIBLE_CODE)?;
-            return self.status(context_key);
+            self.mark_dirty(owner, PROFILE_INCOMPATIBLE_CODE)?;
+            return self.status(owner);
         }
 
         if let Err(reason) = validate_basis(&self.connection, &stored.basis, current)? {
-            self.mark_dirty(context_key, reason.error_code())?;
-            return self.status(context_key);
+            self.mark_dirty(owner, reason.error_code())?;
+            return self.status(owner);
         }
 
         // The basis holds and the semantics are comparable: restore
@@ -1054,13 +1152,13 @@ impl SemanticIndex {
         // made for, which `status` re-checks against the clock anyway.
         write_component(
             &self.connection,
-            context_key,
+            owner,
             SemanticState::Current,
             &stored.basis_workspace_revision,
             Some(stored.generation_id),
             None,
         )?;
-        self.status(context_key)
+        self.status(owner)
     }
 }
 
@@ -1134,6 +1232,19 @@ fn validate_basis(
     Ok(Ok(()))
 }
 
+fn resource_row_id(
+    connection: &Connection,
+    resource: ResourceId,
+) -> Result<Option<i64>, SemanticIndexError> {
+    Ok(connection
+        .query_row(
+            "SELECT id FROM resource WHERE uid = ?1",
+            params![resource.to_bytes().to_vec()],
+            |row| row.get(0),
+        )
+        .optional()?)
+}
+
 fn write_publication(
     connection: &Connection,
     candidate: &SemanticCandidate,
@@ -1141,25 +1252,36 @@ fn write_publication(
     basis_workspace_revision: &str,
 ) -> Result<(), SemanticIndexError> {
     let basis = &candidate.basis;
-    // One row per context: publishing N+1 replaces N entirely, together
-    // with its dependency set, in this one transaction.
+    let owner_row =
+        resource_row_id(connection, basis.owner)?.ok_or_else(|| SemanticIndexError::Obsolete {
+            context_key: basis.context_key.clone(),
+            reason: ObsoleteReason::SourceGone {
+                resource: basis.owner,
+            },
+        })?;
+    // One row per (context, owner): publishing N+1 replaces that
+    // owner's N entirely, together with its dependency set, in this one
+    // transaction -- and leaves every other owner in the context
+    // exactly as it was.
     connection.execute(
         "DELETE FROM semantic_publication_source WHERE publication_id IN \
-         (SELECT id FROM semantic_publication WHERE context_key = ?1)",
-        params![basis.context_key],
+         (SELECT id FROM semantic_publication \
+          WHERE context_key = ?1 AND owner_resource_id = ?2)",
+        params![basis.context_key, owner_row],
     )?;
     connection.execute(
-        "DELETE FROM semantic_publication WHERE context_key = ?1",
-        params![basis.context_key],
+        "DELETE FROM semantic_publication WHERE context_key = ?1 AND owner_resource_id = ?2",
+        params![basis.context_key, owner_row],
     )?;
     connection.execute(
         "INSERT INTO semantic_publication \
-         (context_key, workspace_uid, analysis_profile_id, generation_id, \
+         (context_key, owner_resource_id, workspace_uid, analysis_profile_id, generation_id, \
           basis_workspace_revision, basis_fingerprint, config_fingerprint, \
           environment_fingerprint, inventory_fingerprint, support, published_at) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         params![
             basis.context_key,
+            owner_row,
             basis.workspace.to_bytes().to_vec(),
             profile_id,
             candidate.generation.id,
@@ -1175,13 +1297,7 @@ fn write_publication(
     let publication_id = connection.last_insert_rowid();
 
     for (resource, revision) in &basis.sources {
-        let row_id: Option<i64> = connection
-            .query_row(
-                "SELECT id FROM resource WHERE uid = ?1",
-                params![resource.to_bytes().to_vec()],
-                |row| row.get(0),
-            )
-            .optional()?;
+        let row_id = resource_row_id(connection, *resource)?;
         let Some(row_id) = row_id else {
             // Validation already refused an unknown Resource; reaching
             // here would mean the inventory moved inside the
@@ -1219,15 +1335,18 @@ type RawPublicationRow = (
 
 fn read_publication(
     connection: &Connection,
-    context_key: &str,
+    owner: &SemanticOwner,
 ) -> Result<Option<StoredPublication>, SemanticIndexError> {
+    let Some(owner_row) = resource_row_id(connection, owner.owner)? else {
+        return Ok(None);
+    };
     let row: Option<RawPublicationRow> = connection
         .query_row(
             "SELECT id, generation_id, analysis_profile_id, workspace_uid, \
                     basis_workspace_revision, config_fingerprint, environment_fingerprint, \
                     inventory_fingerprint, support \
-             FROM semantic_publication WHERE context_key = ?1",
-            params![context_key],
+             FROM semantic_publication WHERE context_key = ?1 AND owner_resource_id = ?2",
+            params![owner.context_key, owner_row],
             |row| {
                 Ok((
                     row.get(0)?,
@@ -1271,7 +1390,8 @@ fn read_publication(
         support,
         basis: SemanticBasis {
             workspace,
-            context_key: context_key.to_owned(),
+            context_key: owner.context_key.clone(),
+            owner: owner.owner,
             sources,
             config_fingerprint: row.5,
             environment_fingerprint: row.6,
@@ -1311,7 +1431,7 @@ fn read_profile(
 
 fn write_component(
     connection: &Connection,
-    context_key: &str,
+    owner: &SemanticOwner,
     state: SemanticState,
     basis_workspace_revision: &str,
     stable_generation_id: Option<i64>,
@@ -1323,8 +1443,8 @@ fn write_component(
     component::write_scoped(
         connection,
         component::SEMANTIC_INDEX,
-        component::ANALYSIS_CONTEXT_SCOPE_KIND,
-        context_key,
+        component::SEMANTIC_OWNER_SCOPE_KIND,
+        &owner.scope_key(),
         &ComponentRow {
             basis_workspace_revision: basis_workspace_revision.to_owned(),
             // Preserved across DIRTY: the last published generation stays
@@ -1499,6 +1619,11 @@ mod tests {
         CurrentInputs::new(context, config, &capabilities(context, Support::Supported))
     }
 
+    /// The owner identity one contribution is published under.
+    fn owner_of(fixture: &Fixture, context: &AnalysisContext, rel: &str) -> SemanticOwner {
+        SemanticOwner::new(context.context_key(), fixture.resource(rel).id)
+    }
+
     /// Publish one semantic generation over `sources`, returning it.
     fn publish(
         fixture: &Fixture,
@@ -1508,7 +1633,10 @@ mod tests {
         support: Support,
         sources: &[&str],
     ) -> Result<SemanticPublication, SemanticIndexError> {
-        let mut basis = SemanticBasis::new(context, config);
+        let owner = fixture
+            .resource(sources.first().copied().unwrap_or("src/app.py"))
+            .id;
+        let mut basis = SemanticBasis::new(context, config, owner);
         for rel in sources {
             let resource = fixture.resource(rel);
             basis = basis.with_source(resource.id, resource.resource_revision.clone());
@@ -1528,7 +1656,7 @@ mod tests {
     fn structural_current_and_semantic_dirty_coexist() {
         let fixture = Fixture::create("coexist");
         let semantic = fixture.semantic();
-        let key = context().context_key();
+        let key = owner_of(&fixture, &context(), "src/app.py");
         publish(
             &fixture,
             &semantic,
@@ -1562,7 +1690,7 @@ mod tests {
     fn a_ready_runtime_does_not_make_semantics_current() {
         let fixture = Fixture::create("ready-not-current");
         let semantic = fixture.semantic();
-        let key = context().context_key();
+        let key = owner_of(&fixture, &context(), "src/app.py");
         publish(
             &fixture,
             &semantic,
@@ -1589,7 +1717,7 @@ mod tests {
     fn a_stopped_runtime_does_not_delete_a_current_publication() {
         let fixture = Fixture::create("stopped-keeps");
         let semantic = fixture.semantic();
-        let key = context().context_key();
+        let key = owner_of(&fixture, &context(), "src/app.py");
         publish(
             &fixture,
             &semantic,
@@ -1617,7 +1745,7 @@ mod tests {
     fn a_crashed_backend_leaves_structural_truth_and_last_valid_semantics() {
         let fixture = Fixture::create("crash-keeps");
         let semantic = fixture.semantic();
-        let key = context().context_key();
+        let key = owner_of(&fixture, &context(), "src/app.py");
         publish(
             &fixture,
             &semantic,
@@ -1666,7 +1794,7 @@ mod tests {
     fn a_crash_never_relabels_a_publication_current_once_its_basis_moved() {
         let fixture = Fixture::create("crash-not-current");
         let semantic = fixture.semantic();
-        let key = context().context_key();
+        let key = owner_of(&fixture, &context(), "src/app.py");
         publish(
             &fixture,
             &semantic,
@@ -1798,7 +1926,7 @@ mod tests {
     fn an_unreadable_profile_fails_safe_toward_revalidation() {
         let fixture = Fixture::create("unknown-profile");
         let semantic = fixture.semantic();
-        let key = context().context_key();
+        let key = owner_of(&fixture, &context(), "src/app.py");
         publish(
             &fixture,
             &semantic,
@@ -1820,7 +1948,7 @@ mod tests {
             .connection()
             .execute(
                 "UPDATE semantic_publication SET analysis_profile_id = 9999 WHERE context_key = ?1",
-                params![key],
+                params![key.context_key],
             )
             .expect("repoint");
 
@@ -1838,7 +1966,7 @@ mod tests {
     fn a_revalidate_verdict_marks_the_scope_and_a_rebuild_invalidates_it() {
         let fixture = Fixture::create("revalidate-rebuild");
         let semantic = fixture.semantic();
-        let key = context().context_key();
+        let key = owner_of(&fixture, &context(), "src/app.py");
         publish(
             &fixture,
             &semantic,
@@ -1883,7 +2011,7 @@ mod tests {
     fn a_compatible_profile_keeps_an_eligible_publication_current() {
         let fixture = Fixture::create("compatible-keeps");
         let semantic = fixture.semantic();
-        let key = context().context_key();
+        let key = owner_of(&fixture, &context(), "src/app.py");
         publish(
             &fixture,
             &semantic,
@@ -1960,10 +2088,14 @@ mod tests {
 
     #[test]
     fn environment_identity_participates_in_the_basis() {
-        let basis = SemanticBasis::new(&context(), &config());
+        let basis = SemanticBasis::new(&context(), &config(), ResourceId::from_bytes([0x0B; 16]));
         let mut other_environment = context();
         other_environment.toolchain.environment_fingerprint = "sha256:other-venv".to_owned();
-        let other = SemanticBasis::new(&other_environment, &config());
+        let other = SemanticBasis::new(
+            &other_environment,
+            &config(),
+            ResourceId::from_bytes([0x0B; 16]),
+        );
 
         assert_ne!(basis.environment_fingerprint, other.environment_fingerprint);
         assert_ne!(basis.fingerprint(), other.fingerprint());
@@ -1974,16 +2106,18 @@ mod tests {
         let one = ResourceId::from_bytes([3; 16]);
         let two = ResourceId::from_bytes([4; 16]);
 
-        let forwards = SemanticBasis::new(&context(), &config())
-            .with_source(one, "1")
-            .with_source(two, "7");
-        let backwards = SemanticBasis::new(&context(), &config())
-            .with_source(two, "7")
-            .with_source(one, "1");
+        let forwards =
+            SemanticBasis::new(&context(), &config(), ResourceId::from_bytes([0x0B; 16]))
+                .with_source(one, "1")
+                .with_source(two, "7");
+        let backwards =
+            SemanticBasis::new(&context(), &config(), ResourceId::from_bytes([0x0B; 16]))
+                .with_source(two, "7")
+                .with_source(one, "1");
         assert_eq!(forwards.fingerprint(), backwards.fingerprint());
         assert_eq!(forwards.fingerprint(), forwards.fingerprint());
 
-        let moved = SemanticBasis::new(&context(), &config())
+        let moved = SemanticBasis::new(&context(), &config(), ResourceId::from_bytes([0x0B; 16]))
             .with_source(one, "2")
             .with_source(two, "7");
         assert_ne!(moved.fingerprint(), forwards.fingerprint());
@@ -2000,10 +2134,10 @@ mod tests {
     fn a_candidate_is_not_current_and_publishing_makes_it_so() {
         let fixture = Fixture::create("candidate");
         let semantic = fixture.semantic();
-        let key = context().context_key();
+        let key = owner_of(&fixture, &context(), "src/app.py");
         let resource = fixture.resource("src/app.py");
 
-        let basis = SemanticBasis::new(&context(), &config())
+        let basis = SemanticBasis::new(&context(), &config(), resource.id)
             .with_source(resource.id, resource.resource_revision.clone());
         let profile =
             AnalysisProfile::semantic(&context(), &capabilities(&context(), Support::Supported));
@@ -2031,7 +2165,7 @@ mod tests {
     fn a_building_candidate_is_invisible_to_a_reader_until_it_commits() {
         let fixture = Fixture::create("building-invisible");
         let semantic = fixture.semantic();
-        let key = context().context_key();
+        let key = owner_of(&fixture, &context(), "src/app.py");
 
         let first = publish(
             &fixture,
@@ -2052,7 +2186,7 @@ mod tests {
 
         // N+1 begins building.
         let resource = fixture.resource("src/app.py");
-        let basis = SemanticBasis::new(&context(), &config())
+        let basis = SemanticBasis::new(&context(), &config(), resource.id)
             .with_source(resource.id, resource.resource_revision.clone());
         let profile =
             AnalysisProfile::semantic(&context(), &capabilities(&context(), Support::Supported));
@@ -2081,10 +2215,10 @@ mod tests {
     fn a_source_revision_moving_before_publication_rejects_the_candidate() {
         let fixture = Fixture::create("source-moved");
         let semantic = fixture.semantic();
-        let key = context().context_key();
+        let key = owner_of(&fixture, &context(), "src/app.py");
         let resource = fixture.resource("src/app.py");
 
-        let basis = SemanticBasis::new(&context(), &config())
+        let basis = SemanticBasis::new(&context(), &config(), resource.id)
             .with_source(resource.id, resource.resource_revision.clone());
         let profile =
             AnalysisProfile::semantic(&context(), &capabilities(&context(), Support::Supported));
@@ -2122,7 +2256,7 @@ mod tests {
         let resource = fixture.resource("src/app.py");
 
         let make_candidate = || {
-            let basis = SemanticBasis::new(&context(), &config())
+            let basis = SemanticBasis::new(&context(), &config(), resource.id)
                 .with_source(resource.id, resource.resource_revision.clone());
             let profile = AnalysisProfile::semantic(
                 &context(),
@@ -2168,7 +2302,7 @@ mod tests {
         let semantic = fixture.semantic();
         let resource = fixture.resource("src/app.py");
 
-        let basis = SemanticBasis::new(&context(), &config())
+        let basis = SemanticBasis::new(&context(), &config(), resource.id)
             .with_source(resource.id, resource.resource_revision.clone());
         let profile =
             AnalysisProfile::semantic(&context(), &capabilities(&context(), Support::Supported));
@@ -2191,7 +2325,7 @@ mod tests {
     fn a_failed_analysis_never_replaces_a_publication_with_an_empty_success() {
         let fixture = Fixture::create("failure-keeps");
         let semantic = fixture.semantic();
-        let key = context().context_key();
+        let key = owner_of(&fixture, &context(), "src/app.py");
         let first = publish(
             &fixture,
             &semantic,
@@ -2205,7 +2339,7 @@ mod tests {
         // The backend failed. The candidate is discarded, and N stays
         // exactly as it was -- same generation, same dependency set.
         let resource = fixture.resource("src/app.py");
-        let basis = SemanticBasis::new(&context(), &config())
+        let basis = SemanticBasis::new(&context(), &config(), resource.id)
             .with_source(resource.id, resource.resource_revision.clone());
         let profile =
             AnalysisProfile::semantic(&context(), &capabilities(&context(), Support::Supported));
@@ -2230,7 +2364,7 @@ mod tests {
     fn a_coherent_partial_result_publishes_as_partial() {
         let fixture = Fixture::create("partial");
         let semantic = fixture.semantic();
-        let key = context().context_key();
+        let key = owner_of(&fixture, &context(), "src/app.py");
 
         // The source has type errors; the backend still understood most
         // of it. That is a partial answer, not an infrastructure
@@ -2325,13 +2459,13 @@ mod tests {
     fn a_late_response_from_a_superseded_basis_cannot_publish() {
         let fixture = Fixture::create("late-response");
         let semantic = fixture.semantic();
-        let key = context().context_key();
+        let key = owner_of(&fixture, &context(), "src/app.py");
         let resource = fixture.resource("src/app.py");
 
         // A request begins at revision 1 and the runtime is asked to
         // cancel it. Suppose the cancel never lands -- the backend has
         // no such capability, or the answer was already on the wire.
-        let basis = SemanticBasis::new(&context(), &config())
+        let basis = SemanticBasis::new(&context(), &config(), resource.id)
             .with_source(resource.id, resource.resource_revision.clone());
         let profile =
             AnalysisProfile::semantic(&context(), &capabilities(&context(), Support::Supported));
@@ -2389,18 +2523,18 @@ mod tests {
         let dirtied = semantic
             .invalidate_resource(touched.id)
             .expect("invalidate");
-        assert_eq!(dirtied, vec![reader.context_key()]);
+        assert_eq!(dirtied, vec![owner_of(&fixture, &reader, "src/app.py")]);
 
         assert_eq!(
             semantic
-                .status(&reader.context_key())
+                .status(&owner_of(&fixture, &reader, "src/app.py"))
                 .expect("status")
                 .state,
             SemanticState::Dirty
         );
         assert!(
             semantic
-                .status(&other.context_key())
+                .status(&owner_of(&fixture, &other, "src/other.py"))
                 .expect("status")
                 .is_current(),
             "a context that never read the file is untouched"
@@ -2411,7 +2545,7 @@ mod tests {
     fn a_dirty_context_keeps_its_last_valid_answer() {
         let fixture = Fixture::create("last-valid");
         let semantic = fixture.semantic();
-        let key = context().context_key();
+        let key = owner_of(&fixture, &context(), "src/app.py");
         let published = publish(
             &fixture,
             &semantic,
@@ -2460,7 +2594,7 @@ mod tests {
         // The other worktree's basis names its own WorkspaceId, which is
         // not this index's: it cannot publish here at all.
         let resource = fixture.resource("src/app.py");
-        let basis = SemanticBasis::new(&worktree, &config())
+        let basis = SemanticBasis::new(&worktree, &config(), resource.id)
             .with_source(resource.id, resource.resource_revision.clone());
         let profile =
             AnalysisProfile::semantic(&worktree, &capabilities(&worktree, Support::Supported));
@@ -2477,14 +2611,14 @@ mod tests {
 
         assert!(
             semantic
-                .status(&main.context_key())
+                .status(&owner_of(&fixture, &main, "src/app.py"))
                 .expect("status")
                 .is_current(),
             "the other worktree changed nothing here"
         );
         assert_eq!(
             semantic
-                .status(&worktree.context_key())
+                .status(&owner_of(&fixture, &worktree, "src/app.py"))
                 .expect("status")
                 .state,
             SemanticState::None
@@ -2498,7 +2632,7 @@ mod tests {
     #[test]
     fn a_reopened_index_recovers_its_publication_metadata() {
         let fixture = Fixture::create("reopen");
-        let key = context().context_key();
+        let key = owner_of(&fixture, &context(), "src/app.py");
         let published = {
             let semantic = fixture.semantic();
             publish(
@@ -2525,7 +2659,7 @@ mod tests {
     #[test]
     fn a_recovered_publication_is_current_only_once_its_basis_validates() {
         let fixture = Fixture::create("recover-validate");
-        let key = context().context_key();
+        let key = owner_of(&fixture, &context(), "src/app.py");
         {
             let semantic = fixture.semantic();
             publish(
@@ -2568,7 +2702,10 @@ mod tests {
         let restarted = untouched.semantic();
         assert!(
             restarted
-                .revalidate(&key, &inputs(&context(), &config()))
+                .revalidate(
+                    &owner_of(&untouched, &context(), "src/app.py"),
+                    &inputs(&context(), &config())
+                )
                 .expect("revalidate")
                 .is_current()
         );
@@ -2577,7 +2714,7 @@ mod tests {
     #[test]
     fn a_publication_whose_workspace_revision_moved_never_reads_current() {
         let fixture = Fixture::create("clock-moved");
-        let key = context().context_key();
+        let key = owner_of(&fixture, &context(), "src/app.py");
         {
             let semantic = fixture.semantic();
             publish(
