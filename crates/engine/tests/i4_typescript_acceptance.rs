@@ -630,6 +630,81 @@ fn the_typescript_p0_level_a_slice_holds_against_the_real_backend() {
         "three unrelated same-name methods produce no OVERRIDES"
     );
 
+    // ---- React, on this same backend ------------------------------
+    // The whole React architecture, asserted: `.tsx` and `.jsx` have no
+    // backend of their own, and a component usage is an ordinary
+    // reference that the TypeScript tier resolves.
+    let page = slice.symbol("src/react/Page.tsx", "Page");
+    let user_card = slice.symbol("src/react/UserCard.tsx", "UserCard");
+    let other_card = slice.symbol("src/react/Other.tsx", "UserCard");
+    assert_ne!(user_card.id, other_card.id, "two modules, two components");
+
+    let used = slice.outgoing(page.id, &[RelationKind::References]);
+    assert!(
+        used.contains(&GraphEndpoint::Symbol(user_card.id)),
+        "`<UserCard …/>` resolves to the component it imports: {used:?}"
+    );
+    assert!(
+        used.contains(&GraphEndpoint::Symbol(other_card.id)),
+        "and an *aliased* import (`UserCard as OtherCard`) resolves to \
+         the other module's component, not to the same-named one: {used:?}"
+    );
+
+    // The same-name trap, from the other side: nothing resolved by name.
+    let page_source =
+        fs::read_to_string(slice.workspace.join("src/react/Page.tsx")).expect("source");
+    let (start, end): (i64, i64) = Connection::open(&slice.db_path)
+        .expect("index.db")
+        .query_row(
+            "SELECT occurrence.start_byte, occurrence.end_byte FROM semantic_evidence \
+             JOIN occurrence ON occurrence.id = semantic_evidence.occurrence_id \
+             JOIN relation ON relation.id = semantic_evidence.relation_id \
+             JOIN graph_entity te ON te.id = relation.target_entity_id \
+             JOIN symbol target ON target.id = te.symbol_id \
+             WHERE occurrence.kind = 'REFERENCE_SITE' AND target.uid = ?1",
+            rusqlite::params![other_card.id.to_bytes().to_vec()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("the aliased usage row");
+    assert_eq!(
+        &page_source[usize::try_from(start).expect("fits")..usize::try_from(end).expect("fits")],
+        "OtherCard",
+        "anchored on the JSX element name as written"
+    );
+
+    // JavaScript JSX, at the honest JavaScript capability level.
+    assert!(
+        slice
+            .outgoing(
+                slice.symbol("src/react/legacy.jsx", "Legacy").id,
+                &[RelationKind::References]
+            )
+            .contains(&GraphEndpoint::Symbol(user_card.id)),
+        "a `.jsx` component usage resolves through the same backend"
+    );
+
+    // Props are ordinary TypeScript, with no React rule anywhere.
+    assert!(
+        slice
+            .outgoing(page.id, &[RelationKind::UsesType])
+            .contains(&GraphEndpoint::Symbol(
+                slice.symbol("src/react/UserCard.tsx", "UserCardProps").id
+            )),
+        "a props type is a USES_TYPE like any other"
+    );
+
+    // And an intrinsic element is not a component. `<div>` binds
+    // nothing, so it is not evidence about anything -- which is what
+    // keeps "capitalised means component" out of this tier.
+    assert_eq!(
+        slice.count(
+            "SELECT COUNT(*) FROM occurrence o JOIN resource r ON r.id = o.resource_id \
+             WHERE r.path_key = 'src/react/Page.tsx' AND o.kind = 'REFERENCE_SITE'"
+        ),
+        2,
+        "two component usages, and no occurrence for `<div>`"
+    );
+
     // ---- The dependency boundary ----------------------------------
     let external_targets =
         slice.outgoing(slice.symbol("src/ext.ts", "ext").id, &[RelationKind::Calls]);
@@ -753,6 +828,32 @@ fn the_typescript_p0_level_a_slice_holds_against_the_real_backend() {
             assert!(item.unavailable.is_none(), "{:?}", item.unavailable);
         }
     }
+    // The same hard gate for a React component usage: an Agent asking
+    // what uses `UserCard` gets the JSX site and the component's current
+    // source, not a path and a line number to go and read.
+    let react_prepared = InspectPreparer::open(&slice.db_path, &slice.workspace)
+        .expect("preparer")
+        .prepare(
+            &GraphEndpoint::Symbol(user_card.id),
+            Direction::Incoming,
+            &[RelationKind::References],
+        )
+        .expect("prepared");
+    assert!(react_prepared.confirmed_count() > 0);
+    assert!(react_prepared.source_complete());
+    assert!(
+        react_prepared
+            .ranges
+            .iter()
+            .any(|range| range.source.contains("UserCard")),
+        "the JSX usage and its component come back as source: {:?}",
+        react_prepared
+            .ranges
+            .iter()
+            .map(|range| range.role)
+            .collect::<Vec<_>>()
+    );
+
     let prepared_bytes: usize = prepared.ranges.iter().map(|range| range.source.len()).sum();
 
     // ---- Freshness, on the real backend ---------------------------
