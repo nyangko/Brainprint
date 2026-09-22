@@ -847,13 +847,21 @@ pub(crate) fn ensure_profile(
     if let Some(id) = profile_id(connection, &profile.profile_key)? {
         return Ok(id);
     }
+    // `ON CONFLICT DO NOTHING` rather than the read above being trusted
+    // to have settled it. Two owners of one AnalysisContext refreshing
+    // at the same time compute the *same* profile key -- the profile
+    // describes the analysis, not the file -- so on separate
+    // connections both can pass the read and one would hit the unique
+    // index (#19 task 14). Losing the race is not an error: the row the
+    // winner wrote is the row this caller wanted.
     connection.execute(
         "INSERT INTO analysis_profile \
          (profile_key, language, analysis_mode, structural_backend, \
           structural_backend_version, semantic_backend, semantic_backend_version, \
           extractor_semantics_version, adapter_semantics_version, \
           backend_compatibility_class, capability_fingerprint, created_at) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12) \
+         ON CONFLICT(profile_key) DO NOTHING",
         params![
             profile.profile_key,
             profile.language.to_string(),
@@ -869,7 +877,10 @@ pub(crate) fn ensure_profile(
             db::now_millis_text(),
         ],
     )?;
-    Ok(connection.last_insert_rowid())
+    // Read it back rather than taking `last_insert_rowid`, which after
+    // a conflict that inserted nothing is some other row entirely.
+    profile_id(connection, &profile.profile_key)?
+        .ok_or_else(|| SymbolError::Sqlite(rusqlite::Error::QueryReturnedNoRows))
 }
 
 pub(crate) fn profile_id(

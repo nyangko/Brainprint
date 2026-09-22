@@ -451,25 +451,30 @@ pub(crate) fn begin_generation(
     basis_workspace_revision: &str,
 ) -> Result<GenerationRecord, GenerationError> {
     let now = db::now_millis_text();
-    let generation_no: i64 = connection.query_row(
-        "SELECT COALESCE(MAX(generation_no), 0) + 1 FROM generation",
-        [],
-        |row| row.get(0),
-    )?;
+    // The next number and the row that takes it are one statement, not
+    // a read followed by a write. Two owners of one AnalysisContext
+    // refreshing concurrently on separate connections would otherwise
+    // both read the same maximum and the loser would hit the unique
+    // index on `generation_no` (#19 task 14).
     connection.execute(
         "INSERT INTO generation \
          (generation_no, basis_workspace_revision, state, created_at) \
-         VALUES (?1, ?2, ?3, ?4)",
+         SELECT COALESCE(MAX(generation_no), 0) + 1, ?1, ?2, ?3 FROM generation",
         params![
-            generation_no,
             basis_workspace_revision,
             GenerationState::Building.as_str(),
             now
         ],
     )?;
+    let id = connection.last_insert_rowid();
+    let generation_no: i64 = connection.query_row(
+        "SELECT generation_no FROM generation WHERE id = ?1",
+        params![id],
+        |row| row.get(0),
+    )?;
 
     Ok(GenerationRecord {
-        id: connection.last_insert_rowid(),
+        id,
         generation_no,
         basis_workspace_revision: basis_workspace_revision.to_owned(),
         state: GenerationState::Building,

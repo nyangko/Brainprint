@@ -50,7 +50,7 @@
 use std::{collections::BTreeMap, error::Error, fmt, path::Path};
 
 use brainprint_core::{ResourceId, WorkspaceId};
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 
 use crate::{
     component::{self, ComponentRow, FreshnessState, ProcessingState},
@@ -876,7 +876,17 @@ impl SemanticIndex {
         candidate: SemanticCandidate,
         current: &CurrentInputs,
     ) -> Result<SemanticPublication, SemanticIndexError> {
-        let transaction = self.connection.unchecked_transaction()?;
+        // IMMEDIATE, not the default deferred. This transaction reads
+        // the basis and then writes what the read authorized, and in
+        // WAL a deferred transaction that upgrades after another
+        // connection committed fails with `SQLITE_BUSY_SNAPSHOT` --
+        // which the busy timeout deliberately does not retry, because
+        // waiting cannot fix a snapshot that is already stale. Two
+        // owners of one AnalysisContext publishing at once is the
+        // ordinary case (#19 task 14), so the write lock is taken up
+        // front, where waiting *is* the answer.
+        let transaction =
+            Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)?;
 
         if let Err(reason) = validate_basis(&transaction, &candidate.basis, current)? {
             drop(transaction);
