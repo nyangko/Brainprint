@@ -464,6 +464,18 @@ impl CapabilityReport {
             .unwrap_or(Support::Unsupported)
     }
 
+    /// Whether `capability` was given a verdict at all.
+    ///
+    /// [`Self::support`] deliberately reads an undeclared capability as
+    /// UNSUPPORTED, which is the right default for a *caller* -- but it
+    /// makes "we considered this and it does not apply" indistinguishable
+    /// from "nobody thought about it". A backend asserting that its
+    /// matrix is complete needs to tell those apart.
+    #[must_use]
+    pub fn is_declared(&self, capability: SemanticCapability) -> bool {
+        self.declared.contains_key(&capability)
+    }
+
     /// How well a whole group is covered: the weakest member decides,
     /// because a group is not better covered than its worst capability.
     ///

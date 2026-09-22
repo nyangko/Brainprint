@@ -57,7 +57,10 @@ use brainprint_engine::{
     resolution::Dispatch,
     resolution::Support,
     resource::{Resource, ResourceLanguage, ResourceStore},
-    runtime::{CancelToken, RequestFailure},
+    runtime::{
+        CancelToken, RequestFailure, RuntimePolicy, SemanticBackendLauncher, SemanticRuntimeHost,
+        SemanticRuntimeSupervisor,
+    },
     scan::BaselineScan,
     semantic::{
         AnalysisContext, AnalysisContextBinding, ProjectRootIdentity, SemanticBackendKind,
@@ -179,7 +182,8 @@ impl Slice {
         let environment = {
             let index = SemanticIndex::open(&db_path).expect("index.db");
             let projects =
-                lifecycle::discover_projects(index.connection(), trust).expect("projects");
+                lifecycle::discover_projects_under(index.connection(), trust, Some(&workspace))
+                    .expect("projects");
             lifecycle::environment_identity(install, &projects).expect("environment")
         };
         let context = AnalysisContext {
@@ -338,8 +342,12 @@ impl Slice {
         rel: &str,
     ) -> brainprint_engine::csharp_semantic::RefreshOutcome {
         let index = SemanticIndex::open(&self.db_path).expect("index.db");
-        let projects =
-            lifecycle::discover_projects(index.connection(), self.trust).expect("projects");
+        let projects = lifecycle::discover_projects_under(
+            index.connection(),
+            self.trust,
+            Some(&self.workspace),
+        )
+        .expect("projects");
         let config = projects.basis();
         let capabilities = capability_report(&self.context, self.trust);
         refresh_resource(
@@ -897,8 +905,12 @@ fn a_new_declaration_is_current_after_a_project_reload() {
     slice.with_host(|queries| {
         let projects = {
             let index = SemanticIndex::open(&slice.db_path).expect("index.db");
-            lifecycle::discover_projects(index.connection(), ProjectExecutionTrust::Trusted)
-                .expect("projects")
+            lifecycle::discover_projects_under(
+                index.connection(),
+                ProjectExecutionTrust::Trusted,
+                Some(&slice.workspace),
+            )
+            .expect("projects")
         };
         assert_eq!(
             lifecycle::projects_to_reload(std::slice::from_ref(&change), &projects)
@@ -1447,4 +1459,170 @@ fn the_agent_surfaces_answer_for_csharp() {
             "and their current source comes back"
         );
     });
+}
+
+// ---------------------------------------------------------------------
+// Multi-target
+// ---------------------------------------------------------------------
+
+/// One effective target framework, and the other world is a gap.
+///
+/// The measurement this encodes: the server loads a project that
+/// declares two frameworks, announces one initialization for it like
+/// any other, and answers from one of them. `Modern.Name` inside
+/// `#if NET10_0_OR_GREATER` resolves; `Legacy.Name` in the `#else`
+/// branch answers with nothing.
+///
+/// So the invariant that matters is not "detect the collapse" -- there
+/// is nothing to collapse, because the backend never offers two
+/// answers. It is that the unanswered world stays unanswered: a
+/// declaration reachable only from the other framework's branch must
+/// not acquire an edge from somewhere else, and the caller must be able
+/// to find out that this is why.
+#[test]
+#[ignore = "needs the restored Roslyn language server"]
+fn a_multi_target_project_claims_one_world_and_gaps_the_other() {
+    let Some(install) = install_or_skip() else {
+        return;
+    };
+    let slice = Slice::open("multi", 32, &install, ProjectExecutionTrust::Trusted);
+    slice.with_host(|queries| {
+        let outcome = slice.refresh(queries, "src/Multi/Surface.cs");
+
+        let index = SemanticIndex::open(&slice.db_path).expect("index.db");
+        let config = lifecycle::discover_projects_under(
+            index.connection(),
+            ProjectExecutionTrust::Trusted,
+            Some(&slice.workspace),
+        )
+        .expect("projects");
+        assert!(
+            config.is_multi_target(slice.resource("src/Multi/Surface.cs").id),
+            "the project's two worlds are observable before anything is claimed"
+        );
+
+        let modern = slice.only("src/Multi/Surface.cs", "Multi.Modern");
+        let legacy = slice.only("src/Multi/Surface.cs", "Multi.Legacy");
+        let modern_users = slice.incoming(
+            &GraphEndpoint::Symbol(modern.id),
+            &[RelationKind::References, RelationKind::UsesType],
+        );
+        let legacy_users = slice.incoming(
+            &GraphEndpoint::Symbol(legacy.id),
+            &[RelationKind::References, RelationKind::UsesType],
+        );
+
+        // Exactly one of the two branches produced an edge. Which one
+        // is the backend's choice and is not observable here; that both
+        // did not is the assertion.
+        assert!(
+            modern_users.is_empty() != legacy_users.is_empty(),
+            "one framework's branch is represented and the other is not: \
+             modern={:?} legacy={:?} report={:?}",
+            slice.names(&modern_users),
+            slice.names(&legacy_users),
+            outcome.report
+        );
+
+        // And the unrepresented branch is a gap rather than a target
+        // borrowed from the world that did answer.
+        let unrepresented = if modern_users.is_empty() {
+            modern
+        } else {
+            legacy
+        };
+        assert!(
+            slice
+                .incoming(
+                    &GraphEndpoint::Symbol(unrepresented.id),
+                    &[
+                        RelationKind::References,
+                        RelationKind::UsesType,
+                        RelationKind::Calls,
+                    ]
+                )
+                .is_empty(),
+            "the other framework's declaration keeps no invented edge"
+        );
+    });
+}
+
+// ---------------------------------------------------------------------
+// The shared runtime
+// ---------------------------------------------------------------------
+
+/// Two callers, one server.
+///
+/// A language server is a process with a compilation in it; one per
+/// caller would mean loading the solution again per question.
+#[test]
+#[ignore = "needs the restored Roslyn language server"]
+fn one_analysis_context_runs_one_roslyn_server() {
+    let Some(install) = install_or_skip() else {
+        return;
+    };
+    let slice = Slice::open(
+        "shared-runtime",
+        33,
+        &install,
+        ProjectExecutionTrust::Trusted,
+    );
+    let supervisor = SemanticRuntimeSupervisor::new(RuntimePolicy::default())
+        .with_backend(Arc::clone(&slice.launcher) as Arc<dyn SemanticBackendLauncher>);
+    let first = supervisor.acquire(&slice.binding()).expect("first caller");
+    let second = supervisor.acquire(&slice.binding()).expect("second caller");
+    assert_eq!(
+        supervisor.live_runtime_count(),
+        1,
+        "two callers, one compilation"
+    );
+    drop((first, second));
+    supervisor.shutdown();
+}
+
+/// A restarted backend holds nothing from the old one.
+///
+/// Document versions and the set of opened documents belong to a
+/// connection: a fresh server has opened nothing, so the first
+/// synchronization after a restart must be a `didOpen` again. Reusing
+/// the old connection's bookkeeping would send a `didChange` for a
+/// document the new server has never seen.
+#[test]
+#[ignore = "needs the restored Roslyn language server"]
+fn a_restarted_backend_reopens_rather_than_changes() {
+    let Some(install) = install_or_skip() else {
+        return;
+    };
+    let slice = Slice::open("restart", 34, &install, ProjectExecutionTrust::Trusted);
+    let uri = path_to_uri(&slice.workspace.join("src/Core/Runner.Part1.cs"));
+
+    let first = slice
+        .launcher
+        .start(&slice.binding())
+        .expect("first server");
+    assert_eq!(
+        first.exchange_text(&uri, "class A {}"),
+        None,
+        "a cold server holds nothing"
+    );
+    assert_eq!(
+        first.exchange_text(&uri, "class B {}").as_deref(),
+        Some("class A {}"),
+        "and then holds what it was handed"
+    );
+    let first_version = first.next_document_version();
+    SemanticRuntimeHost::shutdown(&first);
+
+    let second = slice.launcher.start(&slice.binding()).expect("restarted");
+    assert_eq!(
+        second.exchange_text(&uri, "class A {}"),
+        None,
+        "a restarted server has opened nothing, whatever the old one had"
+    );
+    assert_eq!(
+        second.next_document_version(),
+        first_version,
+        "and its version sequence starts over with it"
+    );
+    SemanticRuntimeHost::shutdown(&second);
 }

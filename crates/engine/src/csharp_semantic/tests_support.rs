@@ -508,7 +508,8 @@ pub fn refresh(
 ) -> Result<super::RefreshOutcome, super::CSharpSemanticError> {
     let context = context();
     let projects =
-        lifecycle::discover_projects(index.connection(), queries.trust).expect("projects");
+        lifecycle::discover_projects_under(index.connection(), queries.trust, Some(&fixture.root))
+            .expect("projects");
     let config = projects.basis();
     let capabilities = super::capability_report(&context, queries.trust);
     refresh_resource(

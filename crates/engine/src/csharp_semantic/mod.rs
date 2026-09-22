@@ -129,28 +129,70 @@ pub const NAMESPACE_IMPORT_BINDING: Support = Support::Unsupported;
 
 /// What the C# backend actually answers, for a given trust mode.
 ///
-/// Declared from measured behaviour over the acceptance fixture. Under
-/// [`ProjectExecutionTrust::Untrusted`] almost everything collapses to
-/// UNSUPPORTED, because it was measured to: with no project loaded the
-/// server answers intra-document definitions and document structure and
-/// nothing else. That is a narrower report, not a quieter one -- a
-/// caller reading it sees exactly what it cannot ask.
+/// Declared from measured behaviour over the acceptance fixture, never
+/// from the server's provider list: it advertises twenty-one providers
+/// and this tier wires up four. Every SUPPORTED entry below is asserted
+/// end-to-end in `crates/engine/tests/i4_csharp_acceptance.rs`, through
+/// the ordinary query APIs rather than out of the backend.
+///
+/// Under [`ProjectExecutionTrust::Untrusted`] almost everything
+/// collapses to UNSUPPORTED, because it was measured to: with no
+/// project loaded the server answers intra-document definitions and
+/// document structure and nothing else. That is a narrower report, not
+/// a quieter one -- a caller reading it sees exactly what it cannot ask.
+///
+/// ## Who owns what
+///
+/// The structural tier (I2/I3) owns discovery, spans, scopes and the
+/// declaration of imports; this backend owns every binding. Where a
+/// capability is PARTIAL the limitation is one of the two, and it is
+/// named at the constant that declares it.
 #[must_use]
 pub fn capability_report(
     context: &AnalysisContext,
     trust: ProjectExecutionTrust,
 ) -> CapabilityReport {
     let mut report = CapabilityReport::new(context);
+
+    // ---- Resource / structure: the structural tier's, either way ----
+    //
+    // None of these needs a compiler, so none of them changes with
+    // trust. A C# file is discovered, parsed, and its declarations
+    // given spans and scopes with no .NET installed at all.
+    report
+        .declare(SemanticCapability::ResourceDiscovery, Support::Supported)
+        .declare(SemanticCapability::SyntaxStructure, Support::Supported)
+        .declare(SemanticCapability::SymbolSpan, Support::Supported)
+        .declare(SemanticCapability::ContainingScope, Support::Supported)
+        // A `using` directive is recorded as written. What it *binds to*
+        // is a separate capability, below.
+        .declare(SemanticCapability::ImportDeclaration, Support::Supported)
+        // C# has no export syntax; visibility is a modifier on the
+        // declaration, which `SymbolSpan` already carries. Claiming this
+        // would be a capability with no language behind it.
+        .declare(SemanticCapability::ExportDeclaration, Support::Unsupported)
+        // C# source is not generated from anything and embeds no other
+        // language, so there is no region to map and no original to map
+        // back to.
+        .declare(
+            SemanticCapability::EmbeddedRegionMapping,
+            Support::Unsupported,
+        )
+        .declare(
+            SemanticCapability::OriginalSourceMapping,
+            Support::Unsupported,
+        );
+
     if !trust.may_load_projects() {
         report
             // Measured: a definition inside the same document resolves
             // with no project loaded, because it needs only the syntax
             // tree the server parses for itself.
-            .declare(SemanticCapability::SymbolDefinition, Support::Partial)
-            .declare(SemanticCapability::SyntaxStructure, Support::Supported);
+            .declare(SemanticCapability::SymbolDefinition, Support::Partial);
         for capability in [
             SemanticCapability::ImportBinding,
             SemanticCapability::AliasResolution,
+            SemanticCapability::ReexportResolution,
             SemanticCapability::References,
             SemanticCapability::CallsIntraFile,
             SemanticCapability::CallsCrossFile,
@@ -162,8 +204,6 @@ pub fn capability_report(
             SemanticCapability::ImplementationTarget,
             SemanticCapability::ExternalSymbolResolution,
             SemanticCapability::StaticDispatchTarget,
-            SemanticCapability::EmbeddedRegionMapping,
-            SemanticCapability::OriginalSourceMapping,
         ] {
             report.declare(capability, Support::Unsupported);
         }
@@ -172,18 +212,17 @@ pub fn capability_report(
 
     report
         .declare(SemanticCapability::SymbolDefinition, Support::Supported)
-        .declare(SemanticCapability::SyntaxStructure, Support::Supported)
         // A namespace has no single declaration; see
         // [`NAMESPACE_IMPORT_BINDING`].
         .declare(SemanticCapability::ImportBinding, NAMESPACE_IMPORT_BINDING)
-        // `using Alias = Some.Type;` names exactly one type, so the
-        // alias itself resolves; `using static` does not name one
-        // member.
-        .declare(SemanticCapability::AliasResolution, Support::Partial)
+        .declare(SemanticCapability::AliasResolution, ALIAS_RESOLUTION)
+        // C# has no re-export: a type is visible where it is declared,
+        // and `using` imports into a file rather than re-publishing.
+        .declare(SemanticCapability::ReexportResolution, Support::Unsupported)
         .declare(SemanticCapability::References, Support::Supported)
         .declare(SemanticCapability::CallsIntraFile, Support::Supported)
         .declare(SemanticCapability::CallsCrossFile, Support::Supported)
-        .declare(SemanticCapability::TypeResolution, Support::Supported)
+        .declare(SemanticCapability::TypeResolution, TYPE_RESOLUTION)
         .declare(SemanticCapability::Inheritance, Support::Supported)
         .declare(SemanticCapability::Implements, Support::Supported)
         .declare(SemanticCapability::Overrides, Support::Supported)
@@ -198,26 +237,32 @@ pub fn capability_report(
             SemanticCapability::ExternalSymbolResolution,
             Support::Supported,
         )
-        // Measured: `BaseRunner runner = new Runner(); runner.Run();`
-        // resolves to `BaseRunner.Run` -- the declaration the static
-        // type names. That is a static binding, correctly, and the
-        // adapter records the dispatch as unknown rather than claiming
-        // it is what executes.
-        .declare(SemanticCapability::StaticDispatchTarget, Support::Supported)
-        // C# source is C# source. Nothing here is generated from
-        // anything, so there is no region to map and no original to map
-        // back to -- claiming either would be a capability with no
-        // mechanism.
-        .declare(
-            SemanticCapability::EmbeddedRegionMapping,
-            Support::Unsupported,
-        )
-        .declare(
-            SemanticCapability::OriginalSourceMapping,
-            Support::Unsupported,
-        );
+        .declare(SemanticCapability::StaticDispatchTarget, Support::Supported);
     report
 }
+
+/// How well a `using Alias = Some.Type;` binds.
+///
+/// PARTIAL. The aliased type resolves, by chaining two answers the
+/// compiler gave -- the use reaches the alias declaration, and the
+/// declaration's own right-hand side reaches the type. What is not
+/// covered is `using static`, which names a type whose *members* enter
+/// scope rather than a single target, and an alias written across
+/// several lines, which the positional join between the two answers
+/// does not reach. Both stay gaps.
+pub const ALIAS_RESOLUTION: Support = Support::Partial;
+
+/// How well a type reference resolves.
+///
+/// PARTIAL, and the limitation is the structural tier's rather than the
+/// backend's. Every type reference I3 anchors an Occurrence for --
+/// a base list, a field or property type, a parameter type --
+/// resolves. A *return* type and a generic type argument are not
+/// anchored: `Box<Model> Wrap(Model model)` records one type site, on
+/// the parameter. There is nothing for this tier to be asked about, so
+/// those stay unresolved rather than being guessed from the signature
+/// text.
+pub const TYPE_RESOLUTION: Support = Support::Partial;
 
 // ---------------------------------------------------------------------
 // Identity

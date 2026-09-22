@@ -1037,3 +1037,606 @@ fn a_replacement_range_covers_the_entire_previous_document() {
         );
     }
 }
+
+// ---------------------------------------------------------------------
+// Multi-target
+// ---------------------------------------------------------------------
+
+/// A target framework list is read as written, never evaluated.
+#[test]
+fn declared_target_frameworks_are_read_not_evaluated() {
+    use lifecycle::declared_target_frameworks as declared;
+    assert_eq!(
+        declared(
+            "<Project><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>"
+        ),
+        vec!["net10.0".to_owned()]
+    );
+    assert_eq!(
+        declared("<TargetFrameworks>net10.0;netstandard2.0</TargetFrameworks>"),
+        vec!["net10.0".to_owned(), "netstandard2.0".to_owned()]
+    );
+    // A framework that comes from a property is not written here, and a
+    // guess would be worse than nothing.
+    assert!(declared("<TargetFramework>$(DefaultTfm)</TargetFramework>").is_empty());
+    assert!(declared("<Project />").is_empty());
+}
+
+/// The multi-target project is discovered as one, and the others are
+/// not.
+#[test]
+fn a_multi_target_project_is_discovered() {
+    let fixture = Fixture::create("multi-discover");
+    let index = SemanticIndex::open(&fixture.db_path()).expect("index");
+    let config = lifecycle::discover_projects_under(
+        index.connection(),
+        ProjectExecutionTrust::Trusted,
+        Some(&fixture.root),
+    )
+    .expect("projects");
+
+    assert_eq!(
+        config.multi_target_projects(),
+        vec!["src/Multi/Multi.csproj"],
+        "one project declares two worlds"
+    );
+    assert_eq!(
+        config.target_frameworks.get("src/Core/Core.csproj"),
+        Some(&vec!["net10.0".to_owned()]),
+        "and a single-target project declares one"
+    );
+    assert!(
+        config.is_multi_target(fixture.resource("src/Multi/Surface.cs").id),
+        "a source file inherits its project's worlds"
+    );
+    assert!(!config.is_multi_target(fixture.resource("src/Core/Runner.Part1.cs").id));
+}
+
+/// The declared framework list participates in semantic currentness.
+///
+/// Two of the mandatory multi-target cases at once: a publication made
+/// under one list is not current under another, and a daemon reopen
+/// reads the same basis, so it cannot restore one either.
+#[test]
+fn a_target_framework_change_invalidates_a_publication() {
+    let fixture = Fixture::create("multi-invalidate");
+    let index = SemanticIndex::open(&fixture.db_path()).expect("index");
+    let before = lifecycle::discover_projects_under(
+        index.connection(),
+        ProjectExecutionTrust::Trusted,
+        Some(&fixture.root),
+    )
+    .expect("projects");
+    drop(index);
+
+    fixture.write(
+        "src/Multi/Multi.csproj",
+        "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n    \
+         <TargetFrameworks>net10.0;net9.0</TargetFrameworks>\n  </PropertyGroup>\n</Project>\n",
+    );
+    fixture.rescan("workspace-rev-2");
+
+    let index = SemanticIndex::open(&fixture.db_path()).expect("index");
+    let after = lifecycle::discover_projects_under(
+        index.connection(),
+        ProjectExecutionTrust::Trusted,
+        Some(&fixture.root),
+    )
+    .expect("projects");
+
+    assert_ne!(
+        before.basis().fingerprint(),
+        after.basis().fingerprint(),
+        "the world a publication was made under changed"
+    );
+    assert_ne!(
+        before.target_frameworks.get("src/Multi/Multi.csproj"),
+        after.target_frameworks.get("src/Multi/Multi.csproj")
+    );
+}
+
+/// A worktree's identity does not move when a framework list does, and
+/// a framework list's does not move when the worktree does.
+///
+/// The two are independent axes, and collapsing them would mean either
+/// that checking out the same commit elsewhere invalidated everything,
+/// or that retargeting a project did not.
+#[test]
+fn worktree_identity_is_independent_of_target_framework() {
+    let first = Fixture::create("multi-worktree-a");
+    let second = Fixture::create("multi-worktree-b");
+    let basis = |fixture: &Fixture| {
+        let index = SemanticIndex::open(&fixture.db_path()).expect("index");
+        lifecycle::discover_projects_under(
+            index.connection(),
+            ProjectExecutionTrust::Trusted,
+            Some(&fixture.root),
+        )
+        .expect("projects")
+        .basis()
+        .fingerprint()
+    };
+
+    assert_eq!(
+        basis(&first),
+        basis(&second),
+        "the same tree in two worktrees is the same configuration -- \
+         an absolute path is a locator, never identity"
+    );
+    assert_ne!(
+        first.root, second.root,
+        "and they really are two different places on disk"
+    );
+}
+
+/// The limitation is stated, not implied by silence.
+#[test]
+fn multi_target_coverage_is_declared() {
+    assert!(
+        lifecycle::MULTI_TARGET_COVERAGE.contains("one effective target framework"),
+        "a caller asking about the other framework's branch is told why it is a gap"
+    );
+}
+
+// ---------------------------------------------------------------------
+// Level B: no backend at all
+// ---------------------------------------------------------------------
+
+/// With no .NET toolchain, C# is still a first-class indexed language.
+///
+/// This whole suite already runs that way -- there is no SDK in it --
+/// but the guarantee is worth asserting rather than inferring from the
+/// fact that other tests pass: a missing backend costs *coverage*, and
+/// must cost nothing else.
+#[test]
+fn without_a_backend_the_structural_truth_is_whole() {
+    let fixture = Fixture::create("level-b");
+    let connection = rusqlite::Connection::open(fixture.db_path()).expect("db");
+    let count = |sql: &str| -> i64 {
+        connection
+            .query_row(sql, [], |row| row.get(0))
+            .expect("count")
+    };
+
+    assert!(
+        count("SELECT COUNT(*) FROM resource WHERE state = 'ACTIVE' AND language = 'CSHARP'") >= 12,
+        "every C# Resource is indexed"
+    );
+    assert!(
+        count("SELECT COUNT(*) FROM symbol") > 0,
+        "structural Symbols stay"
+    );
+    assert!(
+        count("SELECT COUNT(*) FROM occurrence") > 0,
+        "structural Occurrences stay"
+    );
+    assert!(
+        count("SELECT COUNT(*) FROM relation") > 0,
+        "structural Relations stay"
+    );
+    // And what needs a compiler is an explicit gap rather than a
+    // silently absent edge.
+    assert!(
+        count("SELECT COUNT(*) FROM unresolved_reference") > 0,
+        "semantic-required sites are recorded as open questions"
+    );
+    assert!(
+        count(
+            "SELECT COUNT(*) FROM unresolved_reference \
+             WHERE reason = 'NAMESPACE_REQUIRES_SEMANTICS'"
+        ) > 0,
+        "including the ones this tier is for"
+    );
+}
+
+/// An absent install is a diagnosis, not a panic and not a silent skip.
+#[test]
+fn a_missing_install_says_exactly_what_is_missing() {
+    let fixture = Fixture::create("level-b-install");
+    let error = super::CSharpInstall::locate(&fixture.base).expect_err("nothing is installed");
+    let said = error.to_string();
+    assert!(
+        said.contains("packages") || said.contains(&fixture.base.display().to_string()),
+        "the reason names where it looked: {said}"
+    );
+    // No PATH lookup, no download, no fallback executable.
+    assert!(
+        !said.contains("PATH"),
+        "a global executable is never searched for: {said}"
+    );
+}
+
+/// Degraded capabilities are declared, so a caller can read them
+/// without asking the backend anything.
+#[test]
+fn an_unavailable_backend_has_a_readable_capability_report() {
+    let context = context();
+    let report = capability_report(&context, ProjectExecutionTrust::Untrusted);
+    assert_eq!(
+        report.support(SemanticCapability::References),
+        Support::Unsupported,
+        "what cannot be answered says so, rather than answering zero"
+    );
+}
+
+// ---------------------------------------------------------------------
+// Configuration inputs
+// ---------------------------------------------------------------------
+
+/// Every project input that changes what the compiler sees moves the
+/// basis.
+///
+/// Not evaluated -- Brainprint does not run MSBuild -- but fingerprinted
+/// and inventoried, which is what lets a publication know it is talking
+/// about a world that no longer exists.
+#[test]
+fn every_project_input_change_invalidates() {
+    for (rel, changed) in [
+        (
+            "src/Core/Core.csproj",
+            "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n    \
+             <TargetFramework>net10.0</TargetFramework>\n  </PropertyGroup>\n</Project>\n",
+        ),
+        (
+            "Directory.Build.props",
+            "<Project>\n  <PropertyGroup>\n    <LangVersion>12</LangVersion>\n  \
+             </PropertyGroup>\n</Project>\n",
+        ),
+        (
+            "global.json",
+            "{\n  \"sdk\": { \"version\": \"9.0.100\" }\n}\n",
+        ),
+        (
+            "Directory.Packages.props",
+            "<Project>\n  <PropertyGroup>\n    \
+             <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>\n  \
+             </PropertyGroup>\n</Project>\n",
+        ),
+        (
+            "CSharpSemanticSpike.sln",
+            "Microsoft Visual Studio Solution File, Format Version 12.00\n",
+        ),
+    ] {
+        let fixture = Fixture::create("config-input");
+        let basis = |fixture: &Fixture| {
+            let index = SemanticIndex::open(&fixture.db_path()).expect("index");
+            lifecycle::discover_projects_under(
+                index.connection(),
+                ProjectExecutionTrust::Trusted,
+                Some(&fixture.root),
+            )
+            .expect("projects")
+            .basis()
+            .fingerprint()
+        };
+        let before = basis(&fixture);
+        fixture.write(rel, changed);
+        fixture.rescan("workspace-rev-2");
+        assert_ne!(
+            before,
+            basis(&fixture),
+            "{rel} changes what the compilation is, so it invalidates"
+        );
+    }
+}
+
+/// A project input change is a project-structure change, and one that
+/// names the projects it makes stale.
+#[test]
+fn a_directory_wide_input_reloads_every_project() {
+    let fixture = Fixture::create("config-scope");
+    let index = SemanticIndex::open(&fixture.db_path()).expect("index");
+    let config = lifecycle::discover_projects_under(
+        index.connection(),
+        ProjectExecutionTrust::Trusted,
+        Some(&fixture.root),
+    )
+    .expect("projects");
+
+    let directory_wide = ResourceChange::new(
+        fixture.resource("Directory.Build.props").id,
+        ChangeKind::Changed,
+        "Directory.Build.props",
+    )
+    .with_language(None);
+    let reloaded = lifecycle::projects_to_reload(&[directory_wide], &config);
+    assert_eq!(
+        reloaded.len(),
+        config
+            .project_files
+            .iter()
+            .filter(|resource| resource.path_key.ends_with(".csproj"))
+            .count(),
+        "a file every project imports makes every project stale: {reloaded:?}"
+    );
+
+    let one_project = ResourceChange::new(
+        fixture.resource("src/Core/Runner.Part1.cs").id,
+        ChangeKind::Changed,
+        "src/Core/Runner.Part1.cs",
+    );
+    assert_eq!(
+        lifecycle::projects_to_reload(&[one_project], &config)
+            .into_iter()
+            .collect::<Vec<_>>(),
+        vec!["src/Core/Core.csproj".to_owned()],
+        "and a source file makes exactly its own project stale"
+    );
+}
+
+/// Ownership comes from the discovered project set, not from asking
+/// around.
+#[test]
+fn project_ownership_answers_from_configuration_alone() {
+    let fixture = Fixture::create("ownership-source");
+    let index = SemanticIndex::open(&fixture.db_path()).expect("index");
+    let config = lifecycle::discover_projects_under(
+        index.connection(),
+        ProjectExecutionTrust::Trusted,
+        Some(&fixture.root),
+    )
+    .expect("projects");
+
+    // A file outside every project directory belongs to none, and that
+    // is an answer rather than a nearest-by-path guess.
+    fixture.write("Stray.cs", "namespace Stray;\n\npublic class Loose { }\n");
+    fixture.rescan("workspace-rev-2");
+    let index = SemanticIndex::open(&fixture.db_path()).expect("index");
+    let after = lifecycle::discover_projects_under(
+        index.connection(),
+        ProjectExecutionTrust::Trusted,
+        Some(&fixture.root),
+    )
+    .expect("projects");
+    assert_eq!(
+        after.owning_project.get(&fixture.resource("Stray.cs").id),
+        None,
+        "a file under no project directory has no owning project"
+    );
+    let _ = config;
+}
+
+// ---------------------------------------------------------------------
+// Daemon reopen
+// ---------------------------------------------------------------------
+
+/// Reopening reads persisted truth without starting a backend.
+///
+/// Both halves matter. A publication whose whole basis still holds is
+/// readable immediately -- launching Roslyn to re-derive what is
+/// already proven would make every reopen cost a solution load. And a
+/// publication whose environment could not be *proven* is not restored
+/// as current, however equal its fingerprint is: determinism is not
+/// evidence, and the backend is not started merely to discover that.
+#[test]
+fn a_reopen_reads_persisted_truth_and_refuses_what_it_cannot_prove() {
+    let fixture = Fixture::create("reopen");
+    let index = SemanticIndex::open(&fixture.db_path()).expect("index");
+    let backend = ScriptedBackend::new();
+
+    let site = fixture.offset_of(TEST_FILE, "Runner _shared", 0);
+    let backend = backend.with_definition(
+        &fixture.uri(TEST_FILE),
+        fixture.last_character(TEST_FILE, site, site + "Runner".len()),
+        vec![
+            fixture.declaration("src/Core/Runner.Part1.cs", "Runner", 0),
+            fixture.declaration("src/Core/Runner.Part2.cs", "Runner", 0),
+        ],
+    );
+    lifecycle::reload_projects(
+        &backend,
+        &backend,
+        &fixture.root,
+        &[ResourceChange::new(
+            fixture.resource("src/Core/Core.csproj").id,
+            ChangeKind::Changed,
+            "src/Core/Core.csproj",
+        )
+        .with_language(None)],
+        &lifecycle::discover_projects_under(
+            index.connection(),
+            ProjectExecutionTrust::Trusted,
+            Some(&fixture.root),
+        )
+        .expect("projects"),
+    )
+    .expect("project load");
+    refresh(&fixture, &index, &backend, TEST_FILE).expect("refresh");
+
+    let context = context();
+    let owner = crate::semantic_index::SemanticOwner::new(
+        &context.context_key(),
+        fixture.resource(TEST_FILE).id,
+    );
+    let projects = lifecycle::discover_projects_under(
+        index.connection(),
+        ProjectExecutionTrust::Trusted,
+        Some(&fixture.root),
+    )
+    .expect("projects");
+    let config = projects.basis();
+    let capabilities = capability_report(&context, ProjectExecutionTrust::Trusted);
+    let inventory = lifecycle::inventory_fingerprint(index.connection()).expect("inventory");
+
+    // A reopen with everything proven: current, and nothing was
+    // launched to find that out.
+    let proven = crate::semantic_index::CurrentInputs::new(&context, &config, &capabilities)
+        .with_inventory(&inventory)
+        .with_environment_proven(true);
+    assert_eq!(
+        index.revalidate(&owner, &proven).expect("revalidate").state,
+        crate::semantic_index::SemanticState::Current,
+        "a whole proven basis is readable without a backend"
+    );
+
+    // The same publication, when the environment cannot be proven.
+    let unproven = crate::semantic_index::CurrentInputs::new(&context, &config, &capabilities)
+        .with_inventory(&inventory)
+        .with_environment_proven(false);
+    assert_ne!(
+        index
+            .revalidate(&owner, &unproven)
+            .expect("revalidate")
+            .state,
+        crate::semantic_index::SemanticState::Current,
+        "an unprovable environment is not restored as current"
+    );
+
+    // And granting or revoking trust is a configuration change like any
+    // other, so a publication cannot survive one.
+    let other_trust = lifecycle::discover_projects_under(
+        index.connection(),
+        ProjectExecutionTrust::Untrusted,
+        Some(&fixture.root),
+    )
+    .expect("projects")
+    .basis();
+    let retrusted =
+        crate::semantic_index::CurrentInputs::new(&context, &other_trust, &capabilities)
+            .with_inventory(&inventory)
+            .with_environment_proven(true);
+    assert_ne!(
+        index
+            .revalidate(&owner, &retrusted)
+            .expect("revalidate")
+            .state,
+        crate::semantic_index::SemanticState::Current,
+        "a publication made under one trust mode does not answer for another"
+    );
+}
+
+/// The environment says whether it can be proven, and the fixture's
+/// cannot.
+#[test]
+fn an_unpinned_package_graph_is_reported_unknown() {
+    let fixture = Fixture::create("assurance-reason");
+    let index = SemanticIndex::open(&fixture.db_path()).expect("index");
+    let install = super::CSharpInstall {
+        root: fixture.base.clone(),
+        executable: fixture.base.join("server"),
+        server_version: super::TESTED_SERVER_VERSION.to_owned(),
+        runtime_identifier: "osx-arm64".to_owned(),
+    };
+    let config = lifecycle::discover_projects_under(
+        index.connection(),
+        ProjectExecutionTrust::Trusted,
+        Some(&fixture.root),
+    )
+    .expect("projects");
+    let identity = lifecycle::environment_identity(&install, &config).expect("environment");
+
+    match &identity.assurance {
+        lifecycle::EnvironmentAssurance::Unknown { reason } => assert!(
+            reason.contains("packages.lock.json"),
+            "the reason names what would have proven it: {reason}"
+        ),
+        other => panic!("the fixture restores without a lockfile: {other:?}"),
+    }
+}
+
+// ---------------------------------------------------------------------
+// The capability matrix
+// ---------------------------------------------------------------------
+
+/// Every capability has a verdict, in both trust modes.
+///
+/// A capability with no entry is the failure this guards against: a
+/// caller reading the report cannot tell "we never considered it" from
+/// "it does not apply", and both read as absence.
+#[test]
+fn every_capability_is_declared_in_both_trust_modes() {
+    let context = context();
+    for trust in [
+        ProjectExecutionTrust::Untrusted,
+        ProjectExecutionTrust::Trusted,
+    ] {
+        let report = capability_report(&context, trust);
+        for capability in SemanticCapability::ALL {
+            assert!(
+                report.is_declared(capability),
+                "{capability:?} has no verdict under {trust}"
+            );
+        }
+    }
+}
+
+/// The matrix, as measured. Changing a verdict changes this test.
+///
+/// Written out rather than derived, because the point is that each one
+/// was established by a fixture and not by reading the server's
+/// provider list -- it advertises twenty-one and this tier wires up
+/// four.
+#[test]
+fn the_capability_matrix_is_what_was_measured() {
+    let context = context();
+    let trusted = capability_report(&context, ProjectExecutionTrust::Trusted);
+    for (capability, expected) in [
+        // Structure: the structural tier's, with or without a backend.
+        (SemanticCapability::ResourceDiscovery, Support::Supported),
+        (SemanticCapability::SyntaxStructure, Support::Supported),
+        (SemanticCapability::SymbolSpan, Support::Supported),
+        (SemanticCapability::ContainingScope, Support::Supported),
+        (SemanticCapability::ImportDeclaration, Support::Supported),
+        (SemanticCapability::ExportDeclaration, Support::Unsupported),
+        (
+            SemanticCapability::EmbeddedRegionMapping,
+            Support::Unsupported,
+        ),
+        (
+            SemanticCapability::OriginalSourceMapping,
+            Support::Unsupported,
+        ),
+        // Binding.
+        (SemanticCapability::SymbolDefinition, Support::Supported),
+        (SemanticCapability::ImportBinding, Support::Unsupported),
+        (SemanticCapability::AliasResolution, Support::Partial),
+        (SemanticCapability::ReexportResolution, Support::Unsupported),
+        (SemanticCapability::References, Support::Supported),
+        (SemanticCapability::CallsIntraFile, Support::Supported),
+        (SemanticCapability::CallsCrossFile, Support::Supported),
+        (
+            SemanticCapability::ExternalSymbolResolution,
+            Support::Supported,
+        ),
+        // Type and semantic.
+        (SemanticCapability::TypeResolution, Support::Partial),
+        (SemanticCapability::Inheritance, Support::Supported),
+        (SemanticCapability::Implements, Support::Supported),
+        (SemanticCapability::Overrides, Support::Supported),
+        (SemanticCapability::StaticDispatchTarget, Support::Supported),
+        (SemanticCapability::OverloadResolution, Support::Supported),
+        (SemanticCapability::ImplementationTarget, Support::Supported),
+    ] {
+        assert_eq!(
+            trusted.support(capability),
+            expected,
+            "{capability:?} was measured as {expected:?}"
+        );
+    }
+
+    // Untrusted: the structural half is unchanged, and every binding
+    // question is refused rather than answered with nothing.
+    let untrusted = capability_report(&context, ProjectExecutionTrust::Untrusted);
+    assert_eq!(
+        untrusted.support(SemanticCapability::SyntaxStructure),
+        Support::Supported
+    );
+    assert_eq!(
+        untrusted.support(SemanticCapability::SymbolDefinition),
+        Support::Partial
+    );
+    for capability in [
+        SemanticCapability::References,
+        SemanticCapability::CallsCrossFile,
+        SemanticCapability::Overrides,
+        SemanticCapability::ImplementationTarget,
+        SemanticCapability::OverloadResolution,
+        SemanticCapability::TypeResolution,
+    ] {
+        assert_eq!(
+            untrusted.support(capability),
+            Support::Unsupported,
+            "{capability:?} needs a loaded project"
+        );
+    }
+}

@@ -111,6 +111,11 @@ pub struct CSharpProjectConfig {
     pub owning_project: BTreeMap<ResourceId, String>,
     /// What the Workspace is allowed to load.
     pub trust: ProjectExecutionTrust,
+    /// The target frameworks each project *declares*, by project path
+    /// key. Empty when the project file does not write them literally.
+    ///
+    /// Read as text, not evaluated: see [`declared_target_frameworks`].
+    pub target_frameworks: BTreeMap<String, Vec<String>>,
 }
 
 impl CSharpProjectConfig {
@@ -123,6 +128,12 @@ impl CSharpProjectConfig {
     #[must_use]
     pub fn basis(&self) -> ConfigBasis {
         let mut basis = ConfigBasis::new().with("project_trust", self.trust.as_str());
+        // The declared frameworks, explicitly and not only inside the
+        // project file's content hash: a publication made under one
+        // effective world must not survive the list changing.
+        for (project, frameworks) in &self.target_frameworks {
+            basis = basis.with(format!("tfm:{project}"), frameworks.join(";"));
+        }
         for resource in self.project_files.iter().chain(&self.directory_config) {
             basis = basis.with(
                 format!("msbuild:{}", resource.path_key),
@@ -137,6 +148,86 @@ impl CSharpProjectConfig {
     pub const fn loads_projects(&self) -> bool {
         self.trust.may_load_projects()
     }
+
+    /// The projects that declare more than one target framework.
+    ///
+    /// Each of those is more than one semantic world, and the backend
+    /// answers from one of them; see [`MULTI_TARGET_COVERAGE`].
+    #[must_use]
+    pub fn multi_target_projects(&self) -> Vec<&str> {
+        self.target_frameworks
+            .iter()
+            .filter(|(_, frameworks)| frameworks.len() > 1)
+            .map(|(project, _)| project.as_str())
+            .collect()
+    }
+
+    /// Whether the Resource's project has more than one semantic world.
+    #[must_use]
+    pub fn is_multi_target(&self, resource: ResourceId) -> bool {
+        self.owning_project
+            .get(&resource)
+            .and_then(|project| self.target_frameworks.get(project))
+            .is_some_and(|frameworks| frameworks.len() > 1)
+    }
+}
+
+/// What this tier can say about a project that targets several
+/// frameworks.
+///
+/// Measured: the server loads such a project, announces one
+/// initialization for it like any other, and answers from **one**
+/// effective target framework. In the fixture, `Modern.Name` inside
+/// `#if NET10_0_OR_GREATER` resolves and `Legacy.Name` in the `#else`
+/// branch answers with nothing at all.
+///
+/// Two things follow, and the second is the one worth stating. The
+/// inactive branch is a *gap*, not a wrong answer -- so nothing here has
+/// to detect a collapse, because the backend never offers two worlds to
+/// collapse. And **which** framework answered is not observable at this
+/// boundary: no request reports it, and the only evidence is which
+/// branch resolved.
+///
+/// So the representation is the smallest truthful one. The declared
+/// framework list is a configuration input, so it is fingerprinted and a
+/// change to it invalidates. One `AnalysisContext` claims one world and
+/// never vouches for the other. And the coverage says PARTIAL, because
+/// a caller asking about the `netstandard2.0` branch of this file gets
+/// gaps and deserves to know why.
+pub const MULTI_TARGET_COVERAGE: &str = "one effective target framework is represented per project; which one the backend \
+     selected is not observable at this boundary, and declarations reachable only from \
+     another framework's branch stay unresolved rather than being merged in";
+
+/// The target frameworks a project file writes literally.
+///
+/// Text, not evaluation. `<TargetFramework>` and `<TargetFrameworks>`
+/// are read as written, and anything else -- a framework that comes
+/// from an imported props file, a property, or a condition -- yields
+/// nothing rather than a guess. That is the honest boundary: Brainprint
+/// fingerprints declared inputs and the backend decides semantics, and
+/// evaluating MSBuild in Rust to learn this would be a second, worse
+/// implementation of the thing that is already loaded.
+#[must_use]
+pub fn declared_target_frameworks(project_text: &str) -> Vec<String> {
+    for tag in ["TargetFrameworks", "TargetFramework"] {
+        let open = format!("<{tag}>");
+        let close = format!("</{tag}>");
+        if let Some(start) = project_text.find(&open)
+            && let Some(end) = project_text[start + open.len()..].find(&close)
+        {
+            let value = &project_text[start + open.len()..start + open.len() + end];
+            let found: Vec<String> = value
+                .split(';')
+                .map(str::trim)
+                .filter(|one| !one.is_empty() && !one.contains('$'))
+                .map(str::to_owned)
+                .collect();
+            if !found.is_empty() {
+                return found;
+            }
+        }
+    }
+    Vec::new()
 }
 
 /// Find the MSBuild files and project ownership the Workspace analyses
@@ -153,6 +244,19 @@ impl CSharpProjectConfig {
 pub fn discover_projects(
     connection: &Connection,
     trust: ProjectExecutionTrust,
+) -> Result<CSharpProjectConfig, LifecycleError> {
+    discover_projects_under(connection, trust, None)
+}
+
+/// The same, reading project files under `workspace_root` so their
+/// declared target frameworks can be recorded.
+///
+/// # Errors
+/// When the index cannot be read.
+pub fn discover_projects_under(
+    connection: &Connection,
+    trust: ProjectExecutionTrust,
+    workspace_root: Option<&Path>,
 ) -> Result<CSharpProjectConfig, LifecycleError> {
     let mut config = CSharpProjectConfig {
         trust,
@@ -180,6 +284,23 @@ pub fn discover_projects(
     for (resource, path_key) in csharp_sources(connection)? {
         if let Some(project) = nearest_project(&project_dirs, &path_key) {
             config.owning_project.insert(resource, project);
+        }
+    }
+
+    if let Some(root) = workspace_root {
+        for resource in &config.project_files {
+            if !resource.path_key.ends_with(".csproj") {
+                continue;
+            }
+            let Ok(text) = fs::read_to_string(root.join(&resource.path_rel)) else {
+                continue;
+            };
+            let frameworks = declared_target_frameworks(&text);
+            if !frameworks.is_empty() {
+                config
+                    .target_frameworks
+                    .insert(resource.path_key.clone(), frameworks);
+            }
         }
     }
     Ok(config)

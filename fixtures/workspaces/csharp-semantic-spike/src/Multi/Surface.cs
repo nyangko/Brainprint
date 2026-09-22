@@ -1,24 +1,27 @@
 namespace Multi;
 
-// One source file, two semantic worlds. `Which()` binds to a different
-// declaration under each target framework, so a backend that answers
-// from one of them is answering about one world -- and saying which one
-// is the whole multi-target question.
+// One source file, two semantic worlds. The declared type of `Chosen`
+// differs per target framework, so the binding a semantic tier can
+// anchor -- a field's declared type -- lands on a different declaration
+// under each one. A backend that answers from one framework resolves
+// one of these and says nothing about the other.
 public static class Surface
 {
 #if NET10_0_OR_GREATER
-    public static string Which() => Modern.Name;
+    private static readonly Modern Chosen = new Modern();
 #else
-    public static string Which() => Legacy.Name;
+    private static readonly Legacy Chosen = new Legacy();
 #endif
+
+    public static string Which() => Chosen.Name;
 }
 
-public static class Modern
+public sealed class Modern
 {
-    public const string Name = "net10.0";
+    public string Name => "net10.0";
 }
 
-public static class Legacy
+public sealed class Legacy
 {
-    public const string Name = "netstandard2.0";
+    public string Name => "netstandard2.0";
 }
