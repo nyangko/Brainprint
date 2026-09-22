@@ -138,6 +138,10 @@ macro_rules! closed_vocabulary {
     };
 }
 
+// Shared with the semantic contract (#19 task 1), which reports
+// capability support in the same closed-vocabulary style.
+pub(crate) use closed_vocabulary;
+
 closed_vocabulary!(Resolution {
     Resolved => "RESOLVED",
     Candidate => "CANDIDATE",
