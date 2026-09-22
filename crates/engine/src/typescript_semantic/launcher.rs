@@ -30,7 +30,7 @@ use std::{
     fmt, fs,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::Duration,
 };
 
@@ -254,6 +254,20 @@ pub struct TypeScriptLauncher {
     install: TypeScriptInstall,
     settings: TypeScriptSettings,
     handshake_timeout: Duration,
+    /// What the most recent successful handshake settled on.
+    ///
+    /// The adapter needs it -- reading a UTF-8 range as UTF-16 puts
+    /// every span at a plausible wrong offset -- and a caller that
+    /// drives the backend through the task 2 supervisor never sees the
+    /// host, only a lease. Recorded here rather than assumed there,
+    /// because "the server accepts UTF-8" is a measurement about a
+    /// running process and not a constant this build may hard-code.
+    ///
+    /// One slot for every context is right: they all talk to the same
+    /// executable with the same offer, so a second handshake that
+    /// settled differently would mean the binary changed underneath,
+    /// which the compatibility gate refuses first.
+    encoding: Mutex<Option<PositionEncodingChoice>>,
 }
 
 impl TypeScriptLauncher {
@@ -263,7 +277,18 @@ impl TypeScriptLauncher {
             install,
             settings: TypeScriptSettings,
             handshake_timeout: HANDSHAKE_TIMEOUT,
+            encoding: Mutex::new(None),
         }
+    }
+
+    /// The position encoding the last successful handshake settled on,
+    /// or `None` before anything has started.
+    #[must_use]
+    pub fn negotiated_encoding(&self) -> Option<PositionEncodingChoice> {
+        *self
+            .encoding
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     #[must_use]
@@ -334,14 +359,20 @@ impl TypeScriptLauncher {
         let client = Client::new(Box::new(stdout), Box::new(stdin), handler.clone());
 
         match self.handshake(&client, workspace_root) {
-            Ok((name, version, encoding)) => Ok(TypeScriptHost::new(
-                client,
-                Some(child),
-                name,
-                version,
-                encoding,
-                handler,
-            )),
+            Ok((name, version, encoding)) => {
+                *self
+                    .encoding
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(encoding);
+                Ok(TypeScriptHost::new(
+                    client,
+                    Some(child),
+                    name,
+                    version,
+                    encoding,
+                    handler,
+                ))
+            }
             Err(error) => {
                 // A handshake that failed leaves a process nobody owns.
                 client.close();

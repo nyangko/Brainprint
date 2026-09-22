@@ -1,6 +1,11 @@
 import { PublicModel } from "./public.js";
 import { Service, unwrap } from "@core/service";
 import type { Box } from "@core/types";
+import type { Id } from "./public.js";
+
+export function tag(id: Id): string {
+    return String(id);
+}
 
 export function consume(): string {
     const m = new PublicModel();

@@ -1,11 +1,17 @@
-//! Deriving Python `OVERRIDES` from proven inheritance.
+//! Deriving `OVERRIDES` from proven inheritance.
 //!
-//! #19 task 5 measured `textDocument/implementation` and
-//! `textDocument/prepareTypeHierarchy` both answering `MethodNotFound`,
-//! and the TSP `ClassType` carries no base list or MRO. So Pyright
-//! cannot be asked which member a method overrides, and the answer has
-//! to be derived -- from facts that are already proven, never from
-//! names.
+//! No measured backend answers "which member does this override".
+//! #19 task 5 measured Pyright returning `MethodNotFound` for both
+//! `textDocument/implementation` and `textDocument/prepareTypeHierarchy`;
+//! the TypeScript native LSP answers `implementation` but has no
+//! override request either. So in both languages the answer has to be
+//! derived -- from facts that are already proven, never from names.
+//!
+//! The derivation itself is language-neutral and lives here for both
+//! backends (#19 tasks 7 and 10). Only the syntax of an override
+//! *claim* differs, and each backend recognises its own: Python's
+//! `typing.override` decorator is at the bottom of this file, and
+//! TypeScript's `override` keyword is in its adapter.
 //!
 //! The derivation is:
 //!
@@ -32,6 +38,8 @@
 //! `class Multi(Base, Mixin)` where both define `run` -- Python's MRO
 //! picks the first base, and this refuses to, because the order is not
 //! in the evidence. The site is reported unproven rather than guessed.
+//! TypeScript has single inheritance, so the same-depth case cannot
+//! arise there at all; the bound costs it nothing.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
@@ -372,7 +380,8 @@ fn sql(error: crate::symbol::SymbolError) -> GraphError {
 // `typing.override`
 // ---------------------------------------------------------------------
 
-/// The decorator name a `@override` claim would be written as.
+/// The decorator name a Python `@override` claim would be written as.
+/// TypeScript writes a keyword instead; see its adapter.
 pub const OVERRIDE_DECORATOR: &str = "override";
 
 /// The modules that declare it.

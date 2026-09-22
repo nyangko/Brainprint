@@ -470,7 +470,7 @@ fn imports_aliases_and_reexports_resolve_to_their_declarations() {
             "a test file resolves the function under test",
             "tests/service.test.ts",
             "consume()",
-            "src/consumer.ts:4:16",
+            "src/consumer.ts:9:16",
         ),
     ];
     for (what, file, needle, expected) in cases {

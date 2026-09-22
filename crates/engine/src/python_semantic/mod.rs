@@ -43,13 +43,18 @@ pub mod adapter;
 pub mod host;
 pub mod launcher;
 pub mod lifecycle;
-pub mod overrides;
 pub mod protocol;
 
 /// The framing and coordinate mapping now live in [`crate::lsp`], shared
 /// with the TypeScript/JavaScript backend (#19 task 10). Re-exported so
 /// the paths this module already used keep meaning the same thing.
 pub use crate::lsp::{coordinates, jsonrpc};
+
+/// `OVERRIDES` derivation, shared with the TypeScript/JavaScript tier
+/// (#19 task 10). Both languages derive the relation the same way --
+/// from proven `EXTENDS` edges and declared members -- and only the
+/// syntax of an override *claim* differs, so only that differs there.
+pub use crate::semantic_overrides as overrides;
 
 use std::{
     collections::{BTreeMap, BTreeSet},
