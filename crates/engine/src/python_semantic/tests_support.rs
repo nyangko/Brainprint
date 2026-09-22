@@ -9,7 +9,7 @@
 use std::{
     collections::BTreeMap,
     env, fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process,
     sync::{
         Mutex,
@@ -34,20 +34,30 @@ use crate::{
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
-/// The same package #19 task 5 probed: a base class, an override, a
-/// relative import, a stdlib import, a same-name ambiguity and
-/// non-ASCII source.
-pub const BASE_PY: &str = "class Base:\n    def run(self, value: int) -> str:\n        ...\n";
-pub const IMPL_PY: &str = "import json\n\nfrom .base import Base\n\n\nclass Impl(Base):\n    def run(self, value: int) -> str:\n        return json.dumps(value)\n\n\ndef call(x: Base):\n    return x.run(1)\n";
-pub const UNICODE_PY: &str = "from .base import Base\n\n메서지 = \"한글\"\n\n\ndef 호출(x: Base) -> str:\n    return x.run(2)\n";
-/// A second `run`, so a name lookup would have two answers and a span
-/// lookup has one.
-pub const TWIN_PY: &str =
-    "class Other:\n    def run(self, value: int) -> str:\n        return \"other\"\n";
-/// Import shapes: an intra-Workspace absolute module, a relative one, a
-/// dependency, and a relative target that leaves the package.
-pub const IMPORTS_PY: &str =
-    "import pkg.base\nfrom .base import Base\nimport requests\nfrom ..outside import thing\n";
+/// The committed Python fixture both the scripted and the real-backend
+/// tests read.
+#[must_use]
+pub fn committed_fixture() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("fixtures")
+        .join("workspaces")
+        .join("python-semantic-spike")
+}
+
+pub fn copy_tree(from: &Path, to: &Path) {
+    fs::create_dir_all(to).expect("destination");
+    for entry in fs::read_dir(from).expect("read fixture") {
+        let entry = entry.expect("entry");
+        let target = to.join(entry.file_name());
+        if entry.file_type().expect("file type").is_dir() {
+            copy_tree(&entry.path(), &target);
+        } else {
+            fs::copy(entry.path(), target).expect("copy");
+        }
+    }
+}
 
 /// A toolchain identity fixed by hand, so a context key is stable.
 #[must_use]
@@ -77,6 +87,11 @@ pub struct Fixture {
 }
 
 impl Fixture {
+    /// Copy the committed Python fixture and index it.
+    ///
+    /// The same tree the real-backend test drives, so a scripted answer
+    /// and a real one are answers about identical source. Copied rather
+    /// than used in place, because indexing writes.
     pub fn create(label: &str) -> Self {
         let sequence = NEXT.fetch_add(1, Ordering::Relaxed);
         let base = env::temp_dir().join(format!(
@@ -85,14 +100,8 @@ impl Fixture {
         ));
         let _ = fs::remove_dir_all(&base);
         let root = base.join("workspace");
-        fs::create_dir_all(root.join("pkg")).expect("pkg");
+        copy_tree(&committed_fixture(), &root);
         let fixture = Self { base, root };
-        fixture.write("pkg/__init__.py", "");
-        fixture.write("pkg/base.py", BASE_PY);
-        fixture.write("pkg/impl.py", IMPL_PY);
-        fixture.write("pkg/unicode_case.py", UNICODE_PY);
-        fixture.write("pkg/twin.py", TWIN_PY);
-        fixture.write("pkg/imports.py", IMPORTS_PY);
         BaselineScan::open(&fixture.db_path())
             .expect("index.db")
             .run_initial_scan(
@@ -102,10 +111,6 @@ impl Fixture {
             )
             .expect("baseline scan");
         fixture
-    }
-
-    pub fn write(&self, rel: &str, contents: &str) {
-        fs::write(self.root.join(rel), contents).expect("fixture file");
     }
 
     #[must_use]

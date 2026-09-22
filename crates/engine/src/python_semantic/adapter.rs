@@ -21,7 +21,7 @@
 //! evidence anchors to an Occurrence that already exists.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     error::Error,
     fmt, fs,
     path::{Path, PathBuf},
@@ -686,6 +686,10 @@ const DEFERRED_TO_TASK_SEVEN: &str = "python override/inheritance enrichment is 
 pub struct ResourceEvidence {
     pub evidence: Vec<SemanticEvidence>,
     pub deferred: Vec<DeferredGap>,
+    /// `(subclass, base)` pairs this pass established, so override
+    /// derivation can see a base that is not in the canonical graph
+    /// yet -- the merge for this refresh has not run.
+    pub resolved_bases: Vec<(SymbolId, SymbolId)>,
 }
 
 /// One Resource's inputs for a semantic pass.
@@ -712,14 +716,11 @@ pub fn resolve_resource(
     let mut produced = ResourceEvidence::default();
 
     for gap in request.gaps {
-        let IntendedRelation::Known(kind) = gap.intended else {
+        let Some(resolvable) = ResolvableKind::of(gap.intended) else {
             produced.deferred.push(deferred(gap));
             continue;
         };
-        let Some(capability_kind) = Task6Kind::of(kind) else {
-            produced.deferred.push(deferred(gap));
-            continue;
-        };
+        let kind = resolvable.relation_kind();
 
         let outcome = resolve_one(
             batch,
@@ -727,13 +728,25 @@ pub fn resolve_resource(
             &map,
             &owner_uri,
             gap,
-            capability_kind,
+            resolvable,
             request.owner_text,
         )?;
 
+        if resolvable == ResolvableKind::Extends
+            && let SemanticOutcome::Resolved {
+                target: GraphEndpoint::Symbol(base),
+            } = &outcome
+            && let Some(subclass) =
+                enclosing_class(normalizer.connection, request.owner.id, gap.occurrence)?
+        {
+            // Remembered so override derivation in this same pass can
+            // use a base this pass has only just established.
+            produced.resolved_bases.push((subclass, *base));
+        }
+
         produced.evidence.push(SemanticEvidence {
             context_key: request.context_key.to_owned(),
-            capability: capability_kind.capability(&outcome),
+            capability: resolvable.capability(&outcome),
             relation_kind: Some(kind),
             basis: EvidenceBasis {
                 owner_resource: request.owner.id,
@@ -750,10 +763,47 @@ pub fn resolve_resource(
             )),
             outcome,
             support: Support::Supported,
-            dispatch: capability_kind.dispatch(gap),
+            dispatch: resolvable.dispatch(gap),
         });
     }
     Ok(produced)
+}
+
+/// The innermost class declaration whose source span contains `site`.
+///
+/// A base-list entry has no containing Symbol -- it sits in the class
+/// header, outside every member -- so the subclass is found by span
+/// nesting, which is exact rather than a lookup by name. Identical
+/// spans would be ambiguous and resolve to nothing.
+fn enclosing_class(
+    connection: &Connection,
+    owner: ResourceId,
+    site: OccurrenceRef,
+) -> Result<Option<SymbolId>, BatchError> {
+    let symbols = crate::symbol::list_for_resource(connection, owner)
+        .map_err(|error| BatchError::Protocol(error.to_string()))?;
+    let mut best: Option<&crate::symbol::Symbol> = None;
+    for symbol in &symbols {
+        if symbol.kind != crate::symbol::SymbolKind::Class
+            || symbol.span.start_byte > site.start_byte
+            || symbol.span.end_byte < site.end_byte
+        {
+            continue;
+        }
+        let width = symbol.span.end_byte - symbol.span.start_byte;
+        match best {
+            Some(current) => {
+                let held = current.span.end_byte - current.span.start_byte;
+                if width < held {
+                    best = Some(symbol);
+                } else if width == held && current.id != symbol.id {
+                    return Ok(None);
+                }
+            }
+            None => best = Some(symbol),
+        }
+    }
+    Ok(best.map(|symbol| symbol.id))
 }
 
 fn deferred(gap: &PersistedUnresolved) -> DeferredGap {
@@ -764,23 +814,50 @@ fn deferred(gap: &PersistedUnresolved) -> DeferredGap {
     }
 }
 
-/// The relation kinds task 6 answers for.
+/// The gap kinds the adapter resolves from a source occurrence.
+///
+/// Each one is a site I3 already recorded and left open, so the answer
+/// has somewhere exact to anchor. `IMPLEMENTS` is absent because Python
+/// has no implements clause, and `OVERRIDES` is absent because it is
+/// not written at a site at all -- it is derived (see
+/// [`super::overrides`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Task6Kind {
+enum ResolvableKind {
     Imports,
     Calls,
     References,
     UsesType,
+    /// A base-list entry. In Python a base list is always inheritance:
+    /// the language has no implements clause, and `class X(P)` against
+    /// a Protocol is still ordinary subclassing.
+    Extends,
 }
 
-impl Task6Kind {
-    const fn of(kind: RelationKind) -> Option<Self> {
-        match kind {
-            RelationKind::Imports => Some(Self::Imports),
-            RelationKind::Calls => Some(Self::Calls),
-            RelationKind::References => Some(Self::References),
-            RelationKind::UsesType => Some(Self::UsesType),
+impl ResolvableKind {
+    const fn of(intended: IntendedRelation) -> Option<Self> {
+        match intended {
+            IntendedRelation::Known(RelationKind::Imports) => Some(Self::Imports),
+            IntendedRelation::Known(RelationKind::Calls) => Some(Self::Calls),
+            IntendedRelation::Known(RelationKind::References) => Some(Self::References),
+            IntendedRelation::Known(RelationKind::UsesType) => Some(Self::UsesType),
+            // A base whose class/interface distinction structural
+            // resolution could not make is still a base, because Python
+            // has only one kind of base.
+            IntendedRelation::Known(RelationKind::Extends) | IntendedRelation::Inheritance => {
+                Some(Self::Extends)
+            }
             _ => None,
+        }
+    }
+
+    /// The canonical relation this gap becomes once it resolves.
+    const fn relation_kind(self) -> RelationKind {
+        match self {
+            Self::Imports => RelationKind::Imports,
+            Self::Calls => RelationKind::Calls,
+            Self::References => RelationKind::References,
+            Self::UsesType => RelationKind::UsesType,
+            Self::Extends => RelationKind::Extends,
         }
     }
 
@@ -800,6 +877,7 @@ impl Task6Kind {
             Self::Calls => SemanticCapability::CallsIntraFile,
             Self::References => SemanticCapability::References,
             Self::UsesType => SemanticCapability::TypeResolution,
+            Self::Extends => SemanticCapability::Inheritance,
         }
     }
 
@@ -821,14 +899,14 @@ fn resolve_one(
     map: &LineMap<'_>,
     owner_uri: &str,
     gap: &PersistedUnresolved,
-    kind: Task6Kind,
+    kind: ResolvableKind,
     owner_text: &str,
 ) -> Result<SemanticOutcome, BatchError> {
     let span = (gap.occurrence.start_byte, gap.occurrence.end_byte);
     let written = owner_text.get(span.0..span.1).unwrap_or_default();
 
     let targets = match kind {
-        Task6Kind::UsesType => {
+        ResolvableKind::UsesType => {
             let Ok(range) = map.range(span.0, span.1) else {
                 return Ok(unconvertible());
             };
@@ -837,7 +915,7 @@ fn resolve_one(
         // A module path is resolved as a module. A bare name is not:
         // `import json` and `from pkg import json` write the same text,
         // and only the definition answer tells them apart.
-        Task6Kind::Imports if ModuleDescriptor::parse_module_site(written).is_some() => {
+        ResolvableKind::Imports if ModuleDescriptor::parse_module_site(written).is_some() => {
             let module = ModuleDescriptor::parse_module_site(written).expect("just checked");
             match batch.call(&PythonRequest::ResolveImport {
                 source_uri: owner_uri.to_owned(),
@@ -861,7 +939,10 @@ fn resolve_one(
                 other => return Err(BatchError::Protocol(format!("{other:?}"))),
             }
         }
-        Task6Kind::Imports | Task6Kind::Calls | Task6Kind::References => {
+        ResolvableKind::Imports
+        | ResolvableKind::Calls
+        | ResolvableKind::References
+        | ResolvableKind::Extends => {
             // The *last* character of the span. I3 records a call site
             // at the whole callee, so asking at the start of `x.run`
             // answers about the receiver `x` -- a real, wrong target.
@@ -1062,6 +1143,49 @@ pub fn normalize_incoming_calls(
         }
     }
     evidence
+}
+
+/// Which members of `owner` carry a decorator that really is
+/// `typing.override`.
+///
+/// The decorator is found syntactically and then *resolved*: the name
+/// has to land in `typing` or `typing_extensions`, so a local function
+/// called `override` does not count. It is validation evidence only --
+/// it never creates an edge, and a claim whose ancestor member cannot
+/// be proven is reported as an honest gap instead.
+pub fn declared_overrides(
+    batch: &Batch<'_>,
+    normalizer: &mut Normalizer<'_>,
+    owner_uri: &str,
+    owner_text: &str,
+    symbols: &[crate::symbol::Symbol],
+) -> Result<BTreeSet<SymbolId>, BatchError> {
+    let map = LineMap::new(owner_text);
+    let mut declared = BTreeSet::new();
+    for site in super::overrides::override_decorator_sites(owner_text, symbols) {
+        let Ok(position) = map.last_character_position(site.start_byte, site.end_byte) else {
+            continue;
+        };
+        let PythonResponse::Locations(locations) = batch.call(&PythonRequest::Definition {
+            uri: owner_uri.to_owned(),
+            position,
+        })?
+        else {
+            continue;
+        };
+        for location in &locations {
+            if let Target::Endpoint(GraphEndpoint::External(entity)) =
+                normalizer.target_for(location, None)?
+                && entity
+                    .module_path
+                    .as_deref()
+                    .is_some_and(|module| super::overrides::OVERRIDE_MODULES.contains(&module))
+            {
+                declared.insert(site.member);
+            }
+        }
+    }
+    Ok(declared)
 }
 
 /// Read the import roots the backend uses, for external identity.

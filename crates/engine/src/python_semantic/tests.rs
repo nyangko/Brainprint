@@ -870,20 +870,57 @@ fn a_non_ascii_source_resolves_at_the_right_token() {
 
     // The position asked about is a UTF-16 offset, and it is not the
     // byte offset -- which on this line would be a different token.
-    let asked = backend
+    let line_start = text[..call_site].rfind('\n').map_or(0, |index| index + 1);
+    let expected_line = u32::try_from(text[..call_site].matches('\n').count()).expect("fits");
+    let expected_character = u32::try_from(
+        text[line_start..call_site + "x.run".len() - 1]
+            .encode_utf16()
+            .count(),
+    )
+    .expect("fits");
+    let asked: Vec<Position> = backend
         .calls()
         .into_iter()
-        .find_map(|request| match request {
+        .filter_map(|request| match request {
             PythonRequest::Definition { position, .. } => Some(position),
             _ => None,
         })
-        .expect("a definition was asked");
-    let line_start = text[..call_site].rfind('\n').map_or(0, |index| index + 1);
-    assert_eq!(
-        usize::try_from(asked.character).expect("fits"),
-        text[line_start..call_site + "x.run".len() - 1]
-            .encode_utf16()
-            .count()
+        .collect();
+    assert!(
+        asked.contains(&Position::new(expected_line, expected_character)),
+        "asked {asked:?}, wanted the UTF-16 offset {expected_character} on line {expected_line}"
+    );
+    // And on a line that actually has non-ASCII before the token --
+    // `return 변수 + str(value)` -- the two conventions disagree, so
+    // the asked offset proves which one reached the backend.
+    let store = GraphStore::open(&fixture.db_path()).expect("index.db");
+    let after_hangul = list_occurrences_for_resource(
+        store.connection(),
+        fixture.resource("pkg/unicode_case.py").id,
+    )
+    .expect("occurrences")
+    .into_iter()
+    .find(|occurrence| {
+        occurrence.kind == OccurrenceKind::CallSite
+            && text[occurrence.span.start_byte..occurrence.span.end_byte] == *"str"
+    })
+    .expect("the str(...) call after the Hangul");
+    let site_line_start = text[..after_hangul.span.start_byte]
+        .rfind('\n')
+        .map_or(0, |index| index + 1);
+    let site_line =
+        u32::try_from(text[..after_hangul.span.start_byte].matches('\n').count()).expect("fits");
+    let last = after_hangul.span.end_byte - 1;
+    let utf16 = u32::try_from(text[site_line_start..last].encode_utf16().count()).expect("fits");
+    let bytes = u32::try_from(last - site_line_start).expect("fits");
+    assert_ne!(utf16, bytes, "this line discriminates the conventions");
+    assert!(
+        asked.contains(&Position::new(site_line, utf16)),
+        "asked {asked:?}, wanted UTF-16 {utf16} on line {site_line}"
+    );
+    assert!(
+        !asked.contains(&Position::new(site_line, bytes)),
+        "a byte offset reached the backend"
     );
 }
 
@@ -916,13 +953,26 @@ fn the_capability_report_states_what_this_task_implements() {
     );
     assert_eq!(EXPECTED_TYPE_SUPPORT, Support::Partial);
 
-    // Task 5 measured both of these answering MethodNotFound, so they
-    // have to be derived -- that is task 7, not a claim made here.
+    // Derived from proven inheritance, and partial for reasons the
+    // constants name: an unanchorable qualified base, decorator forms
+    // the Symbol model does not distinguish, and same-depth ancestors
+    // whose base-list order the graph does not record.
+    assert_eq!(
+        report.support(SemanticCapability::Inheritance),
+        Support::Partial
+    );
+    assert_eq!(
+        report.support(SemanticCapability::Overrides),
+        Support::Partial
+    );
+    assert_eq!(INHERITANCE_SUPPORT, Support::Partial);
+    assert_eq!(OVERRIDES_SUPPORT, Support::Partial);
+
+    // Python has no implements clause, and matching members is duck
+    // typing rather than evidence.
     for unsupported in [
         SemanticCapability::Implements,
-        SemanticCapability::Overrides,
         SemanticCapability::ImplementationTarget,
-        SemanticCapability::Inheritance,
     ] {
         assert_eq!(
             report.support(unsupported),
@@ -933,42 +983,64 @@ fn the_capability_report_states_what_this_task_implements() {
 }
 
 #[test]
-fn inheritance_and_override_gaps_are_left_for_task_seven() {
+fn a_base_list_gap_resolves_and_an_unwritable_kind_is_deferred() {
     let fixture = Fixture::create("deferred");
     let text = fixture.text("pkg/impl.py");
     let base_site = text.rfind("Base").expect("a Base type site");
-    let overrides = PersistedUnresolved {
-        occurrence: OccurrenceRef {
-            kind: OccurrenceKind::TypeSite,
-            start_byte: base_site,
-            end_byte: base_site + 4,
-        },
-        intended: IntendedRelation::Known(RelationKind::Overrides),
-        lookup_name: "run".to_owned(),
+    let site = OccurrenceRef {
+        kind: OccurrenceKind::TypeSite,
+        start_byte: base_site,
+        end_byte: base_site + 4,
+    };
+    let gap = |intended| PersistedUnresolved {
+        occurrence: site,
+        intended,
+        lookup_name: "Base".to_owned(),
         module_hint: None,
-        reason: UnresolvedReason::OverrideTargetRequiresSemantics,
+        reason: UnresolvedReason::TypeSemanticsRequired,
         candidate_truncated: false,
         candidates: Vec::new(),
         resolution_context_key: None,
     };
-    let inheritance = PersistedUnresolved {
-        intended: IntendedRelation::Inheritance,
-        ..overrides.clone()
-    };
 
+    // A base list is inheritance in Python whichever way I3 labelled
+    // it: the language has no implements clause.
+    for intended in [
+        IntendedRelation::Known(RelationKind::Extends),
+        IntendedRelation::Inheritance,
+    ] {
+        let uri = fixture.uri("pkg/impl.py");
+        let backend = impl_backend(&fixture).with_definition(
+            &uri,
+            last_character(&fixture, "pkg/impl.py", "Base", 2),
+            vec![fixture.location("pkg/base.py", "Base", 0)],
+        );
+        let produced = resolve(&fixture, &backend, "pkg/impl.py", &[gap(intended)]);
+        let resolved = produced
+            .evidence
+            .iter()
+            .find(|item| item.occurrence == Some(site))
+            .expect("the base site was answered");
+        assert_eq!(resolved.relation_kind, Some(RelationKind::Extends));
+        assert_eq!(resolved.capability, SemanticCapability::Inheritance);
+        assert!(produced.deferred.is_empty());
+    }
+
+    // A relation nobody writes at a site has nowhere to anchor as a
+    // gap, and is answered by derivation instead.
     let produced = resolve(
         &fixture,
         &impl_backend(&fixture),
         "pkg/impl.py",
-        &[overrides, inheritance],
+        &[gap(IntendedRelation::Known(RelationKind::Overrides))],
     );
-    assert_eq!(produced.deferred.len(), 2);
+    assert_eq!(produced.deferred.len(), 1);
     assert!(
         produced
             .evidence
             .iter()
             .all(|item| item.relation_kind != Some(RelationKind::Overrides)),
-        "no OVERRIDES is claimed from a backend that cannot answer it"
+        "no OVERRIDES comes from a gap"
     );
 }
 
@@ -1343,4 +1415,522 @@ fn config_basis_follows_the_config_file_and_the_settings() {
         Some(&config_resource),
     );
     assert_eq!(with_file.fingerprint(), with_interpreter.fingerprint());
+}
+
+// ---------------------------------------------------------------------
+// Inheritance and override derivation (#19 task 7)
+// ---------------------------------------------------------------------
+
+/// The Symbol with this qualified name, in this file.
+fn symbol(fixture: &Fixture, rel: &str, qualified_name: &str) -> brainprint_core::SymbolId {
+    crate::symbol::SymbolStore::open(&fixture.db_path())
+        .expect("index.db")
+        .list_for_resource(fixture.resource(rel).id)
+        .expect("symbols")
+        .into_iter()
+        .find(|symbol| symbol.qualified_name == qualified_name)
+        .unwrap_or_else(|| panic!("{qualified_name} is indexed in {rel}"))
+        .id
+}
+
+/// Every OVERRIDES edge leaving a declaration.
+fn overrides_of(fixture: &Fixture, from: brainprint_core::SymbolId) -> Vec<GraphEndpoint> {
+    RelationIndex::open(&fixture.db_path())
+        .expect("index.db")
+        .outgoing(&GraphEndpoint::Symbol(from), &[RelationKind::Overrides])
+        .expect("outgoing")
+        .confirmed
+        .into_iter()
+        .map(|relation| relation.target)
+        .collect()
+}
+
+#[test]
+fn a_subclass_method_overrides_the_ancestor_member_its_inheritance_proves() {
+    let fixture = Fixture::create("override");
+    let outcome = refresh(&fixture, &impl_backend(&fixture), "pkg/impl.py").expect("published");
+
+    let impl_run = symbol(&fixture, "pkg/impl.py", "Impl.run");
+    let base_run = symbol(&fixture, "pkg/base.py", "Base.run");
+    assert_eq!(
+        overrides_of(&fixture, impl_run),
+        vec![GraphEndpoint::Symbol(base_run)]
+    );
+
+    // Anchored on the overriding declaration's own name token, so a
+    // caller gets the exact current source and not a line number.
+    let text = fixture.text("pkg/impl.py");
+    let evidence = outcome
+        .report
+        .iter()
+        .find(|line| line.starts_with("Overrides"))
+        .expect("the derivation is reported");
+    let start = text.find("    def run").expect("the declaration") + 8;
+    assert!(
+        evidence.contains(&format!("@{start}..{}", start + 3)),
+        "unexpected anchor: {evidence}"
+    );
+    assert_eq!(&text[start..start + 3], "run");
+
+    // The ancestor's Resource is part of the proof, so it is part of
+    // the basis: `base.py` moving must make this publication stale.
+    assert!(
+        outcome
+            .publication
+            .basis
+            .sources
+            .contains_key(&fixture.resource("pkg/base.py").id),
+        "the ancestor declaration is a dependency of the derived edge"
+    );
+}
+
+#[test]
+fn an_unrelated_method_of_the_same_name_never_becomes_an_override() {
+    let fixture = Fixture::create("nottrap");
+    for rel in ["pkg/impl.py", "pkg/twin.py", "pkg/inherit.py"] {
+        refresh(&fixture, &impl_backend(&fixture), rel).expect("published");
+    }
+    // Three classes declare `run` and only one of them inherits it.
+    for (rel, name) in [
+        ("pkg/twin.py", "Other.run"),
+        ("pkg/inherit.py", "Unrelated.run"),
+        ("pkg/inherit.py", "Mixin.run"),
+    ] {
+        assert!(
+            overrides_of(&fixture, symbol(&fixture, rel, name)).is_empty(),
+            "{name} overrides nothing it is related to"
+        );
+    }
+    assert_eq!(
+        overrides_of(&fixture, symbol(&fixture, "pkg/impl.py", "Impl.run")).len(),
+        1,
+        "the one that does inherit still resolves"
+    );
+}
+
+#[test]
+fn multiple_inheritance_resolves_a_unique_member_and_refuses_an_ambiguous_one() {
+    let fixture = Fixture::create("mro");
+    let outcome = refresh(&fixture, &impl_backend(&fixture), "pkg/inherit.py").expect("published");
+
+    // `OnlyOne(Base, Mixin).only_mixin`: only Mixin declares it, so
+    // the base-list order never comes into it.
+    assert_eq!(
+        overrides_of(
+            &fixture,
+            symbol(&fixture, "pkg/inherit.py", "OnlyOne.only_mixin")
+        ),
+        vec![GraphEndpoint::Symbol(symbol(
+            &fixture,
+            "pkg/inherit.py",
+            "Mixin.only_mixin"
+        ))]
+    );
+
+    // `Multi(Base, Mixin).run`: both declare it. Python's MRO picks
+    // the first base; a canonical EXTENDS edge is set membership and
+    // carries no order, so nothing here chooses.
+    let multi_run = symbol(&fixture, "pkg/inherit.py", "Multi.run");
+    assert!(overrides_of(&fixture, multi_run).is_empty());
+    let ambiguous = outcome
+        .unproven_overrides
+        .iter()
+        .find(|unproven| unproven.method == multi_run)
+        .expect("the ambiguity is reported, not silently dropped");
+    assert_eq!(
+        ambiguous.reason,
+        UnprovenReason::AmbiguousAncestors { candidates: 2 }
+    );
+}
+
+#[test]
+fn an_external_base_makes_a_missing_member_opaque_rather_than_negative() {
+    let fixture = Fixture::create("opaque");
+    let outcome = refresh(&fixture, &impl_backend(&fixture), "pkg/shapes.py").expect("published");
+
+    // `Runner(Protocol)`: the base is outside the Workspace and is not
+    // indexed, so "nothing declares run" would be a claim the evidence
+    // does not support.
+    let runner_run = symbol(&fixture, "pkg/shapes.py", "Runner.run");
+    assert!(overrides_of(&fixture, runner_run).is_empty());
+    assert!(
+        outcome
+            .unproven_overrides
+            .iter()
+            .any(|unproven| unproven.method == runner_run
+                && unproven.reason == UnprovenReason::OpaqueAncestor)
+    );
+}
+
+#[test]
+fn matching_members_never_infer_protocol_conformance() {
+    let fixture = Fixture::create("protocol");
+    for rel in ["pkg/shapes.py", "pkg/impl.py"] {
+        refresh(&fixture, &impl_backend(&fixture), rel).expect("published");
+    }
+    // `DuckTyped` has exactly `Runner`'s member shape and says nothing
+    // about it. Duck typing is not evidence.
+    let relations = RelationIndex::open(&fixture.db_path()).expect("index.db");
+    let duck = symbol(&fixture, "pkg/shapes.py", "DuckTyped");
+    assert!(
+        relations
+            .outgoing(&GraphEndpoint::Symbol(duck), &[RelationKind::Implements])
+            .expect("outgoing")
+            .confirmed
+            .is_empty()
+    );
+    assert!(overrides_of(&fixture, symbol(&fixture, "pkg/shapes.py", "DuckTyped.run")).is_empty());
+    assert_eq!(
+        count(&fixture, "relation WHERE kind = 'IMPLEMENTS'"),
+        0,
+        "no IMPLEMENTS is manufactured anywhere"
+    );
+    assert_eq!(
+        capability_report(&context()).support(SemanticCapability::Implements),
+        Support::Unsupported
+    );
+}
+
+#[test]
+fn an_abstract_base_gives_its_concrete_members_overrides() {
+    let fixture = Fixture::create("abstract");
+    refresh(&fixture, &impl_backend(&fixture), "pkg/shapes.py").expect("published");
+
+    // Including the decorated forms. Python writes classmethod,
+    // staticmethod and property as decorators and I3 records all three
+    // as METHOD, which is why the capability is PARTIAL -- the kinds
+    // are not distinguished, so a mismatch between them is not caught.
+    for member in ["compute", "build", "helper", "label"] {
+        assert_eq!(
+            overrides_of(
+                &fixture,
+                symbol(&fixture, "pkg/shapes.py", &format!("Concrete.{member}"))
+            ),
+            vec![GraphEndpoint::Symbol(symbol(
+                &fixture,
+                "pkg/shapes.py",
+                &format!("Abstract.{member}")
+            ))],
+            "Concrete.{member}"
+        );
+    }
+}
+
+#[test]
+fn a_base_written_as_an_attribute_expression_has_nothing_to_anchor() {
+    let fixture = Fixture::create("qualified");
+    let outcome = refresh(&fixture, &impl_backend(&fixture), "pkg/inherit.py").expect("published");
+
+    // `class Qualified(base.Base)`. I3's type extraction records an
+    // Occurrence only for a plain identifier, so an attribute base has
+    // no current source site -- and task 4 refuses an unanchored fact
+    // rather than inventing one. The limitation is why Inheritance is
+    // reported PARTIAL.
+    let text = fixture.text("pkg/inherit.py");
+    let qualified = text.find("base.Base").expect("the qualified base");
+    let store = GraphStore::open(&fixture.db_path()).expect("index.db");
+    assert!(
+        !list_occurrences_for_resource(store.connection(), fixture.resource("pkg/inherit.py").id)
+            .expect("occurrences")
+            .iter()
+            .any(|occurrence| occurrence.span.start_byte >= qualified
+                && occurrence.span.end_byte <= qualified + "base.Base".len()),
+        "I3 records no Occurrence for an attribute-expression base"
+    );
+    assert!(
+        overrides_of(
+            &fixture,
+            symbol(&fixture, "pkg/inherit.py", "Qualified.run")
+        )
+        .is_empty()
+    );
+    assert!(
+        outcome
+            .unproven_overrides
+            .iter()
+            .all(|unproven| unproven.method != symbol(&fixture, "pkg/inherit.py", "Qualified.run")),
+        "a class with no proven base is not an unproven override, it is not an override"
+    );
+    assert_eq!(INHERITANCE_SUPPORT, Support::Partial);
+}
+
+#[test]
+fn a_declared_override_with_no_provable_target_stays_an_honest_gap() {
+    let fixture = Fixture::create("declared");
+    let uri = fixture.uri("pkg/inherit.py");
+    let text = fixture.text("pkg/inherit.py");
+
+    // Resolve every `@override` the way the real backend does: into
+    // typing's stub.
+    let mut backend = impl_backend(&fixture).with_search_paths(vec![protocol::path_to_uri(
+        std::path::Path::new("/typeshed/stdlib"),
+    )]);
+    let mut from = 0;
+    while let Some(at) = text[from..].find("@override") {
+        let site = from + at + 1;
+        let line_start = text[..site].rfind('\n').map_or(0, |index| index + 1);
+        let line = u32::try_from(text[..site].matches('\n').count()).expect("fits");
+        let character = u32::try_from(
+            text[line_start..site + "override".len() - 1]
+                .chars()
+                .count(),
+        )
+        .expect("fits");
+        backend = backend.with_definition(
+            &uri,
+            Position::new(line, character),
+            vec![Location {
+                uri: protocol::path_to_uri(std::path::Path::new("/typeshed/stdlib/typing.pyi")),
+                range: Range::new(Position::new(100, 4), Position::new(100, 12)),
+            }],
+        );
+        from = site;
+    }
+
+    let outcome = refresh(&fixture, &backend, "pkg/inherit.py").expect("published");
+
+    // `Declared(Base).run` claims an override and proves one.
+    assert_eq!(
+        overrides_of(&fixture, symbol(&fixture, "pkg/inherit.py", "Declared.run")).len(),
+        1
+    );
+    // `Orphan.run` claims one and has no base at all. The claim does
+    // not create the edge; it makes the silence worth reporting.
+    let orphan = symbol(&fixture, "pkg/inherit.py", "Orphan.run");
+    assert!(overrides_of(&fixture, orphan).is_empty());
+    assert!(
+        outcome
+            .unproven_overrides
+            .iter()
+            .any(|unproven| unproven.method == orphan
+                && unproven.reason == UnprovenReason::NoAncestorMember),
+        "unproven: {:?}",
+        outcome.unproven_overrides
+    );
+}
+
+#[test]
+fn a_call_site_keeps_its_own_relation_kind_and_is_not_also_a_reference() {
+    let fixture = Fixture::create("kinds");
+    let produced = resolve(&fixture, &impl_backend(&fixture), "pkg/impl.py", &[]);
+    let text = fixture.text("pkg/impl.py");
+    let call_site = text.find("x.run").expect("the call site");
+
+    let at_call: Vec<&SemanticEvidence> = produced
+        .evidence
+        .iter()
+        .filter(|item| {
+            item.occurrence
+                .is_some_and(|site| site.start_byte == call_site)
+        })
+        .collect();
+    assert_eq!(at_call.len(), 1, "one site, one relation");
+    assert_eq!(at_call[0].relation_kind, Some(RelationKind::Calls));
+    assert!(
+        produced
+            .evidence
+            .iter()
+            .filter(|item| item.relation_kind == Some(RelationKind::References))
+            .all(|item| item
+                .occurrence
+                .is_some_and(|site| site.kind == OccurrenceKind::ReferenceSite)),
+        "REFERENCES only ever comes from a reference site"
+    );
+}
+
+#[test]
+fn a_derived_override_does_not_outlive_the_ancestor_that_proved_it() {
+    let fixture = Fixture::create("dependency");
+    let published = refresh(&fixture, &impl_backend(&fixture), "pkg/impl.py").expect("published");
+    let impl_run = symbol(&fixture, "pkg/impl.py", "Impl.run");
+    assert_eq!(overrides_of(&fixture, impl_run).len(), 1);
+    // The proof names the ancestor's Resource, which is what makes a
+    // change over there able to invalidate the edge over here.
+    assert!(
+        published
+            .publication
+            .basis
+            .sources
+            .contains_key(&fixture.resource("pkg/base.py").id)
+    );
+
+    // Re-extracting a Resource whose declarations another context's
+    // semantic relations point at needs that contribution withdrawn
+    // first: `semantic_evidence.relation_id` has no ON DELETE CASCADE,
+    // unlike `occurrence_id`. Task 4 provides `withdraw` for exactly
+    // this, and it is the ordering task 8's lifecycle has to keep.
+    let store = GraphStore::open(&fixture.db_path()).expect("index.db");
+    crate::merge::withdraw(store.connection(), &context().context_key(), None).expect("withdraw");
+    drop(store);
+
+    // The base member is renamed, and the structural index catches up.
+    fs::write(
+        fixture.root.join("pkg/base.py"),
+        "class Base:\n    def renamed(self, value: int) -> str:\n        ...\n",
+    )
+    .expect("rewrite the base");
+    crate::scan::BaselineScan::open(&fixture.db_path())
+        .expect("index.db")
+        .run_initial_scan(
+            &fixture.root,
+            &crate::config::WorkspaceConfig::default(),
+            "workspace-rev-2",
+        )
+        .expect("reindex");
+    assert!(
+        crate::symbol::SymbolStore::open(&fixture.db_path())
+            .expect("index.db")
+            .list_for_resource(fixture.resource("pkg/base.py").id)
+            .expect("symbols")
+            .iter()
+            .all(|symbol| symbol.name != "run"),
+        "the ancestor member really is gone"
+    );
+
+    // Re-deriving against the Workspace as it is now finds no ancestor
+    // member, so the edge is not recreated. A derived relation is only
+    // ever as alive as the facts under it.
+    // A backend built against the file as it is now: `Base.run` is
+    // simply not there to answer about any more.
+    let after = ScriptedBackend::new().with_search_paths(Vec::new());
+    refresh(&fixture, &after, "pkg/impl.py").expect("republished");
+    assert!(
+        overrides_of(&fixture, symbol(&fixture, "pkg/impl.py", "Impl.run")).is_empty(),
+        "the derivation re-evaluates rather than remembering"
+    );
+}
+
+#[test]
+fn an_ancestor_change_makes_the_publication_not_current() {
+    let fixture = Fixture::create("invalidate");
+    refresh(&fixture, &impl_backend(&fixture), "pkg/impl.py").expect("published");
+    let index = SemanticIndex::open(&fixture.db_path()).expect("index.db");
+    let key = context().context_key();
+    assert_eq!(
+        index.status(&key).expect("status").state,
+        SemanticState::Current
+    );
+
+    // The ancestor's Resource is in the basis, so invalidating it
+    // reaches the context that depended on it -- and an override whose
+    // proof moved stops reading as current without anything having to
+    // recompute it first.
+    let touched = index
+        .invalidate_resource(fixture.resource("pkg/base.py").id)
+        .expect("invalidate");
+    assert!(touched.contains(&key), "invalidated {touched:?}");
+    assert_eq!(
+        index.status(&key).expect("status").state,
+        SemanticState::Dirty
+    );
+}
+
+#[test]
+fn derived_overrides_are_idempotent_across_identical_refreshes() {
+    let fixture = Fixture::create("ov-idempotent");
+    refresh(&fixture, &impl_backend(&fixture), "pkg/shapes.py").expect("published");
+    let relations = count(&fixture, "relation");
+    let evidence = count(&fixture, "semantic_evidence");
+
+    let again = refresh(&fixture, &impl_backend(&fixture), "pkg/shapes.py").expect("republished");
+    assert_eq!(count(&fixture, "relation"), relations);
+    assert_eq!(count(&fixture, "semantic_evidence"), evidence);
+    assert_eq!(again.merged.relations_created, 0);
+    assert_eq!(again.merged.relations_removed, 0);
+    assert_eq!(
+        overrides_of(
+            &fixture,
+            symbol(&fixture, "pkg/shapes.py", "Concrete.compute")
+        )
+        .len(),
+        1
+    );
+}
+
+#[test]
+fn the_enriched_graph_answers_through_the_existing_surfaces() {
+    let fixture = Fixture::create("surfaces");
+    refresh(&fixture, &impl_backend(&fixture), "pkg/impl.py").expect("published");
+    let base_run = GraphEndpoint::Symbol(symbol(&fixture, "pkg/base.py", "Base.run"));
+
+    // Impact: a public signature change on the base member reaches the
+    // overriding declaration, with no Python-specific traversal.
+    let impact = crate::impact::ImpactTraversal::open(&fixture.db_path())
+        .expect("index.db")
+        .run(
+            crate::impact::ImpactIntent::PublicSignatureChange,
+            &base_run,
+            &crate::impact::Budget::default(),
+        )
+        .expect("impact");
+    let impl_run = GraphEndpoint::Symbol(symbol(&fixture, "pkg/impl.py", "Impl.run"));
+    assert!(
+        impact.nodes.iter().any(|node| node.endpoint == impl_run),
+        "the derived override participates in typed impact"
+    );
+
+    // Callers: the receiver-typed call resolved in task 6 answers here.
+    assert!(
+        RelationIndex::open(&fixture.db_path())
+            .expect("index.db")
+            .callers(&base_run)
+            .expect("callers")
+            .confirmed_count()
+            > 0
+    );
+
+    // Prepared inspection returns the current declaration source, not
+    // a line number for the Agent to go and read.
+    let prepared = crate::prepare::InspectPreparer::open(&fixture.db_path(), &fixture.root)
+        .expect("preparer")
+        .prepare(
+            &base_run,
+            crate::relations::Direction::Incoming,
+            &[RelationKind::Overrides],
+        )
+        .expect("prepared");
+    assert!(prepared.confirmed_count() > 0);
+    assert!(
+        prepared
+            .ranges
+            .iter()
+            .any(|range| range.source.contains("def run")),
+        "the overriding declaration comes back as source"
+    );
+}
+
+#[test]
+fn a_reference_site_structural_resolution_could_not_follow_becomes_references() {
+    let fixture = Fixture::create("references");
+    let uri = fixture.uri("pkg/uses.py");
+    // `from .reexport import Exported`, where `reexport.py` only
+    // aliases it -- a chain I3 stops at and reports as a gap.
+    let backend = ScriptedBackend::new()
+        .with_search_paths(Vec::new())
+        .with_definition(
+            &uri,
+            last_character(&fixture, "pkg/uses.py", "Exported", 1),
+            vec![fixture.location("pkg/base.py", "Base", 0)],
+        );
+    let outcome = refresh(&fixture, &backend, "pkg/uses.py").expect("published");
+    assert!(outcome.merged.gaps_resolved > 0);
+
+    let base = symbol(&fixture, "pkg/base.py", "Base");
+    let referrers = RelationIndex::open(&fixture.db_path())
+        .expect("index.db")
+        .references(&GraphEndpoint::Symbol(base))
+        .expect("references");
+    assert_eq!(referrers.confirmed_count(), 1);
+    assert_eq!(referrers.confirmed[0].kind, RelationKind::References);
+    assert_eq!(
+        referrers.confirmed[0].evidence[0].occurrence_kind,
+        OccurrenceKind::ReferenceSite,
+        "a reference site, never a call or an import site"
+    );
+
+    // The exact current span, so a reader gets source rather than a
+    // line number.
+    let text = fixture.text("pkg/uses.py");
+    let span = referrers.confirmed[0].evidence[0].span;
+    assert_eq!(&text[span.start_byte..span.end_byte], "Exported");
 }

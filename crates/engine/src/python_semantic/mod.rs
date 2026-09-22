@@ -44,11 +44,17 @@ pub mod coordinates;
 pub mod host;
 pub mod jsonrpc;
 pub mod launcher;
+pub mod overrides;
 pub mod protocol;
 
-use std::{collections::BTreeMap, error::Error, fmt, fs, path::Path};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    error::Error,
+    fmt, fs,
+    path::Path,
+};
 
-use brainprint_core::ResourceId;
+use brainprint_core::{ResourceId, SymbolId};
 use rusqlite::{Connection, params};
 
 pub use adapter::{
@@ -57,13 +63,14 @@ pub use adapter::{
 };
 pub use host::{PyrightHost, PythonSettings};
 pub use launcher::{InstallError, PyrightInstall, PythonLauncher, Readiness};
+pub use overrides::{Derivation, UnprovenOverride, UnprovenReason};
 pub use protocol::{COMPATIBILITY_CLASS, ProtocolCompatibility, TESTED_PROTOCOL_VERSION};
 
 use crate::{
     db,
     generation::{self, GenerationError},
     merge::{self, MergeError, MergeOutcome, MergeRequest},
-    resolution::Support,
+    resolution::{EvidenceBasis, Support},
     resource::{Resource, ResourceLanguage},
     semantic::{
         AnalysisContext, CapabilityReport, SemanticCapability, SemanticEvidence, ToolchainIdentity,
@@ -82,6 +89,18 @@ use crate::{
 /// rounding it up to SUPPORTED would make an absent expected type read
 /// as "there is none".
 pub const EXPECTED_TYPE_SUPPORT: Support = Support::Partial;
+
+/// How well a Python base list is covered.
+///
+/// A base written as a plain name is resolved wherever I3 left a gap,
+/// and most of them I3 already resolves structurally. A base written as
+/// an attribute expression -- `class Concrete(abc.ABC)` -- is recorded
+/// by I3 as no Occurrence at all, so there is no current source site to
+/// anchor an edge to, and inventing one is exactly what task 4 refuses.
+pub const INHERITANCE_SUPPORT: Support = Support::Partial;
+
+/// How well `OVERRIDES` is covered. See [`overrides`].
+pub const OVERRIDES_SUPPORT: Support = Support::Partial;
 
 // ---------------------------------------------------------------------
 // Capability report
@@ -109,15 +128,25 @@ pub fn capability_report(context: &AnalysisContext) -> CapabilityReport {
         // Declared and computed types resolve; the expected type does
         // not always, so the capability as a whole is partial.
         .declare(SemanticCapability::TypeResolution, EXPECTED_TYPE_SUPPORT)
-        // Stated rather than left silent, so a reader sees the claim
-        // was considered and refused. Both need derivation (#19 task 7).
+        // A base list resolves wherever I3 anchored one. A base written
+        // as an attribute expression (`class X(pkg.Base)`) gets no
+        // Occurrence from I3 at all, so there is nothing to anchor and
+        // that shape stays unresolved -- hence PARTIAL, not SUPPORTED.
+        .declare(SemanticCapability::Inheritance, INHERITANCE_SUPPORT)
+        // Derived from proven inheritance (#19 task 7). PARTIAL because
+        // Python writes `@classmethod`, `@staticmethod` and `@property`
+        // as decorators and I3 records all three as METHOD, and because
+        // two same-depth ancestors declaring one name is refused rather
+        // than resolved by base-list order the graph does not store.
+        .declare(SemanticCapability::Overrides, OVERRIDES_SUPPORT)
+        // Python has no implements clause, and inferring conformance
+        // from matching members is duck typing, not evidence. Pyright's
+        // public surface offers no explicit Protocol-conformance fact.
         .declare(SemanticCapability::Implements, Support::Unsupported)
-        .declare(SemanticCapability::Overrides, Support::Unsupported)
         .declare(
             SemanticCapability::ImplementationTarget,
             Support::Unsupported,
-        )
-        .declare(SemanticCapability::Inheritance, Support::Unsupported);
+        );
     report
 }
 
@@ -304,8 +333,11 @@ pub struct RefreshRequest<'a> {
 pub struct RefreshOutcome {
     pub publication: SemanticPublication,
     pub merged: MergeOutcome,
-    /// Gaps left for #19 task 7, with the reason.
+    /// Gap kinds this backend does not answer, with the reason.
     pub deferred: Vec<adapter::DeferredGap>,
+    /// Declarations that claim an override the evidence could not
+    /// prove. An honest gap, never a guessed edge.
+    pub unproven_overrides: Vec<UnprovenOverride>,
     pub evidence_count: usize,
     /// One line per piece of evidence: the capability, the site and
     /// what it resolved to. Diagnostic only -- it holds no source and
@@ -358,7 +390,12 @@ pub fn refresh_resource(
     // One coherent snapshot for the whole Resource, restarted whole if
     // the backend invalidates it partway through.
     let owner_uri = protocol::path_to_uri(&request.workspace_root.join(&owner.path_rel));
-    let mut collected: Option<(ResourceEvidence, BTreeMap<ResourceId, String>)> = None;
+    let own_symbols = symbol::list_for_resource(connection, owner.id)?;
+    let mut collected: Option<(
+        ResourceEvidence,
+        BTreeSet<SymbolId>,
+        BTreeMap<ResourceId, String>,
+    )> = None;
     run_batch(queries, request.policy, &mut |batch: &Batch<'_>| {
         let paths = adapter::search_paths(batch, &owner_uri)?;
         let mut normalizer = Normalizer::new(connection, request.workspace_root, paths);
@@ -377,11 +414,51 @@ pub fn refresh_resource(
                 context_key: &context_key,
             },
         )?;
-        collected = Some((produced, normalizer.sources_read().clone()));
+        // Resolved in the same snapshot as everything else, so a claim
+        // and the facts around it describe one program state.
+        let declared = adapter::declared_overrides(
+            batch,
+            &mut normalizer,
+            &owner_uri,
+            &owner_text,
+            &own_symbols,
+        )?;
+        collected = Some((produced, declared, normalizer.sources_read().clone()));
         Ok(())
     })?;
-    let (mut produced, extra_sources) =
+    let (mut produced, declared_overrides, mut extra_sources) =
         collected.expect("a successful batch always records its result");
+
+    // `OVERRIDES` is not written at a site, so no gap carries it: it is
+    // derived from inheritance that is already proven, and anchored on
+    // the overriding declaration's own Occurrence.
+    let mut derived = overrides::derive(
+        connection,
+        &owner,
+        &occurrences,
+        &produced.resolved_bases,
+        &context_key,
+        &EvidenceBasis {
+            owner_resource: owner.id,
+            owner_resource_revision: owner.resource_revision.clone(),
+            generation_id: 0,
+            analysis_profile_id,
+            resolution_context_key: None,
+        },
+        &declared_overrides,
+    )
+    .map_err(|error| {
+        PythonSemanticError::Sqlite(rusqlite::Error::InvalidParameterName(error.to_string()))
+    })?;
+    // An ancestor's declaration is part of the proof, so the basis has
+    // to name it: `Impl.run OVERRIDES Base.run` stops being true when
+    // `base.py` moves, and task 3 is what notices.
+    for ancestor in &derived.ancestor_resources {
+        if let Some(resource) = adapter::resource_by_id(connection, *ancestor)? {
+            extra_sources.insert(resource.id, resource.resource_revision);
+        }
+    }
+    produced.evidence.append(&mut derived.evidence);
 
     let mut basis = SemanticBasis::new(request.context, request.config)
         .with_source(owner.id, owner.resource_revision.clone());
@@ -438,6 +515,7 @@ pub fn refresh_resource(
         merged,
         evidence_count: produced.evidence.len(),
         deferred: produced.deferred,
+        unproven_overrides: derived.unproven,
         report,
     })
 }
