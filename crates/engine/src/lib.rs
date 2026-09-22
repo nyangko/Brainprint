@@ -31,6 +31,7 @@ pub mod related_tests;
 pub mod relations;
 pub mod resolution;
 pub mod resource;
+pub mod runtime;
 pub mod scan;
 pub mod schema;
 pub mod search;
