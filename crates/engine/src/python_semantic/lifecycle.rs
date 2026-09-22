@@ -52,7 +52,7 @@ use super::{
     protocol::{WatchedChange, WatchedChangeKind, path_to_uri},
 };
 use crate::{
-    db,
+    db, graph_lifecycle,
     merge::{self, MergeOutcome},
     resolution::Support,
     resource::{Resource, ResourceLanguage},
@@ -648,6 +648,29 @@ pub fn plan_changes(
         // the whole project, so every owner published under it has to
         // be re-proved rather than assumed.
         plan.affected.extend(index.owners_of_context(&context_key)?);
+        return Ok(plan);
+    }
+
+    // The structural replacement does not stop at the Resources that
+    // changed. Every Resource whose relations point into them is
+    // re-resolved against the structure that then exists, and that
+    // re-resolution removes canonical edges. A semantic contribution
+    // anchored on one of those edges has to be withdrawn first.
+    //
+    // The basis alone does not find them: a call site I3 already
+    // resolved structurally never becomes a semantic dependency, so the
+    // callee's Resource is not in the caller's basis -- and the caller
+    // is still re-resolved. Because `semantic_evidence.relation_id`
+    // deliberately has no cascade, missing one is not a stale row, it
+    // is a failed structural publication (#19 task 9).
+    let touched: Vec<ResourceId> = changes.iter().map(|change| change.resource).collect();
+    let published: BTreeSet<SemanticOwner> =
+        index.owners_of_context(&context_key)?.into_iter().collect();
+    for dependent in graph_lifecycle::dependents_of(index.connection(), &touched, false)? {
+        let owner = SemanticOwner::new(&context_key, dependent);
+        if published.contains(&owner) {
+            plan.affected.insert(owner);
+        }
     }
     Ok(plan)
 }
@@ -791,6 +814,9 @@ pub enum BackendReadiness {
 #[derive(Debug)]
 pub enum LifecycleError {
     Index(SemanticIndexError),
+    /// The structural tier could not be asked what a replacement is
+    /// about to re-resolve.
+    Structural(Box<crate::scan::ScanError>),
     Merge(merge::MergeError),
     Sqlite(rusqlite::Error),
     Refresh(Box<PythonSemanticError>),
@@ -800,6 +826,7 @@ impl fmt::Display for LifecycleError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Index(error) => write!(formatter, "semantic index: {error}"),
+            Self::Structural(error) => write!(formatter, "structural plan: {error}"),
             Self::Merge(error) => write!(formatter, "semantic merge: {error}"),
             Self::Sqlite(error) => write!(formatter, "index: {error}"),
             Self::Refresh(error) => write!(formatter, "python refresh: {error}"),
@@ -812,6 +839,11 @@ impl Error for LifecycleError {}
 impl From<SemanticIndexError> for LifecycleError {
     fn from(error: SemanticIndexError) -> Self {
         Self::Index(error)
+    }
+}
+impl From<crate::scan::ScanError> for LifecycleError {
+    fn from(error: crate::scan::ScanError) -> Self {
+        Self::Structural(Box::new(error))
     }
 }
 impl From<merge::MergeError> for LifecycleError {

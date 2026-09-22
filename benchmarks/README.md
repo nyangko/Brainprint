@@ -46,6 +46,19 @@ An unavailable measurement is `null`. A measured zero is `0`.
   line is the cost I3 adds, the plain line is the query flow comparable
   with the two above, and the cold line is both together. See
   `i3-acceptance-report.md`.
+- `brainprint-i3-control` / `brainprint-i4-index` /
+  `brainprint-i4-python-start` / `brainprint-i4-python-first-refresh` /
+  `brainprint-i4-python` / `brainprint-i4-python-save` /
+  `brainprint-i4-python-config` / `brainprint-i4-python-restart` — the
+  I4 Python semantic re-measurement of the same scenario
+  (`cargo run -p brainprint-engine --example i4_python_benchmark`). The
+  control line is the I3 query flow re-run at the current commit; the
+  `-python` line is the same Agent-facing flow with semantics current,
+  and is the one comparable with everything above. Everything else is
+  cost the semantic tier adds, kept in its own line rather than folded
+  in: process start, the first refresh, and each lifecycle transition.
+  Without the pinned Pyright install the semantic variants are skipped
+  and the control still runs. See `i4-python-acceptance-report.md`.
 
 Metrics the result schema has no column for — prepared source bytes,
 relation query count, traversal size, confirmed/gap counts, broad
@@ -57,7 +70,9 @@ lines: the Workspace denies `unsafe_code`, so `getrusage` (what the
 Python baseline uses for those two columns) is not reachable from a
 harness example. Measure them around the process instead:
 `/usr/bin/time -l ./target/debug/examples/i3_benchmark ...` on macOS, or
-`/usr/bin/time -v` with GNU coreutils.
+`/usr/bin/time -v` with GNU coreutils. A backend child process is inside
+that figure on macOS but is not a steady-state reading; sample it
+separately (`ps -Ao rss=`) if that is what is wanted.
 
 ## Promotion
 

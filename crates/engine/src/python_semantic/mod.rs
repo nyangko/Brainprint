@@ -98,15 +98,29 @@ pub const EXPECTED_TYPE_SUPPORT: Support = Support::Partial;
 
 /// How well a Python base list is covered.
 ///
-/// A base written as a plain name is resolved wherever I3 left a gap,
-/// and most of them I3 already resolves structurally. A base written as
-/// an attribute expression -- `class Concrete(abc.ABC)` -- is recorded
-/// by I3 as no Occurrence at all, so there is no current source site to
-/// anchor an edge to, and inventing one is exactly what task 4 refuses.
+/// Every base shape the acceptance fixture writes resolves: plain,
+/// qualified (`class Qualified(base.Base)`), cross-file, nested,
+/// multiple, and a dependency base as an external identity (#19 task 9
+/// measured all six). PARTIAL is about what the fixture does *not*
+/// write and this tier does not model: a base that is not a name or an
+/// attribute expression -- a subscripted generic, a call, a variable --
+/// has no declaration site to anchor an edge to, and task 4 refuses to
+/// invent one. So the answer there is an honest gap, not an edge.
 pub const INHERITANCE_SUPPORT: Support = Support::Partial;
 
 /// How well `OVERRIDES` is covered. See [`overrides`].
 pub const OVERRIDES_SUPPORT: Support = Support::Partial;
+
+/// How well a call site's bound target is covered.
+///
+/// A direct call binds to a declaration and is recorded `STATIC`. A
+/// call through a typed receiver binds to the *declaration the type
+/// names*, which is not necessarily the code that runs, so task 7
+/// records it `UNKNOWN` rather than claiming a static target. Both are
+/// exact; only one of them is the capability, hence PARTIAL. Rounding
+/// it up would turn "here is the declaration" into "here is what
+/// executes", which Python does not support anyone saying.
+pub const STATIC_DISPATCH_SUPPORT: Support = Support::Partial;
 
 // ---------------------------------------------------------------------
 // Capability report
@@ -123,6 +137,11 @@ pub fn capability_report(context: &AnalysisContext) -> CapabilityReport {
     let mut report = CapabilityReport::new(context);
     report
         .declare(SemanticCapability::ImportBinding, Support::Supported)
+        // `from .base import Base as Exported`, and the module that
+        // then imports `Exported`, both reach `Base` (#19 task 9).
+        // Declared from that measurement, not from Pyright's brochure.
+        .declare(SemanticCapability::AliasResolution, Support::Supported)
+        .declare(SemanticCapability::ReexportResolution, Support::Supported)
         .declare(
             SemanticCapability::ExternalSymbolResolution,
             Support::Supported,
@@ -131,6 +150,12 @@ pub fn capability_report(context: &AnalysisContext) -> CapabilityReport {
         .declare(SemanticCapability::References, Support::Supported)
         .declare(SemanticCapability::CallsIntraFile, Support::Supported)
         .declare(SemanticCapability::CallsCrossFile, Support::Supported)
+        // See [`STATIC_DISPATCH_SUPPORT`]: a target is always exact, a
+        // *static* target is only claimed where it is one.
+        .declare(
+            SemanticCapability::StaticDispatchTarget,
+            STATIC_DISPATCH_SUPPORT,
+        )
         // Declared and computed types resolve; the expected type does
         // not always, so the capability as a whole is partial.
         .declare(SemanticCapability::TypeResolution, EXPECTED_TYPE_SUPPORT)

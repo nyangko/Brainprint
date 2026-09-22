@@ -540,7 +540,12 @@ pub(crate) fn inventory_fingerprint(
 /// it is empty for an ordinary content save.
 ///
 /// Name similarity is never consulted.
-fn dependents_of(
+///
+/// Public because a semantic tier has to know it too: the set of
+/// Resources a publication re-resolves is the set whose relation layer
+/// is about to be taken apart, and a semantic contribution pointing
+/// into it has to be withdrawn first (#19 task 9).
+pub fn dependents_of(
     connection: &Connection,
     touched: &[ResourceId],
     inventory_changed: bool,

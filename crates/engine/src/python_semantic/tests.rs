@@ -948,6 +948,11 @@ fn the_capability_report_states_what_this_task_implements() {
         SemanticCapability::References,
         SemanticCapability::CallsIntraFile,
         SemanticCapability::CallsCrossFile,
+        // #19 task 9 measured both on the acceptance fixture; they were
+        // undeclared before, which understated coverage on exactly the
+        // two P0 cases the contract names.
+        SemanticCapability::AliasResolution,
+        SemanticCapability::ReexportResolution,
     ] {
         assert_eq!(
             report.support(supported),
@@ -977,6 +982,18 @@ fn the_capability_report_states_what_this_task_implements() {
     );
     assert_eq!(INHERITANCE_SUPPORT, Support::Partial);
     assert_eq!(OVERRIDES_SUPPORT, Support::Partial);
+
+    // A call site's target is exact; whether it is the *static* target
+    // is only claimed for a direct call.
+    assert_eq!(
+        report.support(SemanticCapability::StaticDispatchTarget),
+        Support::Partial
+    );
+    assert_eq!(
+        report.support(SemanticCapability::OverloadResolution),
+        Support::Unsupported,
+        "not implemented for Python, so not claimed"
+    );
 
     // Python has no implements clause, and matching members is duck
     // typing rather than evidence.

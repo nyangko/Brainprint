@@ -1576,6 +1576,73 @@ fn a_missed_change_recovered_later_invalidates_the_same_owners() {
 }
 
 #[test]
+fn a_structural_dependent_is_withdrawn_before_the_replacement_that_re_resolves_it() {
+    // #19 task 9 acceptance found this: the affected set was computed
+    // from the semantic basis alone, but a structural publication also
+    // re-resolves every Resource whose relations point into the one
+    // that changed. Those owners' evidence hangs off edges the
+    // re-resolution removes, and `semantic_evidence.relation_id` has no
+    // cascade -- so an incomplete withdrawal is not a stale row, it is
+    // a failed publication.
+    let fixture = Fixture::create("structural-dependents");
+    refresh(&fixture, &backend(&fixture), "pkg/impl.py").expect("impl");
+    // imports.py imports `Base` -- a relation I3 already resolved
+    // structurally, so base.py never enters imports.py's *semantic*
+    // basis, yet a base.py replacement re-resolves it.
+    refresh(&fixture, &backend(&fixture), "pkg/imports.py").expect("imports");
+
+    let index = SemanticIndex::open(&fixture.db_path()).expect("index.db");
+    let base = fixture.resource("pkg/base.py");
+    let change = ResourceChange::new(base.id, ChangeKind::Changed, "pkg/base.py");
+    let plan = lifecycle::plan_changes(
+        &index,
+        &context(),
+        std::slice::from_ref(&change),
+        &lifecycle::PythonProjectConfig {
+            source: ConfigSource::Defaults,
+            resource: None,
+        },
+    )
+    .expect("plan");
+
+    // The structural tier's own answer to "who gets re-resolved".
+    let dependents = crate::graph_lifecycle::dependents_of(index.connection(), &[base.id], false)
+        .expect("dependents");
+    assert!(
+        dependents.len() > 1,
+        "the fixture must have a dependent beyond the changed file: {dependents:?}"
+    );
+    for dependent in dependents {
+        let owner = SemanticOwner::new(context().context_key(), dependent);
+        if index
+            .status(&owner)
+            .expect("status")
+            .stable_generation_id
+            .is_some()
+        {
+            assert!(
+                plan.affected.contains(&owner),
+                "{owner} is re-resolved but was not planned for withdrawal"
+            );
+        }
+    }
+
+    // And the whole ordering actually completes: withdraw, then let the
+    // structural replacement run.
+    lifecycle::withdraw_affected(&index, &plan.affected, BACKEND_UNAVAILABLE_CODE)
+        .expect("withdraw");
+    fixture.write(
+        "pkg/base.py",
+        "class Base:\n    def run(self, value: int) -> str:\n        return \"\"\n",
+    );
+    drop(index);
+    crate::reconcile::Reconcile::open(&fixture.db_path())
+        .expect("index.db")
+        .run(&fixture.root, &WorkspaceConfig::default())
+        .expect("the structural replacement must not hit a foreign key");
+}
+
+#[test]
 fn a_plan_over_no_changes_is_empty_and_idempotent() {
     let fixture = Fixture::create("no-changes");
     refresh(&fixture, &backend(&fixture), "pkg/impl.py").expect("A");
