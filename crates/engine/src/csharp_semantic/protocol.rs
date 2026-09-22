@@ -57,67 +57,14 @@ use crate::lsp::coordinates::{Position, PositionEncoding, Range};
 // Trust
 // ---------------------------------------------------------------------
 
-/// Whether this Workspace may have its project build logic executed.
+/// The shared trust decision, re-exported so this backend's callers
+/// keep one import.
 ///
-/// #19 task 12 decision 1, and the reason it is a type rather than a
-/// `bool`: the answer has to be readable at every call site that could
-/// start a design-time build, and `false` is not self-describing.
-///
-/// The default is [`Self::Untrusted`] and nothing infers otherwise. Not
-/// that the repository is local, not that it is a Git checkout, not that
-/// an Agent is already editing it, not that it built before, not that
-/// someone opened the directory. The Roslyn backend runs in its own
-/// process, and that is crash and resource isolation -- it is not a
-/// security boundary, and treating it as one would be the whole mistake.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ProjectExecutionTrust {
-    /// No project load. The server is driven with documents only, which
-    /// was measured to execute no project code at all: the marker target
-    /// did not run, and `obj/` was not created.
-    ///
-    /// What survives is real and bounded -- intra-document definitions
-    /// and document symbols -- and everything that needs a compilation
-    /// is an honest gap. Level A is not claimed.
-    Untrusted,
-    /// An explicit decision, made outside this tier, that this
-    /// Workspace's build logic may run. Only this permits the project
-    /// load that C# Level A needs.
-    Trusted,
-}
-
-impl ProjectExecutionTrust {
-    /// The only default there is.
-    #[must_use]
-    pub const fn default_for_workspace() -> Self {
-        Self::Untrusted
-    }
-
-    /// Whether the project-loading path may be taken.
-    #[must_use]
-    pub const fn may_load_projects(self) -> bool {
-        matches!(self, Self::Trusted)
-    }
-
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Untrusted => "UNTRUSTED",
-            Self::Trusted => "TRUSTED",
-        }
-    }
-}
-
-impl Default for ProjectExecutionTrust {
-    fn default() -> Self {
-        Self::default_for_workspace()
-    }
-}
-
-impl fmt::Display for ProjectExecutionTrust {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.as_str())
-    }
-}
+/// It moved to [`crate::trust`] when the Rust backend needed the same
+/// question answered: MSBuild evaluating a project and Cargo running a
+/// `build.rs` are the same decision, and one of them having asked it
+/// first is not a reason for two types.
+pub use crate::trust::ProjectExecutionTrust;
 
 /// What project loading was measured to execute, in one place.
 ///

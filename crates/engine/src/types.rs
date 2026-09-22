@@ -39,6 +39,8 @@
 //! resolution, Python MRO/metaclass, and any type whose name merely
 //! matches something elsewhere in the Workspace.
 
+use std::collections::BTreeMap;
+
 use brainprint_core::{ResourceId, SymbolId};
 use tree_sitter::Node;
 
@@ -511,6 +513,43 @@ pub fn type_relations(
             ))
         })
         .collect()
+}
+
+/// Which type each `impl Trait for Type` block in `source` implements,
+/// by the span of the trait name it writes.
+///
+/// I3 already derives this for a base-list reference it can resolve
+/// structurally; a *semantic* re-resolution of the same site needs the
+/// same answer, and it must be the same derivation rather than a second
+/// one that could disagree. The span is the key because it is what both
+/// tiers already agree on: the Occurrence the trait reference sits at.
+///
+/// Rust-shaped by nature — no other supported language separates the
+/// implementing type from the declaration this way — and it reads the
+/// parse tree rather than the text.
+#[must_use]
+pub fn rust_implementors(
+    tree: &ParseTree,
+    source: &[u8],
+    own_symbols: &[Symbol],
+) -> BTreeMap<(usize, usize), SymbolId> {
+    let mut found = BTreeMap::new();
+    walk(tree.syntax_tree().root_node(), &mut |node| {
+        if node.kind() != "impl_item" {
+            return;
+        }
+        let (Some(contract), Some(implementor)) = (
+            node.child_by_field_name("trait"),
+            node.child_by_field_name("type")
+                .filter(|node| node.kind() == "type_identifier"),
+        ) else {
+            return;
+        };
+        if let Some(symbol) = unique_top_level(own_symbols, &text_of(implementor, source)) {
+            found.insert((contract.start_byte(), contract.end_byte()), symbol);
+        }
+    });
+    found
 }
 
 fn unique_top_level(symbols: &[Symbol], name: &str) -> Option<SymbolId> {
