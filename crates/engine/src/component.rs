@@ -34,10 +34,23 @@ pub const STRUCTURAL_INDEX: &str = "STRUCTURAL_INDEX";
 /// file whose target changed says so about itself and not about the
 /// Workspace.
 pub const RELATION_INDEX: &str = "RELATION_INDEX";
+/// The per-AnalysisContext semantic component (#19 task 3): whether one
+/// context's normalized semantic results are current for the source,
+/// config, environment and profile they were computed from. Scoped by
+/// `AnalysisContext::context_key`, so one Python project going stale
+/// says nothing about the TypeScript one next to it.
+///
+/// Deliberately a different component from [`STRUCTURAL_INDEX`] and
+/// [`RELATION_INDEX`]: structural CURRENT and semantic DIRTY is a normal
+/// state, and one row could not say both.
+pub const SEMANTIC_INDEX: &str = "SEMANTIC_INDEX";
 pub const WORKSPACE_SCOPE_KIND: &str = "WORKSPACE";
 /// Scope kind for a component that describes one Resource. The scope key
 /// is that Resource's stable id.
 pub const RESOURCE_SCOPE_KIND: &str = "RESOURCE";
+/// Scope kind for a component that describes one semantic
+/// AnalysisContext. The scope key is that context's `context_key`.
+pub const ANALYSIS_CONTEXT_SCOPE_KIND: &str = "ANALYSIS_CONTEXT";
 /// The component covers the whole Workspace rather than one path, and the
 /// column is NOT NULL.
 pub const WORKSPACE_SCOPE_KEY: &str = "*";

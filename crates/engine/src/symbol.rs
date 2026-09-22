@@ -62,6 +62,7 @@ use crate::{
     parser::{ParserDescriptor, SourcePoint, SourceSpan, StructuralCapability},
     resource::{ResourceError, ResourceLanguage, ResourceState},
     schema,
+    semantic::{AnalysisContext, CapabilityReport},
 };
 
 /// Version of the extraction semantics itself -- what this crate decides
@@ -79,6 +80,17 @@ pub const ADAPTER_SEMANTICS_VERSION: &str = "0";
 
 /// What a Symbol row was produced by. Structural only at this tier.
 pub const ANALYSIS_MODE_STRUCTURAL: &str = "STRUCTURAL";
+
+/// What a normalized semantic result was produced by (#19 task 3). A
+/// separate profile row from the structural one covering the same
+/// language: the two are produced by different backends, carry different
+/// capabilities, and go stale for different reasons.
+pub const ANALYSIS_MODE_SEMANTIC: &str = "SEMANTIC";
+
+/// Written where a profile genuinely has no value for a NOT NULL backend
+/// column -- a semantic profile names no structural backend, and naming
+/// tree-sitter there would claim a parse that never happened.
+pub const BACKEND_NOT_APPLICABLE: &str = "NOT_APPLICABLE";
 
 /// The P0 persistent Symbol taxonomy (#16 "persistent Symbol P0").
 ///
@@ -363,6 +375,15 @@ pub struct AnalysisProfile {
     pub analysis_mode: &'static str,
     pub structural_backend: &'static str,
     pub structural_backend_version: String,
+    /// The semantic backend family, for a semantic profile. `None` for a
+    /// structural one.
+    pub semantic_backend: Option<String>,
+    /// Recorded, and deliberately **not** part of [`Self::profile_key`]:
+    /// a backend patch release is not by itself a different semantics,
+    /// and making it one would turn every upgrade into a rebuild. What
+    /// identifies comparability is
+    /// [`Self::backend_compatibility_class`] (#19 task 3).
+    pub semantic_backend_version: Option<String>,
     pub extractor_semantics_version: &'static str,
     pub adapter_semantics_version: &'static str,
     /// Which backend/dialect combination a result is comparable across.
@@ -371,6 +392,50 @@ pub struct AnalysisProfile {
 }
 
 impl AnalysisProfile {
+    /// The profile a semantic result for `context` belongs to (#19 task
+    /// 3).
+    ///
+    /// Identity is language, backend family, analysis mode, semantics
+    /// versions, compatibility class, and the declared capability set --
+    /// everything that decides whether two results *mean* the same
+    /// thing. The backend's own version is recorded beside it and left
+    /// out of the key on purpose: upgrading a backend inside its
+    /// compatibility class is not a change of meaning, and treating it
+    /// as one would make every patch release a rebuild.
+    #[must_use]
+    pub fn semantic(context: &AnalysisContext, capabilities: &CapabilityReport) -> Self {
+        let capability_fingerprint = capabilities.capability_fingerprint();
+        let backend = context.backend.as_str();
+        let backend_compatibility_class = context.toolchain.backend_compatibility_class.clone();
+
+        let profile_key = db::fingerprint(
+            "analysis-profile-1",
+            &[
+                ("language", &context.language.to_string()),
+                ("analysis_mode", ANALYSIS_MODE_SEMANTIC),
+                ("semantic_backend", backend),
+                ("extractor_semantics", EXTRACTOR_SEMANTICS_VERSION),
+                ("adapter_semantics", ADAPTER_SEMANTICS_VERSION),
+                ("compatibility_class", &backend_compatibility_class),
+                ("capability", &capability_fingerprint),
+            ],
+        );
+
+        Self {
+            profile_key,
+            language: context.language,
+            analysis_mode: ANALYSIS_MODE_SEMANTIC,
+            structural_backend: BACKEND_NOT_APPLICABLE,
+            structural_backend_version: BACKEND_NOT_APPLICABLE.to_owned(),
+            semantic_backend: Some(backend.to_owned()),
+            semantic_backend_version: Some(context.toolchain.backend_version.clone()),
+            extractor_semantics_version: EXTRACTOR_SEMANTICS_VERSION,
+            adapter_semantics_version: ADAPTER_SEMANTICS_VERSION,
+            backend_compatibility_class,
+            capability_fingerprint,
+        }
+    }
+
     /// The profile a parse under `descriptor` belongs to. Deterministic:
     /// the same descriptor always yields the same `profile_key`, which is
     /// what makes reuse possible instead of a row per extraction.
@@ -412,6 +477,8 @@ impl AnalysisProfile {
             analysis_mode: ANALYSIS_MODE_STRUCTURAL,
             structural_backend: descriptor.backend,
             structural_backend_version,
+            semantic_backend: None,
+            semantic_backend_version: None,
             extractor_semantics_version: EXTRACTOR_SEMANTICS_VERSION,
             adapter_semantics_version: ADAPTER_SEMANTICS_VERSION,
             backend_compatibility_class,
@@ -779,13 +846,15 @@ pub(crate) fn ensure_profile(
           structural_backend_version, semantic_backend, semantic_backend_version, \
           extractor_semantics_version, adapter_semantics_version, \
           backend_compatibility_class, capability_fingerprint, created_at) \
-         VALUES (?1, ?2, ?3, ?4, ?5, NULL, NULL, ?6, ?7, ?8, ?9, ?10)",
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         params![
             profile.profile_key,
             profile.language.to_string(),
             profile.analysis_mode,
             profile.structural_backend,
             profile.structural_backend_version,
+            profile.semantic_backend,
+            profile.semantic_backend_version,
             profile.extractor_semantics_version,
             profile.adapter_semantics_version,
             profile.backend_compatibility_class,

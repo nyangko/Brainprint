@@ -320,6 +320,26 @@ pub struct ToolchainIdentity {
     pub environment_fingerprint: String,
 }
 
+impl ToolchainIdentity {
+    /// This toolchain's deterministic fingerprint, for a publication
+    /// basis that must detect an environment moving underneath it (#19
+    /// task 3).
+    #[must_use]
+    pub fn fingerprint(&self) -> String {
+        db::fingerprint(
+            "semantic-toolchain-1",
+            &[
+                ("backend_version", &self.backend_version),
+                (
+                    "backend_compatibility_class",
+                    &self.backend_compatibility_class,
+                ),
+                ("environment", &self.environment_fingerprint),
+            ],
+        )
+    }
+}
+
 /// What a semantic analysis is *of*, independently of who asked.
 ///
 /// The owner of a semantic backend is this context, never an Agent or a

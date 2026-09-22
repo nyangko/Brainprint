@@ -319,6 +319,46 @@ pub const INDEX_MIGRATIONS: &[Migration] = &[
               CREATE UNIQUE INDEX idx_relation_identity \
               ON relation (kind, source_entity_id, target_entity_id);",
     },
+    Migration {
+        version: 6,
+        name: "add_semantic_publication",
+        // #19 task 3. A semantic result is only current for the inputs
+        // it was computed from, and those inputs are not the Workspace
+        // revision alone: an interpreter change, a tsconfig edit, or a
+        // different capability set can all make the same source mean
+        // something else. `component_state` already carries the two
+        // shared axes for the SEMANTIC_INDEX component; what it cannot
+        // carry is *which* inputs a publication was bound to, which is
+        // what makes obsolescence detectable rather than guessed.
+        //
+        // One row per AnalysisContext: a publication supersedes the
+        // previous one for that context, and the dependency set is
+        // replaced with it in the same transaction, so metadata and
+        // result set can never disagree.
+        sql: "CREATE TABLE semantic_publication ( \
+                  id INTEGER PRIMARY KEY, \
+                  context_key TEXT NOT NULL UNIQUE, \
+                  workspace_uid BLOB NOT NULL, \
+                  analysis_profile_id INTEGER NOT NULL REFERENCES analysis_profile (id), \
+                  generation_id INTEGER NOT NULL REFERENCES generation (id), \
+                  basis_workspace_revision TEXT NOT NULL, \
+                  basis_fingerprint TEXT NOT NULL, \
+                  config_fingerprint TEXT NOT NULL, \
+                  environment_fingerprint TEXT NOT NULL, \
+                  inventory_fingerprint TEXT, \
+                  support TEXT NOT NULL, \
+                  published_at TEXT NOT NULL \
+              ); \
+              CREATE TABLE semantic_publication_source ( \
+                  publication_id INTEGER NOT NULL \
+                      REFERENCES semantic_publication (id) ON DELETE CASCADE, \
+                  resource_id INTEGER NOT NULL REFERENCES resource (id), \
+                  resource_revision TEXT NOT NULL, \
+                  PRIMARY KEY (publication_id, resource_id) \
+              ); \
+              CREATE INDEX idx_semantic_publication_source_resource \
+              ON semantic_publication_source (resource_id);",
+    },
 ];
 
 /// Open (creating and migrating if needed) an `index.db` at `path`.
@@ -395,13 +435,15 @@ mod tests {
         "occurrence",
         "unresolved_reference",
         "relation_candidate",
+        "semantic_publication",
+        "semantic_publication_source",
     ];
 
     #[test]
     fn fresh_rebuildable_index_db_can_be_created() {
         let dir = TestDir::create("fresh");
         let opened = open(&dir.db_path()).expect("fresh index.db should migrate");
-        assert_eq!(opened.schema_version, 5);
+        assert_eq!(opened.schema_version, 6);
     }
 
     #[test]
@@ -628,14 +670,14 @@ mod tests {
         open(&dir.db_path()).expect("first open should migrate");
         let reopened = open(&dir.db_path()).expect("reopen should be a no-op");
 
-        assert_eq!(reopened.schema_version, 5);
+        assert_eq!(reopened.schema_version, 6);
         let ledger_count: u32 = reopened
             .connection
             .query_row("SELECT COUNT(*) FROM schema_migration", [], |row| {
                 row.get(0)
             })
             .expect("ledger should be queryable");
-        assert_eq!(ledger_count, 5, "migration must not reapply on reopen");
+        assert_eq!(ledger_count, 6, "migration must not reapply on reopen");
     }
 
     #[test]

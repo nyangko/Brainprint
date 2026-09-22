@@ -36,6 +36,7 @@ pub mod scan;
 pub mod schema;
 pub mod search;
 pub mod semantic;
+pub mod semantic_index;
 pub mod structural;
 pub mod symbol;
 pub mod telemetry;
