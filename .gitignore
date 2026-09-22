@@ -4,3 +4,6 @@
 /scripts/python_semantic_spike/node_modules/
 /scripts/typescript_semantic_spike/node_modules/
 /scripts/svelte_semantic_spike/node_modules/
+/scripts/csharp_semantic_spike/packages/
+/fixtures/workspaces/csharp-semantic-spike/**/bin/
+/fixtures/workspaces/csharp-semantic-spike/**/obj/
