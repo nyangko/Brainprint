@@ -78,6 +78,13 @@ pub struct TypeReference {
     /// relation's source is that type, not the enclosing block (which is
     /// not a Symbol).
     pub implementor: Option<String>,
+    /// The site is real and its span is exact, but the expression that
+    /// names the type is not something this tier resolves -- a
+    /// qualified base like `abc.ABC`. Recorded rather than dropped:
+    /// "structurally unresolvable" and "no evidence exists" are
+    /// different answers, and only the first one keeps a later semantic
+    /// tier able to contribute and a coverage report honest.
+    pub requires_semantics: bool,
     pub span: SourceSpan,
 }
 
@@ -160,12 +167,26 @@ pub(crate) fn type_references_at(
     let mut found = Vec::new();
     match (dialect, node.kind()) {
         // --- Python: bases, parameter types, return types.
-        (ParserDialect::Python, "class_definition") => {
-            if let Some(bases) = node.child_by_field_name("superclasses") {
-                let mut cursor = bases.walk();
-                for base in bases.named_children(&mut cursor) {
-                    push_plain(&mut found, TypeEvidence::Extends, base, source);
-                }
+        //
+        // The base list is read at the `superclasses` node rather than
+        // at the class, and that placement is the whole point: the
+        // walker collects evidence *before* it emits the class Symbol,
+        // so a reference found at the class node has the enclosing
+        // scope as its containing Symbol and ends up sourced from the
+        // Resource. Found one level down, the containing Symbol is
+        // already the class -- which is what a base list is a fact
+        // about. Nested classes follow for free, and no name is
+        // matched to get there.
+        (ParserDialect::Python, "argument_list")
+            if node
+                .parent()
+                .filter(|parent| parent.kind() == "class_definition")
+                .and_then(|parent| parent.child_by_field_name("superclasses"))
+                .is_some_and(|bases| bases.id() == node.id()) =>
+        {
+            let mut cursor = node.walk();
+            for base in node.named_children(&mut cursor) {
+                push_base(&mut found, base, source);
             }
         }
         (ParserDialect::Python, "typed_parameter") => {
@@ -263,6 +284,34 @@ fn push_annotation(found: &mut Vec<TypeReference>, annotation: Node<'_>, source:
     );
 }
 
+/// A Python base-list entry.
+///
+/// A plain name resolves the way it always has. A qualified one --
+/// `base.Base`, `abc.ABC` -- keeps its exact span and is marked as
+/// needing semantics, because the alternative is that the inheritance
+/// site vanishes: task 4 would have nothing to anchor to, the semantic
+/// backend could never contribute, and a query would read zero
+/// inheritance as a complete answer.
+///
+/// Anything else in the list -- `metaclass=M`, a subscripted generic --
+/// still produces nothing. This is the inheritance site, not a general
+/// type-expression rewrite.
+fn push_base(found: &mut Vec<TypeReference>, node: Node<'_>, source: &[u8]) {
+    match node.kind() {
+        "identifier" | "type_identifier" => {
+            push_plain(found, TypeEvidence::Extends, node, source);
+        }
+        "attribute" => found.push(TypeReference {
+            evidence: TypeEvidence::Extends,
+            name: text_of(node, source),
+            implementor: None,
+            requires_semantics: true,
+            span: span_of(node),
+        }),
+        _ => {}
+    }
+}
+
 fn push_plain(
     found: &mut Vec<TypeReference>,
     evidence: TypeEvidence,
@@ -287,6 +336,7 @@ fn plain_reference(evidence: TypeEvidence, node: Node<'_>, source: &[u8]) -> Opt
         evidence,
         name: text_of(node, source),
         implementor: None,
+        requires_semantics: false,
         span: span_of(node),
     })
 }
@@ -307,6 +357,7 @@ fn push_override_marker(found: &mut Vec<TypeReference>, node: Node<'_>, source: 
         evidence: TypeEvidence::OverrideMarker,
         name: text_of(name, source),
         implementor: None,
+        requires_semantics: false,
         span: span_of(name),
     });
 }
@@ -335,6 +386,13 @@ fn resolve_one(reference: &TypeReference, scope: &BindingScope<'_>) -> TypeOutco
     if reference.evidence == TypeEvidence::OverrideMarker {
         // The marker is real; the target is not structural.
         return TypeOutcome::Unresolved(UnresolvedType::OverrideTargetRequiresSemantics);
+    }
+    if reference.requires_semantics {
+        // Splitting the written text and looking the pieces up would be
+        // a guess dressed as a resolution. The site says only that
+        // inheritance happens here and that a type checker has to say
+        // what it inherits from.
+        return TypeOutcome::Unresolved(UnresolvedType::RequiresTypeSemantics);
     }
     // A qualified name is `receiver.member` at the binding level; the
     // shared rules already refuse anything they cannot prove.
@@ -619,6 +677,179 @@ mod tests {
                 })
                 .collect()
         }
+    }
+
+    // -----------------------------------------------------------------
+    // Python inheritance ownership and qualified bases
+    // -----------------------------------------------------------------
+
+    const INHERIT: &str = "\
+import abc
+
+from . import base
+from .base import Base
+
+
+class Child(Base):
+    pass
+
+
+class Qualified(base.Base):
+    pass
+
+
+class Abstract(abc.ABC):
+    pass
+
+
+class Outer:
+    class Inner(Base):
+        pass
+
+
+class Configured(Base, metaclass=abc.ABCMeta):
+    pass
+";
+
+    fn inherit_scenario() -> Scenario {
+        Scenario::new(&[
+            ("pkg/base.py", "class Base:\n    pass\n"),
+            ("pkg/inherit.py", INHERIT),
+        ])
+    }
+
+    #[test]
+    fn a_python_base_is_owned_by_the_class_that_declares_it() {
+        let scenario = inherit_scenario();
+        let owner = |name: &str| {
+            let relations = type_relations(
+                scenario.resource("pkg/inherit.py").id,
+                &occurrences_for(&scenario, "pkg/inherit.py"),
+                &scenario.symbols[&scenario.resource("pkg/inherit.py").id],
+                &scenario.resolve("pkg/inherit.py"),
+                1,
+            );
+            relations
+                .into_iter()
+                .find(|(span, _)| {
+                    scenario.source("pkg/inherit.py")[span.start_byte..span.end_byte] == *name
+                })
+                .map(|(_, relation)| relation)
+        };
+
+        let child = owner("Base").expect("class Child(Base) states an inheritance relation");
+        assert_eq!(
+            child.source,
+            GraphEndpoint::Symbol(scenario.symbol("pkg/inherit.py", "Child")),
+            "the subclass is the source of its own inheritance, not the file"
+        );
+        assert_eq!(child.kind, RelationKind::Extends);
+        assert_ne!(
+            child.source,
+            GraphEndpoint::Resource(scenario.resource("pkg/inherit.py").id),
+            "a Resource-sourced base list is the defect this corrects"
+        );
+    }
+
+    #[test]
+    fn a_nested_class_owns_its_own_base_rather_than_the_outer_one() {
+        let scenario = inherit_scenario();
+        let relations = type_relations(
+            scenario.resource("pkg/inherit.py").id,
+            &occurrences_for(&scenario, "pkg/inherit.py"),
+            &scenario.symbols[&scenario.resource("pkg/inherit.py").id],
+            &scenario.resolve("pkg/inherit.py"),
+            1,
+        );
+        let inner = scenario.symbol("pkg/inherit.py", "Outer.Inner");
+        assert!(
+            relations
+                .iter()
+                .any(|(_, relation)| relation.source == GraphEndpoint::Symbol(inner)),
+            "the innermost class declaring the base owns it"
+        );
+        assert!(
+            relations.iter().all(|(_, relation)| relation.source
+                != GraphEndpoint::Symbol(scenario.symbol("pkg/inherit.py", "Outer"))),
+            "the enclosing class declares no base of its own"
+        );
+    }
+
+    #[test]
+    fn a_qualified_base_keeps_an_exact_site_and_asks_for_semantics() {
+        let scenario = inherit_scenario();
+        let outcomes = scenario.outcomes("pkg/inherit.py");
+
+        for written in ["base.Base", "abc.ABC"] {
+            let (_, kind, outcome) = outcomes
+                .iter()
+                .find(|(token, _, _)| token == written)
+                .unwrap_or_else(|| panic!("{written} must not disappear: {outcomes:?}"));
+            assert_eq!(*kind, Some(RelationKind::Extends));
+            assert_eq!(
+                *outcome,
+                TypeOutcome::Unresolved(UnresolvedType::RequiresTypeSemantics),
+                "{written} is a real inheritance site whose target needs a type checker"
+            );
+        }
+
+        // Exact spans, over the whole written expression.
+        let source = scenario.source("pkg/inherit.py");
+        for reference in scenario.resolve("pkg/inherit.py") {
+            let written =
+                &source[reference.reference.span.start_byte..reference.reference.span.end_byte];
+            assert!(
+                source[reference.reference.span.start_byte..].starts_with(written),
+                "the span is the token as written"
+            );
+        }
+    }
+
+    #[test]
+    fn a_qualified_base_is_never_resolved_by_splitting_its_text() {
+        // `base.Base` would be reachable by taking the receiver as a
+        // module and looking the member up -- which is the guess this
+        // tier refuses for an inheritance site.
+        let scenario = inherit_scenario();
+        let outcomes = scenario.outcomes("pkg/inherit.py");
+        let (_, _, outcome) = outcomes
+            .iter()
+            .find(|(token, _, _)| token == "base.Base")
+            .expect("the qualified base");
+        assert!(
+            !matches!(outcome, TypeOutcome::Internal(_) | TypeOutcome::External(_)),
+            "structural resolution must not claim a target here: {outcome:?}"
+        );
+    }
+
+    #[test]
+    fn a_base_list_entry_that_is_not_a_type_still_produces_nothing() {
+        let scenario = inherit_scenario();
+        let outcomes = scenario.outcomes("pkg/inherit.py");
+        assert!(
+            !outcomes
+                .iter()
+                .any(|(token, _, _)| token.contains("metaclass")),
+            "`metaclass=abc.ABCMeta` is not a base: {outcomes:?}"
+        );
+    }
+
+    /// The Occurrences the extractor publishes for one scenario file.
+    fn occurrences_for(scenario: &Scenario, path: &str) -> Vec<Occurrence> {
+        let resource = scenario.resource(path);
+        let source = scenario.source(path);
+        let dialect = dialect_for_path(path).expect("a supported dialect");
+        let tree = ParserRegistry::new()
+            .parse(dialect, source.as_bytes(), SourceBasis::of(resource))
+            .expect("parse");
+        let extraction = extract(&tree, source.as_bytes());
+        crate::extract::resolve_occurrences(
+            &extraction,
+            &scenario.symbols[&resource.id],
+            resource,
+            1,
+            1,
+        )
     }
 
     #[test]

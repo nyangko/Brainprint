@@ -42,3 +42,9 @@ class Orphan:
     @override
     def run(self, value: int) -> str:
         return "orphan"
+
+
+class Outer:
+    class Inner(Mixin):
+        def run(self, value: int) -> str:
+            return "inner"

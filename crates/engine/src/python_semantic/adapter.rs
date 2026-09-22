@@ -732,15 +732,17 @@ pub fn resolve_resource(
             request.owner_text,
         )?;
 
+        let source = source_endpoint(request.owner.id, request.occurrences, gap.occurrence);
         if resolvable == ResolvableKind::Extends
             && let SemanticOutcome::Resolved {
                 target: GraphEndpoint::Symbol(base),
             } = &outcome
-            && let Some(subclass) =
-                enclosing_class(normalizer.connection, request.owner.id, gap.occurrence)?
+            && let GraphEndpoint::Symbol(subclass) = source
         {
             // Remembered so override derivation in this same pass can
-            // use a base this pass has only just established.
+            // use a base this pass has only just established. The
+            // subclass is the Occurrence's containing Symbol -- the
+            // same ownership the canonical edge carries.
             produced.resolved_bases.push((subclass, *base));
         }
 
@@ -756,54 +758,13 @@ pub fn resolve_resource(
                 resolution_context_key: None,
             },
             occurrence: Some(gap.occurrence),
-            source: Some(source_endpoint(
-                request.owner.id,
-                request.occurrences,
-                gap.occurrence,
-            )),
+            source: Some(source),
             outcome,
             support: Support::Supported,
             dispatch: resolvable.dispatch(gap),
         });
     }
     Ok(produced)
-}
-
-/// The innermost class declaration whose source span contains `site`.
-///
-/// A base-list entry has no containing Symbol -- it sits in the class
-/// header, outside every member -- so the subclass is found by span
-/// nesting, which is exact rather than a lookup by name. Identical
-/// spans would be ambiguous and resolve to nothing.
-fn enclosing_class(
-    connection: &Connection,
-    owner: ResourceId,
-    site: OccurrenceRef,
-) -> Result<Option<SymbolId>, BatchError> {
-    let symbols = crate::symbol::list_for_resource(connection, owner)
-        .map_err(|error| BatchError::Protocol(error.to_string()))?;
-    let mut best: Option<&crate::symbol::Symbol> = None;
-    for symbol in &symbols {
-        if symbol.kind != crate::symbol::SymbolKind::Class
-            || symbol.span.start_byte > site.start_byte
-            || symbol.span.end_byte < site.end_byte
-        {
-            continue;
-        }
-        let width = symbol.span.end_byte - symbol.span.start_byte;
-        match best {
-            Some(current) => {
-                let held = current.span.end_byte - current.span.start_byte;
-                if width < held {
-                    best = Some(symbol);
-                } else if width == held && current.id != symbol.id {
-                    return Ok(None);
-                }
-            }
-            None => best = Some(symbol),
-        }
-    }
-    Ok(best.map(|symbol| symbol.id))
 }
 
 fn deferred(gap: &PersistedUnresolved) -> DeferredGap {

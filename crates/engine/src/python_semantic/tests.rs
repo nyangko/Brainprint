@@ -1617,41 +1617,232 @@ fn an_abstract_base_gives_its_concrete_members_overrides() {
 }
 
 #[test]
-fn a_base_written_as_an_attribute_expression_has_nothing_to_anchor() {
+fn a_qualified_base_keeps_an_exact_anchor_and_resolves_semantically() {
     let fixture = Fixture::create("qualified");
-    let outcome = refresh(&fixture, &impl_backend(&fixture), "pkg/inherit.py").expect("published");
-
-    // `class Qualified(base.Base)`. I3's type extraction records an
-    // Occurrence only for a plain identifier, so an attribute base has
-    // no current source site -- and task 4 refuses an unanchored fact
-    // rather than inventing one. The limitation is why Inheritance is
-    // reported PARTIAL.
     let text = fixture.text("pkg/inherit.py");
-    let qualified = text.find("base.Base").expect("the qualified base");
+    let written = "base.Base";
+    let at = text.find(written).expect("the qualified base");
+    let site = OccurrenceRef {
+        kind: OccurrenceKind::TypeSite,
+        start_byte: at,
+        end_byte: at + written.len(),
+    };
+
+    // Structurally: an exact Occurrence over the whole written
+    // expression, owned by the subclass, left open for semantics.
     let store = GraphStore::open(&fixture.db_path()).expect("index.db");
-    assert!(
-        !list_occurrences_for_resource(store.connection(), fixture.resource("pkg/inherit.py").id)
+    let occurrence =
+        list_occurrences_for_resource(store.connection(), fixture.resource("pkg/inherit.py").id)
             .expect("occurrences")
-            .iter()
-            .any(|occurrence| occurrence.span.start_byte >= qualified
-                && occurrence.span.end_byte <= qualified + "base.Base".len()),
-        "I3 records no Occurrence for an attribute-expression base"
+            .into_iter()
+            .find(|occurrence| occurrence.span.start_byte == site.start_byte)
+            .expect("the qualified base has a site");
+    assert_eq!(occurrence.kind, OccurrenceKind::TypeSite);
+    assert_eq!(occurrence.span.end_byte, site.end_byte);
+    assert_eq!(
+        occurrence.containing_symbol_id,
+        Some(symbol(&fixture, "pkg/inherit.py", "Qualified")),
+        "the subclass owns its own base list"
     );
-    assert!(
+    assert!(occurrence.relation_id.is_none(), "nothing is guessed");
+
+    let gap =
+        list_unresolved_for_resource(store.connection(), fixture.resource("pkg/inherit.py").id)
+            .expect("gaps")
+            .into_iter()
+            .find(|gap| gap.occurrence == site)
+            .expect("a semantic-required inheritance gap");
+    assert_eq!(gap.intended, IntendedRelation::Known(RelationKind::Extends));
+    assert_eq!(gap.reason, UnresolvedReason::TypeSemanticsRequired);
+    drop(store);
+
+    // Semantically: the backend proves the target and the edge is
+    // sourced from the subclass Symbol.
+    let uri = fixture.uri("pkg/inherit.py");
+    let backend = impl_backend(&fixture).with_definition(
+        &uri,
+        last_character(&fixture, "pkg/inherit.py", written, 0),
+        vec![fixture.location("pkg/base.py", "Base", 0)],
+    );
+    let outcome = refresh(&fixture, &backend, "pkg/inherit.py").expect("published");
+    assert!(outcome.merged.gaps_resolved > 0);
+
+    let qualified = symbol(&fixture, "pkg/inherit.py", "Qualified");
+    let extends: Vec<GraphEndpoint> = RelationIndex::open(&fixture.db_path())
+        .expect("index.db")
+        .outgoing(&GraphEndpoint::Symbol(qualified), &[RelationKind::Extends])
+        .expect("outgoing")
+        .confirmed
+        .into_iter()
+        .map(|relation| relation.target)
+        .collect();
+    assert_eq!(
+        extends,
+        vec![GraphEndpoint::Symbol(symbol(
+            &fixture,
+            "pkg/base.py",
+            "Base"
+        ))]
+    );
+
+    // And the derivation that depends on it now works too.
+    assert_eq!(
         overrides_of(
             &fixture,
             symbol(&fixture, "pkg/inherit.py", "Qualified.run")
+        ),
+        vec![GraphEndpoint::Symbol(symbol(
+            &fixture,
+            "pkg/base.py",
+            "Base.run"
+        ))]
+    );
+}
+
+#[test]
+fn a_qualified_base_to_a_dependency_normalizes_without_indexing_it() {
+    let fixture = Fixture::create("abc");
+    let resources_before = count(&fixture, "resource");
+    let uri = fixture.uri("pkg/shapes.py");
+    let backend = impl_backend(&fixture).with_definition(
+        &uri,
+        last_character(&fixture, "pkg/shapes.py", "abc.ABC", 0),
+        vec![Location {
+            uri: protocol::path_to_uri(std::path::Path::new("/typeshed/stdlib/abc.pyi")),
+            range: Range::new(Position::new(20, 6), Position::new(20, 9)),
+        }],
+    );
+    refresh(&fixture, &backend, "pkg/shapes.py").expect("published");
+
+    let abstract_class = symbol(&fixture, "pkg/shapes.py", "Abstract");
+    let extends = RelationIndex::open(&fixture.db_path())
+        .expect("index.db")
+        .outgoing(
+            &GraphEndpoint::Symbol(abstract_class),
+            &[RelationKind::Extends],
         )
-        .is_empty()
+        .expect("outgoing")
+        .confirmed;
+    assert_eq!(extends.len(), 1);
+    let GraphEndpoint::External(entity) = &extends[0].target else {
+        panic!(
+            "a dependency base is an external identity: {:?}",
+            extends[0]
+        );
+    };
+    assert_eq!(entity.package_identity, "abc");
+    assert_eq!(
+        count(&fixture, "resource"),
+        resources_before,
+        "no dependency file becomes a Resource to hold the base"
+    );
+}
+
+#[test]
+fn a_qualified_base_without_a_backend_keeps_the_answer_incomplete() {
+    let fixture = Fixture::create("falsezero");
+    // No semantic publication at all: the structural tier alone.
+    let store = GraphStore::open(&fixture.db_path()).expect("index.db");
+    let gaps =
+        list_unresolved_for_resource(store.connection(), fixture.resource("pkg/inherit.py").id)
+            .expect("gaps");
+    assert!(
+        gaps.iter().any(
+            |gap| gap.intended == IntendedRelation::Known(RelationKind::Extends)
+                && gap.reason == UnresolvedReason::TypeSemanticsRequired
+        ),
+        "the inheritance site survives without a backend"
+    );
+    drop(store);
+
+    // So an inheritance query over the subclass is incomplete rather
+    // than a clean zero.
+    let answer = RelationIndex::open(&fixture.db_path())
+        .expect("index.db")
+        .outgoing(
+            &GraphEndpoint::Symbol(symbol(&fixture, "pkg/inherit.py", "Qualified")),
+            &[RelationKind::Extends],
+        )
+        .expect("outgoing");
+    assert_eq!(answer.confirmed_count(), 0);
+    assert!(
+        !answer.gaps.is_empty(),
+        "zero confirmed with no gap would be the false zero this prevents"
     );
     assert!(
-        outcome
-            .unproven_overrides
-            .iter()
-            .all(|unproven| unproven.method != symbol(&fixture, "pkg/inherit.py", "Qualified.run")),
-        "a class with no proven base is not an unproven override, it is not an override"
+        !answer.coverage.limits().is_complete(),
+        "coverage says the answer is not complete"
     );
-    assert_eq!(INHERITANCE_SUPPORT, Support::Partial);
+}
+
+#[test]
+fn inheritance_is_sourced_from_the_subclass_and_replaced_on_re_extraction() {
+    let fixture = Fixture::create("ownership");
+    let resource_sourced = |fixture: &Fixture| -> i64 {
+        GraphStore::open(&fixture.db_path())
+            .expect("index.db")
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM relation \
+                 JOIN graph_entity ON graph_entity.id = relation.source_entity_id \
+                 WHERE relation.kind = 'EXTENDS' \
+                   AND graph_entity.entity_kind = 'RESOURCE'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count")
+    };
+    assert_eq!(
+        resource_sourced(&fixture),
+        0,
+        "no inheritance relation is sourced from a file"
+    );
+    assert!(
+        RelationIndex::open(&fixture.db_path())
+            .expect("index.db")
+            .outgoing(
+                &GraphEndpoint::Symbol(symbol(&fixture, "pkg/impl.py", "Impl")),
+                &[RelationKind::Extends],
+            )
+            .expect("outgoing")
+            .confirmed
+            .iter()
+            .any(|relation| relation.target
+                == GraphEndpoint::Symbol(symbol(&fixture, "pkg/base.py", "Base")))
+    );
+
+    // Re-extracting the whole Workspace neither duplicates the edge
+    // nor reintroduces a Resource-sourced one.
+    let before = count(&fixture, "relation WHERE kind = 'EXTENDS'");
+    crate::scan::BaselineScan::open(&fixture.db_path())
+        .expect("index.db")
+        .run_initial_scan(
+            &fixture.root,
+            &crate::config::WorkspaceConfig::default(),
+            "workspace-rev-2",
+        )
+        .expect("re-extract");
+    assert_eq!(count(&fixture, "relation WHERE kind = 'EXTENDS'"), before);
+    assert_eq!(resource_sourced(&fixture), 0);
+}
+
+#[test]
+fn a_base_interface_change_reaches_the_subclass_through_the_corrected_source() {
+    let fixture = Fixture::create("baseimpact");
+    let base = GraphEndpoint::Symbol(symbol(&fixture, "pkg/base.py", "Base"));
+    let impact = crate::impact::ImpactTraversal::open(&fixture.db_path())
+        .expect("index.db")
+        .run(
+            crate::impact::ImpactIntent::BaseInterfaceChange,
+            &base,
+            &crate::impact::Budget::default(),
+        )
+        .expect("impact");
+    let subclass = GraphEndpoint::Symbol(symbol(&fixture, "pkg/impl.py", "Impl"));
+    assert!(
+        impact.nodes.iter().any(|node| node.endpoint == subclass),
+        "a Resource-sourced EXTENDS could never have identified the subclass"
+    );
 }
 
 #[test]

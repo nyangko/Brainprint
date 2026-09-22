@@ -40,7 +40,7 @@ use rusqlite::Connection;
 
 use crate::{
     evidence::OccurrenceRef,
-    graph::{GraphEndpoint, GraphError, RelationKind, endpoint_of_entity},
+    graph::{GraphEndpoint, GraphError, RelationKind, relations_from},
     resolution::{Dispatch, EvidenceBasis, Support},
     resource::Resource,
     semantic::{SemanticCapability, SemanticEvidence, SemanticOutcome},
@@ -121,13 +121,12 @@ pub fn derive(
     // One cache per Resource: a base class's member list is read once
     // however many subclasses in this file reach it.
     let mut members: BTreeMap<SymbolId, Vec<Symbol>> = BTreeMap::new();
-    let mut bases = BaseLists::default();
 
     for class in own.iter().filter(|symbol| symbol.kind == SymbolKind::Class) {
         // A class with no proven ancestor is still visited: one of its
         // members may claim an override, and that claim is worth
         // reporting precisely because nothing supports it.
-        let ancestry = ancestors(connection, class.id, extra_bases, &mut bases)?;
+        let ancestry = ancestors(connection, class.id, extra_bases)?;
         for member in own
             .iter()
             .filter(|symbol| symbol.parent_id == Some(class.id))
@@ -272,11 +271,17 @@ fn members_of<'a>(
 }
 
 /// Every proven ancestor of `class`, by depth.
+///
+/// Read straight off the canonical `EXTENDS` edges, whose source is the
+/// subclass Symbol. It was not always: I3 used to publish a Python base
+/// list from the Resource, because the walker collects type evidence
+/// before it emits the class Symbol. That is fixed at the source, and
+/// this reads one inheritance model rather than reconstructing a second
+/// one from spans.
 fn ancestors(
     connection: &Connection,
     class: SymbolId,
     extra: &[(SymbolId, SymbolId)],
-    bases: &mut BaseLists,
 ) -> Result<Ancestry, GraphError> {
     let mut by_depth: BTreeMap<usize, Vec<SymbolId>> = BTreeMap::new();
     let mut seen: BTreeSet<SymbolId> = BTreeSet::from([class]);
@@ -288,16 +293,23 @@ fn ancestors(
             continue;
         }
         let mut direct: Vec<SymbolId> = Vec::new();
-        for base in bases.of(connection, current)? {
-            match base {
+        for relation in relations_from(
+            connection,
+            &GraphEndpoint::Symbol(current),
+            Some(RelationKind::Extends),
+        )? {
+            match relation.target {
+                GraphEndpoint::Symbol(base) => direct.push(base),
                 // A base outside the Workspace. Its members are not
                 // indexed and must not be, so "no ancestor declares
                 // this" stops being a reliable answer and the
                 // derivation says so instead of pretending otherwise.
-                Base::External => opaque = true,
-                Base::Symbol(symbol) => direct.push(symbol),
+                GraphEndpoint::External(_) => opaque = true,
+                GraphEndpoint::Resource(_) | GraphEndpoint::Domain(_) => {}
             }
         }
+        // A base this same refresh proved and has not merged yet. Same
+        // model, same subclass-Symbol source; only the storage differs.
         direct.extend(
             extra
                 .iter()
@@ -313,114 +325,6 @@ fn ancestors(
         }
     }
     Ok(Ancestry { by_depth, opaque })
-}
-
-/// One base-list entry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Base {
-    Symbol(SymbolId),
-    External,
-}
-
-/// Which classes declare which bases, read once per Resource.
-///
-/// The pairing is by span, not by the EXTENDS edge's source. I3
-/// attributes a Python base-list entry to the *Resource*, because
-/// `types::type_relations` takes its source from the Occurrence's
-/// containing Symbol and a base list sits in the class header where
-/// there is none -- only Rust's `impl Trait for Type` fills in the
-/// `implementor` field that exists for this. The pairing is still
-/// exact: a base-list Occurrence is the one TYPE_SITE inside a class
-/// declaration that belongs to no member, and span nesting says which
-/// class declared it.
-#[derive(Default)]
-pub(crate) struct BaseLists {
-    by_resource: BTreeMap<ResourceId, BTreeMap<SymbolId, Vec<Base>>>,
-}
-
-impl BaseLists {
-    fn of(&mut self, connection: &Connection, class: SymbolId) -> Result<Vec<Base>, GraphError> {
-        let Some(resource) = resource_of(connection, class)? else {
-            return Ok(Vec::new());
-        };
-        if let std::collections::btree_map::Entry::Vacant(slot) = self.by_resource.entry(resource) {
-            slot.insert(load_base_lists(connection, resource)?);
-        }
-        Ok(self.by_resource[&resource]
-            .get(&class)
-            .cloned()
-            .unwrap_or_default())
-    }
-}
-
-fn load_base_lists(
-    connection: &Connection,
-    resource: ResourceId,
-) -> Result<BTreeMap<SymbolId, Vec<Base>>, GraphError> {
-    let classes: Vec<Symbol> = list_for_resource(connection, resource)
-        .map_err(sql)?
-        .into_iter()
-        .filter(|symbol| symbol.kind == SymbolKind::Class)
-        .collect();
-    let mut statement = connection.prepare(
-        "SELECT occurrence.start_byte, occurrence.end_byte, relation.kind, \
-                relation.target_entity_id \
-         FROM occurrence \
-         JOIN resource ON resource.id = occurrence.resource_id \
-         JOIN relation ON relation.id = occurrence.relation_id \
-         WHERE resource.uid = ?1 AND occurrence.kind = 'TYPE_SITE' \
-           AND occurrence.containing_symbol_id IS NULL",
-    )?;
-    let rows: Vec<(i64, i64, String, i64)> = statement
-        .query_map(rusqlite::params![resource.to_bytes().to_vec()], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
-        })?
-        .collect::<Result<_, _>>()?;
-
-    let mut found: BTreeMap<SymbolId, Vec<Base>> = BTreeMap::new();
-    for (start, end, kind, target) in rows {
-        // Only an inheritance entry. A USES_TYPE at file level is an
-        // annotation on a free function, not a base.
-        if RelationKind::parse(&kind)? != RelationKind::Extends {
-            continue;
-        }
-        let start = usize::try_from(start).unwrap_or(0);
-        let end = usize::try_from(end).unwrap_or(0);
-        let Some(owner) = innermost_class(&classes, start, end) else {
-            continue;
-        };
-        let base = match endpoint_of_entity(connection, target)? {
-            GraphEndpoint::Symbol(symbol) => Base::Symbol(symbol),
-            GraphEndpoint::External(_) => Base::External,
-            GraphEndpoint::Resource(_) | GraphEndpoint::Domain(_) => continue,
-        };
-        found.entry(owner).or_default().push(base);
-    }
-    Ok(found)
-}
-
-/// The narrowest class declaration containing a span, or `None` when
-/// two of them are equally narrow.
-fn innermost_class(classes: &[Symbol], start: usize, end: usize) -> Option<SymbolId> {
-    let mut best: Option<&Symbol> = None;
-    for class in classes {
-        if class.span.start_byte > start || class.span.end_byte < end {
-            continue;
-        }
-        let width = class.span.end_byte - class.span.start_byte;
-        match best {
-            Some(current) => {
-                let held = current.span.end_byte - current.span.start_byte;
-                if width < held {
-                    best = Some(class);
-                } else if width == held && current.id != class.id {
-                    return None;
-                }
-            }
-            None => best = Some(class),
-        }
-    }
-    best.map(|class| class.id)
 }
 
 /// The `DEFINITION` Occurrence that declares `member`.

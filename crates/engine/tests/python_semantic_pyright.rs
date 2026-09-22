@@ -362,6 +362,62 @@ fn the_real_type_server_resolves_the_task_five_fixture() {
         );
     }
 
+    // Corrected inheritance ownership: the subclass is the source,
+    // never the file, and a qualified base is resolved rather than
+    // missing.
+    let extends_of = |rel: &str, qualified_name: &str| -> Vec<GraphEndpoint> {
+        RelationIndex::open(&db_path)
+            .expect("index.db")
+            .outgoing(
+                &GraphEndpoint::Symbol(symbol_in(rel, qualified_name).id),
+                &[RelationKind::Extends],
+            )
+            .expect("outgoing")
+            .confirmed
+            .into_iter()
+            .map(|relation| relation.target)
+            .collect()
+    };
+    assert_eq!(
+        extends_of("pkg/impl.py", "Impl"),
+        vec![GraphEndpoint::Symbol(symbol_in("pkg/base.py", "Base").id)]
+    );
+    assert_eq!(
+        count(
+            "SELECT COUNT(*) FROM relation \
+             JOIN graph_entity ON graph_entity.id = relation.source_entity_id \
+             WHERE relation.kind = 'EXTENDS' AND graph_entity.entity_kind = 'RESOURCE'"
+        ),
+        0,
+        "no inheritance relation is sourced from a file"
+    );
+    // `class Qualified(base.Base)` -- an exact site the backend proves.
+    assert_eq!(
+        extends_of("pkg/inherit.py", "Qualified"),
+        vec![GraphEndpoint::Symbol(symbol_in("pkg/base.py", "Base").id)]
+    );
+    // `class Abstract(abc.ABC)` -- a dependency base, as an external
+    // identity, with nothing deep-indexed to get it.
+    let abstract_bases = extends_of("pkg/shapes.py", "Abstract");
+    assert_eq!(abstract_bases.len(), 1);
+    assert!(
+        matches!(abstract_bases[0], GraphEndpoint::External(_)),
+        "unexpected: {abstract_bases:?}"
+    );
+    // A nested class owns its own base.
+    assert_eq!(
+        extends_of("pkg/inherit.py", "Outer.Inner"),
+        vec![GraphEndpoint::Symbol(
+            symbol_in("pkg/inherit.py", "Mixin").id
+        )]
+    );
+    // And the derivation that the corrected ownership unblocks.
+    assert_eq!(
+        overrides_of("pkg/inherit.py", "Qualified.run").len(),
+        1,
+        "a qualified base now carries its override through"
+    );
+
     // Exact evidence spans: the override is anchored on the name token
     // of the overriding declaration, so a reader gets source.
     let impl_run = symbol_in("pkg/impl.py", "Impl.run");
