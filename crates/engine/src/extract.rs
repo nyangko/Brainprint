@@ -194,9 +194,13 @@ pub fn extract(tree: &ParseTree, source: &[u8]) -> Extraction {
     let profile = AnalysisProfile::of(descriptor);
 
     if !descriptor.capability.covers_whole_file() {
-        // A container's embedded script is a different language that a
-        // later adapter must map (I4). Returning an empty COMPLETE result
-        // here would be a false zero.
+        // A Svelte component's embedded script *is* extracted, in the
+        // component's own coordinates (#19 task 11). Everything else
+        // stays a container: returning an empty COMPLETE result for one
+        // would be a false zero.
+        if dialect == ParserDialect::Svelte {
+            return crate::svelte_structure::extract_component(tree, source, profile);
+        }
         return Extraction {
             status: ExtractionStatus::ContainerOnly,
             dialect,
@@ -226,6 +230,15 @@ pub fn extract(tree: &ParseTree, source: &[u8]) -> Extraction {
         },
     );
 
+    // A JSX element names a value, and the walker above does not record
+    // it: a tag name is not a call, not an import and not a declaration.
+    // #19 task 11 needs it, because `<UserCard />` resolving to the
+    // imported component is the whole React half.
+    if dialect.has_markup() {
+        let sites = jsx_component_uses(tree.syntax_tree().root_node(), source, &walker.symbols);
+        walker.occurrences.extend(sites);
+    }
+
     // Source order, which is also the order the evidence reads back in.
     walker.occurrences.sort_by(|left, right| {
         (left.span.start_byte, left.span.end_byte, left.kind.as_str()).cmp(&(
@@ -245,6 +258,129 @@ pub fn extract(tree: &ParseTree, source: &[u8]) -> Extraction {
         symbols: walker.symbols,
         occurrences: walker.occurrences,
     }
+}
+
+/// Every JSX element name that this module binds.
+///
+/// The discriminator is binding, not capitalisation. `<div>` and
+/// `<UserCard>` are the same node kind in the grammar, and the thing
+/// that actually separates them is that one of them is imported or
+/// declared here and the other is an intrinsic element that is not a
+/// name in this module at all. So the rule reads the module's own
+/// bindings -- which is also why there is no "capitalised means
+/// component" heuristic anywhere in this tier, and why a renamed import
+/// (`UserCard as OtherCard`) is picked up for free.
+///
+/// Both ends of a paired element are recorded. `<Foo>…</Foo>` writes the
+/// name twice and an Agent editing it has to see both.
+fn jsx_component_uses(
+    root: Node<'_>,
+    source: &[u8],
+    symbols: &[ExtractedSymbol],
+) -> Vec<ExtractedOccurrence> {
+    let mut bound: std::collections::BTreeSet<&str> = symbols
+        .iter()
+        .filter(|symbol| symbol.parent.is_none())
+        .map(|symbol| symbol.name.as_str())
+        .collect();
+    let mut found = Vec::new();
+    collect_jsx(root, source, &mut bound, &mut found, symbols);
+    found
+}
+
+fn collect_jsx<'a>(
+    node: Node<'_>,
+    source: &'a [u8],
+    bound: &mut std::collections::BTreeSet<&'a str>,
+    found: &mut Vec<ExtractedOccurrence>,
+    symbols: &[ExtractedSymbol],
+) {
+    match node.kind() {
+        // An import clause binds every local name it introduces --
+        // default, namespace and named alike -- and those are exactly
+        // the names a component tag can be.
+        "import_clause" => {
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                bind_import_names(child, source, bound);
+            }
+        }
+        "jsx_opening_element" | "jsx_self_closing_element" | "jsx_closing_element" => {
+            let mut cursor = node.walk();
+            if let Some(name) = node
+                .children(&mut cursor)
+                .find(|child| child.kind() == "identifier")
+                && let Ok(text) = std::str::from_utf8(&source[name.start_byte()..name.end_byte()])
+                && bound.contains(text)
+            {
+                found.push(ExtractedOccurrence {
+                    kind: OccurrenceKind::ReferenceSite,
+                    span: span_of(name),
+                    containing: enclosing_symbol(symbols, name.start_byte(), name.end_byte()),
+                });
+            }
+        }
+        _ => {}
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_jsx(child, source, bound, found, symbols);
+    }
+}
+
+fn bind_import_names<'a>(
+    node: Node<'_>,
+    source: &'a [u8],
+    bound: &mut std::collections::BTreeSet<&'a str>,
+) {
+    match node.kind() {
+        "identifier" => {
+            if let Ok(text) = std::str::from_utf8(&source[node.start_byte()..node.end_byte()]) {
+                bound.insert(text);
+            }
+        }
+        // `{ UserCard }`, `{ UserCard as OtherCard }`, `* as all`. The
+        // *last* identifier of each specifier is the local name, which
+        // is what the markup below writes.
+        "named_imports" | "namespace_import" | "import_specifier" => {
+            let mut cursor = node.walk();
+            let children: Vec<Node<'_>> = node.children(&mut cursor).collect();
+            if node.kind() == "import_specifier" {
+                if let Some(last) = children
+                    .iter()
+                    .rev()
+                    .find(|child| matches!(child.kind(), "identifier"))
+                    && let Ok(text) =
+                        std::str::from_utf8(&source[last.start_byte()..last.end_byte()])
+                {
+                    bound.insert(text);
+                }
+            } else {
+                for child in children {
+                    bind_import_names(child, source, bound);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The smallest declaration whose span contains `start..end`.
+fn enclosing_symbol(symbols: &[ExtractedSymbol], start: usize, end: usize) -> Option<usize> {
+    let mut best: Option<usize> = None;
+    for (index, symbol) in symbols.iter().enumerate() {
+        if symbol.span.start_byte <= start && end <= symbol.span.end_byte {
+            let smaller = best.is_none_or(|current| {
+                let held = &symbols[current];
+                symbol.span.end_byte - symbol.span.start_byte
+                    < held.span.end_byte - held.span.start_byte
+            });
+            if smaller {
+                best = Some(index);
+            }
+        }
+    }
+    best
 }
 
 /// Bind an extraction's evidence to a Resource, a profile, and the
@@ -2012,29 +2148,73 @@ def two():
     }
 
     #[test]
-    fn a_container_dialect_invents_no_evidence() {
+    fn a_svelte_container_extracts_its_script_in_the_components_own_coordinates() {
+        // #19 task 11. Before it, this file declared nothing at all and
+        // a template reference had no possible target but the file
+        // itself.
         let source = "<script lang=\"ts\">\n  export function go() { run() }\n</script>\n";
         let extraction = run(ParserDialect::Svelte, source);
 
-        assert_eq!(extraction.status, ExtractionStatus::ContainerOnly);
-        assert!(
-            extraction.occurrences.is_empty(),
-            "an unread embedded script yields no occurrences, true or false"
+        assert_eq!(extraction.status, ExtractionStatus::Complete);
+        let go = extraction
+            .symbols
+            .iter()
+            .find(|symbol| symbol.name == "go")
+            .expect("the script declares `go`");
+        assert_eq!(
+            &source[go.span.start_byte..go.span.end_byte],
+            "function go() { run() }",
+            "the span indexes the component, not the extracted fragment"
+        );
+        assert_eq!(
+            (go.span.start.line, go.span.start.column),
+            (1, 9),
+            "line 1 of the component, at its own column -- not line 0 of \
+             the fragment, which is what a flat byte shift would have left"
+        );
+        // The profile still says container, because a component is more
+        // than the script this reads.
+        assert_eq!(
+            extraction.profile.capability_fingerprint,
+            "container:TYPESCRIPT,JAVASCRIPT"
         );
     }
 
     #[test]
-    fn svelte_is_container_only_and_not_an_empty_success() {
+    fn a_svelte_template_use_is_evidence_only_where_the_script_binds_the_name() {
+        let source = "<script lang=\"ts\">\n  let label = 'x';\n</script>\n\
+                      <p>{label}</p>\n<p>{missing}</p>\n<button>{label}</button>\n";
+        let extraction = run(ParserDialect::Svelte, source);
+
+        let uses: Vec<&str> = extraction
+            .occurrences
+            .iter()
+            .filter(|occurrence| occurrence.kind == OccurrenceKind::ReferenceSite)
+            .map(|occurrence| &source[occurrence.span.start_byte..occurrence.span.end_byte])
+            .collect();
+        assert_eq!(uses, vec!["label", "label"], "{uses:?}");
+        // `missing` is a name nothing declares and `button` is a DOM
+        // element. Neither gets an Occurrence, so neither can become a
+        // relation to a Symbol that was never there.
+        assert!(!uses.contains(&"missing"));
+        assert!(!uses.contains(&"button"));
+    }
+
+    #[test]
+    fn a_svelte_component_is_extracted_and_still_declares_itself_a_container() {
         let source =
             "<script lang=\"ts\">\n  export let label: string;\n</script>\n<p>{label}</p>\n";
         let extraction = run(ParserDialect::Svelte, source);
 
-        assert_eq!(extraction.status, ExtractionStatus::ContainerOnly);
+        assert_eq!(extraction.status, ExtractionStatus::Complete);
+        assert!(extraction.is_accepted());
         assert!(
-            !extraction.is_accepted(),
-            "an unextracted container must never read as a component that declares nothing"
+            extraction
+                .symbols
+                .iter()
+                .any(|symbol| symbol.name == "label"),
+            "the script's declaration is the component's declaration"
         );
-        assert!(extraction.symbols.is_empty());
         assert_eq!(
             extraction.profile.capability_fingerprint,
             "container:TYPESCRIPT,JAVASCRIPT"

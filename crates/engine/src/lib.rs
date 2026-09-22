@@ -44,6 +44,8 @@ pub mod semantic_lifecycle;
 pub mod semantic_normalize;
 pub mod semantic_overrides;
 pub mod structural;
+pub mod svelte_semantic;
+pub mod svelte_structure;
 pub mod symbol;
 pub mod telemetry;
 pub mod types;

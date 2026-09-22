@@ -1209,6 +1209,7 @@ the retry budget is deliberate, see App.run
         fixture.index();
         let index = fixture.query();
         let symbols_before = count(&fixture, "symbol");
+        let occurrences_before = count(&fixture, "occurrence");
 
         let result = fixture.search(
             &index,
@@ -1229,13 +1230,17 @@ the retry budget is deliberate, see App.run
             symbols_before,
             "the search published no Symbol of its own"
         );
-        for table in [
-            "occurrence",
-            "relation",
-            "unresolved_reference",
-            "graph_entity",
+        for (table, before) in [
+            ("occurrence", occurrences_before),
+            ("relation", 0),
+            ("unresolved_reference", 0),
+            ("graph_entity", 0),
         ] {
-            assert_eq!(count(&fixture, table), 0, "{table} must stay empty");
+            assert_eq!(
+                count(&fixture, table),
+                before,
+                "{table} must be exactly what the baseline left"
+            );
         }
 
         let database = fs::read(fixture.db_path()).expect("index.db");
@@ -1362,10 +1367,13 @@ the retry budget is deliberate, see App.run
         let index = fixture.query();
         let widget = fixture.resource("ui/Widget.svelte").id;
 
+        // A name the component's script does not declare. What it *does*
+        // declare has been found since #19 task 11; a component is still
+        // more than its script, so zero here stays a coverage statement.
         let located = index
             .search_symbols(&SymbolQuery {
                 scope: Some(ResourceScope::Id(widget)),
-                ..SymbolQuery::new(SymbolSelector::Name("mount"))
+                ..SymbolQuery::new(SymbolSelector::Name("never_declared"))
             })
             .expect("search");
 

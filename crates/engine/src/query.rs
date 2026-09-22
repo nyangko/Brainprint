@@ -1482,10 +1482,27 @@ def run():
         let index = fixture.index();
         let widget = fixture.resource("ui/Widget.svelte");
 
+        // #19 task 11 made the component's script real, so what it
+        // declares is found.
+        assert!(
+            !index
+                .search_symbols(&SymbolQuery {
+                    scope: Some(ResourceScope::Id(widget.id)),
+                    ..SymbolQuery::new(SymbolSelector::Name("mount"))
+                })
+                .expect("search")
+                .candidates
+                .is_empty(),
+            "the component's script declares `mount`"
+        );
+
+        // And a name it does not declare is still a coverage statement
+        // rather than a complete not-found, because a component is more
+        // than its script.
         let located = index
             .search_symbols(&SymbolQuery {
                 scope: Some(ResourceScope::Id(widget.id)),
-                ..SymbolQuery::new(SymbolSelector::Name("mount"))
+                ..SymbolQuery::new(SymbolSelector::Name("never_declared"))
             })
             .expect("search");
 

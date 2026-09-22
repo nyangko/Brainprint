@@ -1991,25 +1991,32 @@ export function top(): number { return 1 }
     }
 
     #[test]
-    fn a_svelte_component_publishes_no_evidence_and_is_not_an_empty_success() {
+    fn a_svelte_component_publishes_its_script_in_the_components_coordinates() {
+        let source = "<script lang=\"ts\">\n  export function go() { run() }\n</script>\n\
+                      <p>{go}</p>\n";
         let fixture = Fixture::create("occurrence-svelte");
-        fixture.write(
-            "View.svelte",
-            "<script lang=\"ts\">\n  export function go() { run() }\n</script>\n<p/>\n",
-        );
-        let (store, resource, _) = fixture.baseline_with_generation("View.svelte");
+        fixture.write("View.svelte", source);
+        let (_store, resource, _) = fixture.baseline_with_generation("View.svelte");
         let dialect = dialect_for_resource(&resource).expect("dialect");
-        let extraction = extraction_of(dialect, "<script/>");
+        let extraction = extraction_of(dialect, source);
 
-        assert_eq!(extraction.status, ExtractionStatus::ContainerOnly);
-        assert!(!extraction.is_accepted(), "not an empty success");
-        assert!(extraction.occurrences.is_empty());
-        assert!(
-            store
-                .list_occurrences_for_resource(resource.id)
-                .expect("list")
-                .is_empty()
-        );
+        // #19 task 11: the embedded script is extracted, and every span
+        // indexes the component rather than the fragment.
+        assert_eq!(extraction.status, ExtractionStatus::Complete);
+        assert!(extraction.symbols.iter().any(|symbol| symbol.name == "go"));
+        let template = extraction
+            .occurrences
+            .iter()
+            .filter(|occurrence| occurrence.kind == OccurrenceKind::ReferenceSite)
+            .map(|occurrence| &source[occurrence.span.start_byte..occurrence.span.end_byte])
+            .collect::<Vec<_>>();
+        assert_eq!(template, vec!["go"], "the template use of a bound name");
+        for occurrence in &extraction.occurrences {
+            assert!(
+                occurrence.span.end_byte <= source.len(),
+                "a span outside the component would be a fragment offset"
+            );
+        }
     }
 
     #[test]

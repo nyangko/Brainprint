@@ -68,9 +68,14 @@ pub enum StructuralState {
     /// published at its new revision; the stored structure is the last
     /// valid one and is not current.
     Partial,
-    /// Only the container's own structure is indexed (a Svelte
-    /// component). Zero Symbols is a statement about coverage, never
-    /// about the file.
+    /// A container: some of the Resource is indexed and some is not.
+    ///
+    /// For a Svelte component that is its `<script>` declarations and
+    /// the template uses they bind (#19 task 11) -- but not its
+    /// `<style>`, and not template locals no script declares. So the
+    /// Symbol set may be non-empty and is still not the whole file,
+    /// which is why this never claims an empty result is complete
+    /// ([`Self::may_claim_empty`]).
     ContainerOnly,
     /// No Tier-1 grammar covers this Resource. Also never a zero-result
     /// "complete".
@@ -348,7 +353,13 @@ pub(crate) fn publish_resource(
             );
         }
     };
-    if !matches!(dialect.capability(), StructuralCapability::WholeFile) {
+    // A container whose embedded regions this build does not read has
+    // nothing to extract, and says so. One whose regions it *does* read
+    // (a Svelte component, #19 task 11) goes through the ordinary path
+    // and publishes what it declares -- while still recording
+    // CONTAINER_ONLY, because a component is more than its script.
+    let container = !matches!(dialect.capability(), StructuralCapability::WholeFile);
+    if container && !dialect.extracts_embedded() {
         return record(
             connection,
             resource,
@@ -430,16 +441,21 @@ pub(crate) fn publish_resource(
         &symbols,
         &occurrences,
     )?;
+    let state = if container {
+        StructuralState::ContainerOnly
+    } else {
+        StructuralState::Complete
+    };
     write(
         connection,
         resource.id,
-        StructuralState::Complete,
+        state,
         publication_revision,
         Some(generation_id),
         None,
     )?;
     Ok(StructuralOutcome {
-        state: StructuralState::Complete,
+        state,
         symbols: symbols.len(),
         occurrences: occurrences.len(),
     })
@@ -669,12 +685,17 @@ def run():
             .id;
         assert_eq!(structure.published_generation_id, Some(stable));
 
-        // Coverage that is not complete says so instead of pretending.
+        // Coverage that is not complete says so instead of pretending --
+        // and since #19 task 11 a component's script is published, so
+        // "not complete" no longer means "nothing".
         assert_eq!(
             fixture.structure("ui/Widget.svelte").state,
             StructuralState::ContainerOnly
         );
-        assert!(fixture.symbols("ui/Widget.svelte").is_empty());
+        assert!(
+            !fixture.symbols("ui/Widget.svelte").is_empty(),
+            "the embedded script is extracted in the component's own coordinates"
+        );
         assert_eq!(
             fixture.structure("docs/readme.md").state,
             StructuralState::Unsupported
@@ -901,11 +922,13 @@ def run():
             .expect("search");
         assert_eq!(structured_status(&complete), QueryStatus::NotFound);
 
-        // CONTAINER_ONLY: zero is a statement about coverage.
+        // CONTAINER_ONLY: zero is a statement about coverage. `mount`
+        // itself is found now (#19 task 11); what is not found is a name
+        // the component's script never declared.
         let container = index
             .search_symbols(&SymbolQuery {
                 scope: Some(ResourceScope::Id(fixture.resource("ui/Widget.svelte").id)),
-                ..SymbolQuery::new(SymbolSelector::Name("mount"))
+                ..SymbolQuery::new(SymbolSelector::Name("never_declared"))
             })
             .expect("search");
         assert_eq!(structured_status(&container), QueryStatus::Unsupported);

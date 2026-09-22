@@ -568,11 +568,24 @@ fn incomplete_coverage_is_never_a_complete_zero_result() {
     workspace.initial_scan();
     let index = workspace.index();
 
-    // Container-only (Svelte).
+    // Container-only (Svelte). Since #19 task 11 the component's script
+    // is extracted, so what it declares is found; a component is still
+    // more than its script, and a name it does not declare stays a
+    // coverage statement rather than a complete zero.
+    assert!(
+        !index
+            .search_symbols(&SymbolQuery {
+                scope: Some(ResourceScope::Id(workspace.resource("ui/Widget.svelte").id)),
+                ..SymbolQuery::new(SymbolSelector::Name("mount"))
+            })
+            .expect("search")
+            .candidates
+            .is_empty()
+    );
     let container = index
         .search_symbols(&SymbolQuery {
             scope: Some(ResourceScope::Id(workspace.resource("ui/Widget.svelte").id)),
-            ..SymbolQuery::new(SymbolSelector::Name("mount"))
+            ..SymbolQuery::new(SymbolSelector::Name("never_declared"))
         })
         .expect("search");
     assert!(container.candidates.is_empty());

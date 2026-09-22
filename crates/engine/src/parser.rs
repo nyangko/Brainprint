@@ -217,6 +217,19 @@ impl ParserDialect {
         }
     }
 
+    /// Whether this build reads the container's embedded regions.
+    ///
+    /// A capability statement says what the *grammar* covers; this says
+    /// what Brainprint currently does with it. #19 task 11 made a Svelte
+    /// component's `<script>` real -- its declarations are extracted in
+    /// the component's own byte offsets -- while the component stays a
+    /// container, because its `<style>` block and the template locals it
+    /// does not bind are still outside the index.
+    #[must_use]
+    pub const fn extracts_embedded(self) -> bool {
+        matches!(self, Self::Svelte)
+    }
+
     /// Whether the grammar covers embedded markup (JSX/TSX, Svelte
     /// template) as well as code.
     #[must_use]
