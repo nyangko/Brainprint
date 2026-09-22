@@ -58,7 +58,7 @@ use crate::{
     db,
     evidence::OccurrenceRef,
     gaps::UnresolvedReason,
-    graph::GraphEndpoint,
+    graph::{GraphEndpoint, RelationKind},
     resolution::{
         Dispatch, EvidenceBasis, Resolution, Support, UnknownAxisValue, closed_vocabulary,
         weaker_support,
@@ -548,6 +548,12 @@ pub struct SemanticEvidence {
     /// capability in this context can drop the evidence without
     /// inspecting it.
     pub capability: SemanticCapability,
+    /// The canonical relation this evidence states, when the backend
+    /// identified one. `None` for evidence that resolves a target
+    /// without stating what relation it is -- a type lookup used only to
+    /// bind a name. The merge tier (#19 task 4) refuses to turn `None`
+    /// into an edge rather than inferring a kind from the capability.
+    pub relation_kind: Option<RelationKind>,
     /// The Resource, revision, generation and profile this was read
     /// against -- the same basis structural evidence is published with,
     /// so freshness is one question and not two.
@@ -916,6 +922,7 @@ mod tests {
         SemanticEvidence {
             context_key: context().context_key(),
             capability: SemanticCapability::CallsCrossFile,
+            relation_kind: Some(RelationKind::Calls),
             basis: basis(),
             occurrence: Some(OccurrenceRef {
                 kind: OccurrenceKind::CallSite,

@@ -20,6 +20,7 @@ pub mod impact;
 pub mod imports;
 pub mod init;
 pub mod inspect;
+pub mod merge;
 pub mod parser;
 pub mod paths;
 pub mod prepare;

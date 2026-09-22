@@ -359,6 +359,62 @@ pub const INDEX_MIGRATIONS: &[Migration] = &[
               CREATE INDEX idx_semantic_publication_source_resource \
               ON semantic_publication_source (resource_id);",
     },
+    Migration {
+        version: 7,
+        name: "add_semantic_merge_contribution",
+        // #19 task 4. Semantic results enrich the one canonical graph:
+        // an edge a backend proves is a `relation` row like any other,
+        // and the site that states it is the `occurrence` the
+        // structural tier already recorded. What has nowhere to live in
+        // those tables is *which tier proved what*, and that is exactly
+        // the thing a downgrade needs to know: a relation that exists
+        // only because a backend said so must stop being claimed when
+        // the backend's answer stops being current, while one the
+        // parser proved must survive the backend disappearing
+        // entirely.
+        //
+        // `proof_role` is that distinction, and `displaced_*` is what
+        // the structural gap said before semantic evidence replaced it,
+        // so withdrawing a semantic proof restores an honest gap rather
+        // than a silence.
+        //
+        // Both tables cascade from `occurrence`: a structural
+        // re-extraction replaces a Resource's occurrences outright, and
+        // a semantic contribution anchored to spans that no longer
+        // exist is not a contribution.
+        sql: "CREATE TABLE semantic_evidence ( \
+                  id INTEGER PRIMARY KEY, \
+                  context_key TEXT NOT NULL, \
+                  occurrence_id INTEGER NOT NULL \
+                      REFERENCES occurrence (id) ON DELETE CASCADE, \
+                  relation_id INTEGER NOT NULL REFERENCES relation (id), \
+                  capability TEXT NOT NULL, \
+                  proof_role TEXT NOT NULL, \
+                  analysis_profile_id INTEGER NOT NULL REFERENCES analysis_profile (id), \
+                  generation_id INTEGER NOT NULL REFERENCES generation (id), \
+                  displaced_intended_kind TEXT, \
+                  displaced_lookup_name TEXT, \
+                  displaced_module_hint TEXT, \
+                  displaced_reason TEXT, \
+                  UNIQUE (context_key, occurrence_id) \
+              ); \
+              CREATE INDEX idx_semantic_evidence_relation ON semantic_evidence (relation_id); \
+              CREATE INDEX idx_semantic_evidence_occurrence ON semantic_evidence (occurrence_id); \
+              CREATE TABLE semantic_conflict ( \
+                  id INTEGER PRIMARY KEY, \
+                  context_key TEXT NOT NULL, \
+                  occurrence_id INTEGER NOT NULL \
+                      REFERENCES occurrence (id) ON DELETE CASCADE, \
+                  relation_kind TEXT NOT NULL, \
+                  source_entity_id INTEGER NOT NULL REFERENCES graph_entity (id), \
+                  structural_target_entity_id INTEGER NOT NULL REFERENCES graph_entity (id), \
+                  semantic_target_entity_id INTEGER NOT NULL REFERENCES graph_entity (id), \
+                  analysis_profile_id INTEGER NOT NULL REFERENCES analysis_profile (id), \
+                  generation_id INTEGER NOT NULL REFERENCES generation (id), \
+                  UNIQUE (context_key, occurrence_id, relation_kind) \
+              ); \
+              CREATE INDEX idx_semantic_conflict_occurrence ON semantic_conflict (occurrence_id);",
+    },
 ];
 
 /// Open (creating and migrating if needed) an `index.db` at `path`.
@@ -437,13 +493,15 @@ mod tests {
         "relation_candidate",
         "semantic_publication",
         "semantic_publication_source",
+        "semantic_evidence",
+        "semantic_conflict",
     ];
 
     #[test]
     fn fresh_rebuildable_index_db_can_be_created() {
         let dir = TestDir::create("fresh");
         let opened = open(&dir.db_path()).expect("fresh index.db should migrate");
-        assert_eq!(opened.schema_version, 6);
+        assert_eq!(opened.schema_version, 7);
     }
 
     #[test]
@@ -670,14 +728,14 @@ mod tests {
         open(&dir.db_path()).expect("first open should migrate");
         let reopened = open(&dir.db_path()).expect("reopen should be a no-op");
 
-        assert_eq!(reopened.schema_version, 6);
+        assert_eq!(reopened.schema_version, 7);
         let ledger_count: u32 = reopened
             .connection
             .query_row("SELECT COUNT(*) FROM schema_migration", [], |row| {
                 row.get(0)
             })
             .expect("ledger should be queryable");
-        assert_eq!(ledger_count, 6, "migration must not reapply on reopen");
+        assert_eq!(ledger_count, 7, "migration must not reapply on reopen");
     }
 
     #[test]

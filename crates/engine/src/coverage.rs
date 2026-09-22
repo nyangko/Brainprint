@@ -95,6 +95,24 @@ pub enum CoverageLimit {
     UnreadableResourceOwner,
     /// The index as a whole is not current.
     IndexNotCurrent,
+    /// A semantic backend confirmed a different target than the
+    /// structural tier did, for the same source site (#19 task 4).
+    /// Neither is discarded and neither is chosen, so an answer
+    /// covering that site is not a clean one.
+    ///
+    /// Not a synonym for [`Self::AmbiguousCandidates`]: that is one
+    /// tier holding several possibilities it refuses to guess between.
+    /// This is two tiers each *confirming*, and disagreeing.
+    SemanticConflict,
+    /// The semantic component covering the scope is not CURRENT, so
+    /// semantic enrichment is the last valid answer rather than the
+    /// current one (#19 task 3/4).
+    ///
+    /// Not a synonym for [`Self::DirtyRelationComponent`], which is the
+    /// structural relation component, nor for [`Self::IndexNotCurrent`],
+    /// which is the whole index: structural truth can be perfectly
+    /// current while this holds.
+    SemanticNotCurrent,
 }
 
 impl CoverageLimit {
@@ -117,6 +135,8 @@ impl CoverageLimit {
             Self::UnknownResourceRole => "UNKNOWN_RESOURCE_ROLE",
             Self::UnreadableResourceOwner => "UNREADABLE_RESOURCE_OWNER",
             Self::IndexNotCurrent => "INDEX_NOT_CURRENT",
+            Self::SemanticConflict => "SEMANTIC_CONFLICT",
+            Self::SemanticNotCurrent => "SEMANTIC_NOT_CURRENT",
         }
     }
 }

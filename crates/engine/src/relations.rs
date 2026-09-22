@@ -59,6 +59,7 @@ use crate::{
     gaps::{GapError, IntendedRelation, UnresolvedReason},
     graph::{self, GraphEndpoint, GraphError, Relation, RelationKind},
     graph_lifecycle,
+    merge::{self, MergeError, SemanticScope},
     parser::{SourcePoint, SourceSpan},
     resolution::{
         Dispatch, Freshness, Resolution, Support, TargetScope, freshness_of, support_of,
@@ -196,6 +197,10 @@ pub struct Coverage {
     /// The queried source's own Resource state, when the query had one
     /// (a forward query from a Resource or Symbol).
     pub scope: Option<ScopeState>,
+    /// What the semantic tier contributes to this scope, and what it
+    /// cannot currently say (#19 task 4). Empty when nothing semantic
+    /// touches the scope, which is the whole of I3.
+    pub semantic: SemanticScope,
 }
 
 impl Coverage {
@@ -224,6 +229,11 @@ impl Coverage {
         );
         report.note_if(self.truncated > 0, CoverageLimit::CandidateTruncated);
         report.note_if(self.unattributed > 0, CoverageLimit::UnattributedGaps);
+        // Two tiers confirming different targets is not a candidate set
+        // and not a stale index: it is its own reason a scope is not a
+        // clean answer.
+        report.note_if(self.semantic.conflicts > 0, CoverageLimit::SemanticConflict);
+        report.note_if(self.semantic.not_current, CoverageLimit::SemanticNotCurrent);
         match self.scope {
             Some(scope) => {
                 report.note_support(scope.support);
@@ -303,6 +313,8 @@ pub enum RelationError {
     NotATypeKind {
         kind: RelationKind,
     },
+    /// Reading the scope's semantic contribution failed (#19 task 4).
+    Semantic(MergeError),
 }
 
 impl fmt::Display for RelationError {
@@ -311,6 +323,7 @@ impl fmt::Display for RelationError {
             Self::Open(error) => write!(formatter, "open index.db: {error}"),
             Self::Sqlite(error) => write!(formatter, "index.db: {error}"),
             Self::Graph(error) => write!(formatter, "graph: {error}"),
+            Self::Semantic(error) => write!(formatter, "semantic: {error}"),
             Self::Gap(error) => write!(formatter, "gap: {error}"),
             Self::Symbol(error) => write!(formatter, "symbol: {error}"),
             Self::Structural { detail } => write!(formatter, "structural state: {detail}"),
@@ -515,6 +528,14 @@ impl RelationIndex {
             _ => None,
         };
 
+        let semantic = match scope {
+            Some(state) => merge::semantic_scope(&self.connection, state.resource)
+                .map_err(RelationError::Semantic)?,
+            // A scope with no indexed Resource behind it has no semantic
+            // contribution to describe either.
+            None => SemanticScope::default(),
+        };
+
         let coverage = Coverage {
             attribution,
             gaps: gaps.len(),
@@ -530,6 +551,7 @@ impl RelationIndex {
             truncated: gaps.iter().filter(|gap| gap.candidate_truncated).count(),
             unattributed,
             scope,
+            semantic,
         };
 
         Ok(RelationAnswer {
