@@ -65,8 +65,9 @@ pub use adapter::{
 pub use host::{PyrightHost, PythonSettings};
 pub use launcher::{InstallError, PyrightInstall, PythonLauncher, Readiness};
 pub use lifecycle::{
-    BackendReadiness, ChangeKind, ChangePlan, ConfigSource, EnvironmentIdentity, EnvironmentProbe,
-    LifecycleError, OwnerOutcome, PythonProjectConfig, ResourceChange, SemanticAvailability,
+    BackendReadiness, ChangeKind, ChangePlan, ConfigSource, EnvironmentAssurance,
+    EnvironmentIdentity, LifecycleError, OwnerOutcome, PythonProjectConfig, ResourceChange,
+    SemanticAvailability,
 };
 pub use overrides::{Derivation, UnprovenOverride, UnprovenReason};
 pub use protocol::{COMPATIBILITY_CLASS, ProtocolCompatibility, TESTED_PROTOCOL_VERSION};

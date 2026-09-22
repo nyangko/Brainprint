@@ -12,8 +12,8 @@ use super::{
     adapter::{BatchPolicy, PythonQueries},
     host::PythonSettings,
     lifecycle::{
-        self, BackendReadiness, ChangeKind, ConfigSource, EnvironmentProbe, ResourceChange,
-        SemanticAvailability,
+        self, BackendReadiness, ChangeKind, ConfigSource, EnvironmentAssurance, EnvironmentFs,
+        EnvironmentIdentity, RealFs, ResourceChange, SemanticAvailability,
     },
     protocol::{PythonRequest, WatchedChangeKind},
     tests_support::{Fixture, ScriptedBackend, context},
@@ -33,7 +33,8 @@ use crate::{
     scan::BaselineScan,
     semantic::{AnalysisContextBinding, SemanticBackendKind},
     semantic_index::{
-        BACKEND_UNAVAILABLE_CODE, SemanticIndex, SemanticOwner, SemanticState, SemanticStatus,
+        BACKEND_UNAVAILABLE_CODE, ENVIRONMENT_CHANGED_CODE, ENVIRONMENT_UNPROVEN_CODE,
+        SemanticIndex, SemanticOwner, SemanticState, SemanticStatus,
     },
     symbol::SymbolStore,
 };
@@ -744,22 +745,70 @@ fn an_unrelated_json_or_toml_change_is_not_a_config_change() {
 // Environment / dependency (tests 39-43)
 // ---------------------------------------------------------------------
 
-#[test]
-fn the_environment_identity_covers_installed_distributions() {
-    let fixture = Fixture::create("environment");
-    let venv = fixture.root.join(".venv/lib/python3.12/site-packages");
-    fs::create_dir_all(venv.join("requests-2.31.0.dist-info")).expect("dist-info");
-    let settings = PythonSettings {
+// ---------------------------------------------------------------------
+// Environment helpers
+// ---------------------------------------------------------------------
+
+/// Write one ordinary wheel-style install: a `dist-info` directory with
+/// the installer's `RECORD`.
+fn install_distribution(site_packages: &std::path::Path, name_version: &str, record: &str) {
+    let directory = site_packages.join(format!("{name_version}.dist-info"));
+    fs::create_dir_all(&directory).expect("dist-info");
+    fs::write(directory.join("RECORD"), record).expect("RECORD");
+}
+
+fn site_packages_of(fixture: &Fixture) -> std::path::PathBuf {
+    let directory = fixture.root.join(".venv/lib/python3.12/site-packages");
+    fs::create_dir_all(&directory).expect("site-packages");
+    directory
+}
+
+fn venv_settings() -> PythonSettings {
+    PythonSettings {
         python_path: Some(".venv/bin/python".to_owned()),
         venv_path: Some(".venv".to_owned()),
         ..PythonSettings::default()
-    };
+    }
+}
+
+/// A venv this observer can actually prove: one readable distribution,
+/// nothing that injects paths.
+fn proven_environment(fixture: &Fixture) -> EnvironmentIdentity {
+    install_distribution(
+        &site_packages_of(fixture),
+        "requests-2.31.0",
+        "requests/__init__.py,,\n",
+    );
+    let identity = lifecycle::environment_identity(&fixture.root, &venv_settings());
+    assert_eq!(
+        identity.assurance,
+        EnvironmentAssurance::Proven,
+        "fixture venv should be provable"
+    );
+    identity
+}
+
+/// No venv at all, which is what most of these fixtures have.
+fn unproven_environment(fixture: &Fixture) -> EnvironmentIdentity {
+    let identity = lifecycle::environment_identity(&fixture.root, &PythonSettings::default());
+    assert!(!identity.assurance.is_proven());
+    identity
+}
+
+#[test]
+fn the_environment_identity_covers_installed_distributions() {
+    let fixture = Fixture::create("environment");
+    let site_packages = site_packages_of(&fixture);
+    install_distribution(
+        &site_packages,
+        "requests-2.31.0",
+        "requests/__init__.py,,\n",
+    );
+    let settings = venv_settings();
 
     let before = lifecycle::environment_identity(&fixture.root, &settings);
-    assert_eq!(
-        before.probe,
-        EnvironmentProbe::Observed { distributions: 1 }
-    );
+    assert_eq!(before.assurance, EnvironmentAssurance::Proven);
+    assert_eq!(before.distributions, 1, "diagnostic, not a proof state");
     // Deterministic, and unchanged metadata does not churn.
     assert_eq!(
         before.fingerprint,
@@ -769,8 +818,8 @@ fn the_environment_identity_covers_installed_distributions() {
     // A dependency version moves without a line of project source
     // changing.
     fs::rename(
-        venv.join("requests-2.31.0.dist-info"),
-        venv.join("requests-2.32.0.dist-info"),
+        site_packages.join("requests-2.31.0.dist-info"),
+        site_packages.join("requests-2.32.0.dist-info"),
     )
     .expect("upgrade");
     let after = lifecycle::environment_identity(&fixture.root, &settings);
@@ -778,6 +827,7 @@ fn the_environment_identity_covers_installed_distributions() {
         before.fingerprint, after.fingerprint,
         "an install can change what an import resolves to"
     );
+    assert_eq!(after.assurance, EnvironmentAssurance::Proven);
 
     // And no dependency file became a Resource to notice it.
     assert!(
@@ -789,16 +839,375 @@ fn the_environment_identity_covers_installed_distributions() {
 }
 
 #[test]
+fn distribution_order_does_not_change_the_fingerprint() {
+    let first = Fixture::create("environment-order-a");
+    let second = Fixture::create("environment-order-b");
+    install_distribution(&site_packages_of(&first), "aaa-1.0", "aaa/__init__.py,,\n");
+    install_distribution(&site_packages_of(&first), "zzz-1.0", "zzz/__init__.py,,\n");
+    // Created in the opposite order, so any reliance on readdir order
+    // shows up.
+    install_distribution(&site_packages_of(&second), "zzz-1.0", "zzz/__init__.py,,\n");
+    install_distribution(&site_packages_of(&second), "aaa-1.0", "aaa/__init__.py,,\n");
+
+    assert_eq!(
+        lifecycle::environment_identity(&first.root, &venv_settings()).fingerprint,
+        lifecycle::environment_identity(&second.root, &venv_settings()).fingerprint,
+        "the same installed set is the same environment"
+    );
+}
+
+#[test]
+fn a_same_version_reinstall_with_different_contents_moves_the_fingerprint() {
+    let fixture = Fixture::create("environment-reinstall");
+    let site_packages = site_packages_of(&fixture);
+    install_distribution(&site_packages, "pkg-1.0", "pkg/__init__.py,sha256=aaa,10\n");
+    let before = lifecycle::environment_identity(&fixture.root, &venv_settings());
+
+    // Same name, same version, different installed content: only the
+    // installer's RECORD says so.
+    install_distribution(&site_packages, "pkg-1.0", "pkg/__init__.py,sha256=bbb,12\n");
+    let after = lifecycle::environment_identity(&fixture.root, &venv_settings());
+
+    assert_eq!(after.assurance, EnvironmentAssurance::Proven);
+    assert_ne!(
+        before.fingerprint, after.fingerprint,
+        "a directory name is not an immutability proof; RECORD is"
+    );
+}
+
+#[test]
 fn an_unobservable_environment_is_unknown_rather_than_assumed_current() {
     let fixture = Fixture::create("environment-unknown");
     let identity = lifecycle::environment_identity(&fixture.root, &PythonSettings::default());
-    assert!(matches!(identity.probe, EnvironmentProbe::Unknown { .. }));
-    assert!(!identity.probe.is_proven());
+    assert!(matches!(
+        identity.assurance,
+        EnvironmentAssurance::Unknown { .. }
+    ));
+    assert!(!identity.assurance.is_proven());
     // Still deterministic: an unproven environment must not make every
     // publication churn.
     assert_eq!(
         identity.fingerprint,
         lifecycle::environment_identity(&fixture.root, &PythonSettings::default()).fingerprint
+    );
+}
+
+#[test]
+fn a_venv_without_site_packages_is_unknown() {
+    let fixture = Fixture::create("environment-no-site-packages");
+    fs::create_dir_all(fixture.root.join(".venv/bin")).expect("venv");
+    let identity = lifecycle::environment_identity(&fixture.root, &venv_settings());
+    assert!(!identity.assurance.is_proven());
+    assert_eq!(identity.distributions, 0);
+    assert_eq!(
+        identity.fingerprint,
+        lifecycle::environment_identity(&fixture.root, &venv_settings()).fingerprint
+    );
+}
+
+/// The real filesystem, with one directory that refuses to be listed.
+///
+/// Permission bits are not usable here: CI frequently runs as root, for
+/// which mode 0 is no obstacle at all.
+struct UnreadableDir {
+    path: std::path::PathBuf,
+}
+
+impl EnvironmentFs for UnreadableDir {
+    fn read_dir(&self, path: &std::path::Path) -> std::io::Result<Vec<std::path::PathBuf>> {
+        if path == self.path {
+            return Err(std::io::Error::other("injected read failure"));
+        }
+        RealFs.read_dir(path)
+    }
+
+    fn read(&self, path: &std::path::Path) -> std::io::Result<Vec<u8>> {
+        RealFs.read(path)
+    }
+
+    fn is_dir(&self, path: &std::path::Path) -> bool {
+        RealFs.is_dir(path)
+    }
+}
+
+#[test]
+fn an_unreadable_site_packages_is_unknown_not_an_empty_environment() {
+    let fixture = Fixture::create("environment-unreadable");
+    let site_packages = site_packages_of(&fixture);
+    install_distribution(
+        &site_packages,
+        "requests-2.31.0",
+        "requests/__init__.py,,\n",
+    );
+
+    let filesystem = UnreadableDir {
+        path: site_packages.clone(),
+    };
+    let identity =
+        lifecycle::environment_identity_with(&fixture.root, &venv_settings(), &filesystem);
+
+    assert!(
+        !identity.assurance.is_proven(),
+        "an I/O error is not an observation: {:?}",
+        identity.assurance
+    );
+    assert_eq!(
+        identity.distributions, 0,
+        "and zero distributions here means nothing was seen, not that none exist"
+    );
+    assert_ne!(
+        identity.fingerprint,
+        lifecycle::environment_identity(&fixture.root, &venv_settings()).fingerprint,
+        "what was read and what could not be are different observations"
+    );
+}
+
+#[test]
+fn a_distribution_whose_record_cannot_be_read_is_unknown() {
+    let fixture = Fixture::create("environment-unreadable-record");
+    let site_packages = site_packages_of(&fixture);
+    // A dist-info with no RECORD at all: readable directory, no proof.
+    fs::create_dir_all(site_packages.join("pkg-1.0.dist-info")).expect("dist-info");
+
+    let identity = lifecycle::environment_identity(&fixture.root, &venv_settings());
+    assert!(!identity.assurance.is_proven());
+    assert_eq!(identity.distributions, 1, "it was seen, just not proven");
+}
+
+#[test]
+fn an_editable_install_is_unknown_however_stable_its_version_looks() {
+    let fixture = Fixture::create("environment-editable");
+    let site_packages = site_packages_of(&fixture);
+    install_distribution(&site_packages, "my-lib-1.0", "my_lib/__init__.py,,\n");
+    fs::write(
+        site_packages.join("my-lib-1.0.dist-info/direct_url.json"),
+        r#"{"url":"file:///work/my-lib","dir_info":{"editable":true}}"#,
+    )
+    .expect("direct_url.json");
+
+    let identity = lifecycle::environment_identity(&fixture.root, &venv_settings());
+    assert!(
+        !identity.assurance.is_proven(),
+        "the checkout can change with no installed metadata moving"
+    );
+    // And the source checkout was neither walked nor indexed.
+    assert!(
+        fixture
+            .resources()
+            .iter()
+            .all(|resource| !resource.path_key.contains("site-packages"))
+    );
+}
+
+#[test]
+fn a_non_editable_directory_install_stays_proven() {
+    let fixture = Fixture::create("environment-local-copy");
+    let site_packages = site_packages_of(&fixture);
+    install_distribution(&site_packages, "my-lib-1.0", "my_lib/__init__.py,,\n");
+    fs::write(
+        site_packages.join("my-lib-1.0.dist-info/direct_url.json"),
+        r#"{"url":"file:///work/my-lib","dir_info":{}}"#,
+    )
+    .expect("direct_url.json");
+
+    // A copy, and RECORD pins what was copied.
+    let identity = lifecycle::environment_identity(&fixture.root, &venv_settings());
+    assert_eq!(identity.assurance, EnvironmentAssurance::Proven);
+}
+
+#[test]
+fn an_egg_link_environment_is_not_silently_proven() {
+    let fixture = Fixture::create("environment-egg-link");
+    let site_packages = site_packages_of(&fixture);
+    install_distribution(
+        &site_packages,
+        "requests-2.31.0",
+        "requests/__init__.py,,\n",
+    );
+    fs::write(site_packages.join("my-lib.egg-link"), "/work/my-lib\n").expect("egg-link");
+
+    assert!(
+        !lifecycle::environment_identity(&fixture.root, &venv_settings())
+            .assurance
+            .is_proven()
+    );
+}
+
+#[test]
+fn a_path_injecting_pth_is_not_silently_proven() {
+    let fixture = Fixture::create("environment-pth");
+    let site_packages = site_packages_of(&fixture);
+    install_distribution(
+        &site_packages,
+        "requests-2.31.0",
+        "requests/__init__.py,,\n",
+    );
+
+    // A comment-only .pth changes nothing about resolution.
+    fs::write(site_packages.join("harmless.pth"), "# nothing here\n").expect("pth");
+    assert_eq!(
+        lifecycle::environment_identity(&fixture.root, &venv_settings()).assurance,
+        EnvironmentAssurance::Proven
+    );
+
+    // One that adds a directory to sys.path does.
+    fs::write(site_packages.join("inject.pth"), "/work/src\n").expect("pth");
+    let injected = lifecycle::environment_identity(&fixture.root, &venv_settings());
+    assert!(!injected.assurance.is_proven());
+    assert_eq!(
+        injected.fingerprint,
+        lifecycle::environment_identity(&fixture.root, &venv_settings()).fingerprint,
+        "unknown does not mean random"
+    );
+}
+
+#[test]
+fn a_legacy_egg_info_install_is_not_silently_proven() {
+    let fixture = Fixture::create("environment-egg-info");
+    let site_packages = site_packages_of(&fixture);
+    fs::create_dir_all(site_packages.join("old-1.0.egg-info")).expect("egg-info");
+
+    assert!(
+        !lifecycle::environment_identity(&fixture.root, &venv_settings())
+            .assurance
+            .is_proven()
+    );
+}
+
+// ---------------------------------------------------------------------
+// Environment assurance in revalidation
+// ---------------------------------------------------------------------
+
+#[test]
+fn a_reopen_under_a_proven_unchanged_environment_restores_current_without_a_backend() {
+    let fixture = Fixture::create("assurance-proven-reopen");
+    refresh(&fixture, &backend(&fixture), "pkg/impl.py").expect("published");
+    let environment = proven_environment(&fixture);
+
+    let index = SemanticIndex::open(&fixture.db_path()).expect("index.db");
+    let inventory =
+        inventory_fingerprint(index.connection(), ResourceLanguage::Python).expect("inventory");
+    let answers = lifecycle::revalidate_context(
+        &index,
+        &context(),
+        &lifecycle::current_inputs(
+            &context(),
+            &config_basis(&PythonSettings::default(), None),
+            &capability_report(&context()),
+            &inventory,
+            &environment,
+        ),
+    )
+    .expect("revalidate");
+
+    assert!(answers.iter().all(|(_, status)| status.is_current()));
+}
+
+#[test]
+fn a_reopen_under_an_unknown_environment_cannot_restore_current() {
+    let fixture = Fixture::create("assurance-unknown-reopen");
+    refresh(&fixture, &backend(&fixture), "pkg/impl.py").expect("published");
+    let environment = unproven_environment(&fixture);
+
+    let index = SemanticIndex::open(&fixture.db_path()).expect("index.db");
+    let inventory =
+        inventory_fingerprint(index.connection(), ResourceLanguage::Python).expect("inventory");
+    let inputs = lifecycle::current_inputs(
+        &context(),
+        &config_basis(&PythonSettings::default(), None),
+        &capability_report(&context()),
+        &inventory,
+        &environment,
+    );
+    // Every other input compares equal; only the assurance differs.
+    assert!(
+        inputs
+            .clone()
+            .with_environment_proven(true)
+            .environment_fingerprint
+            == inputs.environment_fingerprint
+    );
+    let answers = lifecycle::revalidate_context(&index, &context(), &inputs).expect("revalidate");
+
+    let (_, status) = &answers[0];
+    assert_eq!(status.state, SemanticState::Dirty);
+    assert_eq!(
+        status.last_error_code.as_deref(),
+        Some(ENVIRONMENT_UNPROVEN_CODE)
+    );
+    assert!(status.has_last_valid(), "the last valid answer is kept");
+}
+
+#[test]
+fn a_live_refresh_under_an_unknown_environment_still_publishes_current() {
+    let fixture = Fixture::create("assurance-unknown-refresh");
+    assert!(!unproven_environment(&fixture).assurance.is_proven());
+
+    // The backend just analyzed the filesystem as it is, so the result
+    // describes the live environment whatever can be proven later.
+    refresh(&fixture, &backend(&fixture), "pkg/impl.py").expect("published");
+    assert_eq!(state_of(&fixture, "pkg/impl.py"), SemanticState::Current);
+
+    // And the very next reopen owes a refresh, because that is the
+    // claim that cannot be proven from persisted metadata alone.
+    let index = SemanticIndex::open(&fixture.db_path()).expect("index.db");
+    let inventory =
+        inventory_fingerprint(index.connection(), ResourceLanguage::Python).expect("inventory");
+    let answers = lifecycle::revalidate_context(
+        &index,
+        &context(),
+        &lifecycle::current_inputs(
+            &context(),
+            &config_basis(&PythonSettings::default(), None),
+            &capability_report(&context()),
+            &inventory,
+            &unproven_environment(&fixture),
+        ),
+    )
+    .expect("revalidate");
+    assert_eq!(answers[0].1.state, SemanticState::Dirty);
+}
+
+#[test]
+fn a_changed_proven_environment_invalidates_only_the_owner_publications() {
+    let fixture = Fixture::create("assurance-env-changed");
+    refresh(&fixture, &backend(&fixture), "pkg/impl.py").expect("published");
+    let before = proven_environment(&fixture);
+    let relations = count(&fixture, "relation");
+
+    // An install, with no project source touched.
+    install_distribution(
+        &site_packages_of(&fixture),
+        "extra-1.0",
+        "extra/__init__.py,,\n",
+    );
+    let after = lifecycle::environment_identity(&fixture.root, &venv_settings());
+    assert_eq!(after.assurance, EnvironmentAssurance::Proven);
+    assert_ne!(before.fingerprint, after.fingerprint);
+
+    let index = SemanticIndex::open(&fixture.db_path()).expect("index.db");
+    let inventory =
+        inventory_fingerprint(index.connection(), ResourceLanguage::Python).expect("inventory");
+    let mut inputs = lifecycle::current_inputs(
+        &context(),
+        &config_basis(&PythonSettings::default(), None),
+        &capability_report(&context()),
+        &inventory,
+        &after,
+    );
+    inputs.environment_fingerprint = after.fingerprint.clone();
+    let answers = lifecycle::revalidate_context(&index, &context(), &inputs).expect("revalidate");
+    drop(index);
+
+    assert_eq!(answers[0].1.state, SemanticState::Dirty);
+    assert_eq!(
+        answers[0].1.last_error_code.as_deref(),
+        Some(ENVIRONMENT_CHANGED_CODE)
+    );
+    assert_eq!(
+        count(&fixture, "relation"),
+        relations,
+        "structural Workspace truth is not a semantic publication"
     );
 }
 
@@ -949,7 +1358,9 @@ fn a_crash_with_an_unchanged_basis_keeps_the_publication_current() {
     refresh(&fixture, &backend(&fixture), "pkg/impl.py").expect("published");
     assert_eq!(state_of(&fixture, "pkg/impl.py"), SemanticState::Current);
 
-    // The process dies. Nothing about the Workspace changed.
+    // The process dies. Nothing about the Workspace changed, and the
+    // environment is still there to be read.
+    let environment = proven_environment(&fixture);
     let index = SemanticIndex::open(&fixture.db_path()).expect("index.db");
     let status = index
         .revalidate(
@@ -960,6 +1371,7 @@ fn a_crash_with_an_unchanged_basis_keeps_the_publication_current() {
                 &capability_report(&context()),
                 &inventory_fingerprint(index.connection(), ResourceLanguage::Python)
                     .expect("inventory"),
+                &environment,
             ),
         )
         .expect("revalidate");
@@ -1067,6 +1479,7 @@ fn a_reopen_with_an_unchanged_basis_stays_current_without_a_backend() {
     let fixture = Fixture::create("reopen");
     refresh(&fixture, &backend(&fixture), "pkg/impl.py").expect("A");
     refresh(&fixture, &backend(&fixture), "pkg/twin.py").expect("B");
+    let environment = proven_environment(&fixture);
 
     // A fresh SemanticIndex, exactly as a restarted daemon opens it.
     let index = SemanticIndex::open(&fixture.db_path()).expect("index.db");
@@ -1080,6 +1493,7 @@ fn a_reopen_with_an_unchanged_basis_stays_current_without_a_backend() {
             &config_basis(&PythonSettings::default(), None),
             &capability_report(&context()),
             &inventory,
+            &environment,
         ),
     )
     .expect("revalidate");
@@ -1115,6 +1529,7 @@ fn a_reopen_after_an_input_moved_reports_dirty_before_any_launch() {
             &moved,
             &capability_report(&context()),
             &inventory,
+            &proven_environment(&fixture),
         ),
     )
     .expect("revalidate");

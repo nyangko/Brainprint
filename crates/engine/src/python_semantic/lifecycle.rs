@@ -195,28 +195,35 @@ fn declares_pyright(workspace_root: &Path, resource: &Resource) -> bool {
 // Environment identity
 // ---------------------------------------------------------------------
 
-/// What could be established about the installed environment.
+/// How much of the resolution environment could actually be proven.
 ///
-/// The interpreter path alone is not proof: the same `.venv` can hold
-/// a different set of packages tomorrow, and an import that resolved
-/// to one stub can start resolving to another. So the identity covers
-/// the *resolution* environment -- which distributions are installed
-/// and at which versions -- and never the dependency source itself.
+/// Two axes, not one. The *fingerprint* is a deterministic identity of
+/// what was seen; the assurance says whether what was seen is enough to
+/// prove a persisted publication still describes this environment.
+/// Collapsing them would force the choice between claiming currentness
+/// nobody verified and randomizing the fingerprint so nothing ever
+/// stays current -- and a random fingerprint is not an identity.
+///
+/// Deliberately two states. `Likely` and a confidence score would both
+/// be asking a reader to decide what a number means, and the only
+/// decision here is binary: may a persisted answer be restored without
+/// asking the backend.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum EnvironmentProbe {
-    /// Distribution metadata was readable.
-    Observed { distributions: usize },
-    /// It was not, so the environment is not proven unchanged. The
-    /// fingerprint still covers the settings, so nothing churns; what
-    /// this carries is that a caller should revalidate rather than
-    /// assume.
-    Unknown { reason: &'static str },
+pub enum EnvironmentAssurance {
+    /// Every resolution-relevant input this observer covers was read,
+    /// and each is immutable installation metadata: the same
+    /// fingerprint means the same installed environment.
+    Proven,
+    /// Something in the environment can change without the fingerprint
+    /// moving, or could not be read at all. The fingerprint is still
+    /// deterministic; it is just not evidence.
+    Unknown { reason: String },
 }
 
-impl EnvironmentProbe {
+impl EnvironmentAssurance {
     #[must_use]
     pub const fn is_proven(&self) -> bool {
-        matches!(self, Self::Observed { .. })
+        matches!(self, Self::Proven)
     }
 }
 
@@ -224,19 +231,74 @@ impl EnvironmentProbe {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EnvironmentIdentity {
     pub fingerprint: String,
-    pub probe: EnvironmentProbe,
+    pub assurance: EnvironmentAssurance,
+    /// Diagnostic only: how many installed distributions were seen. Not
+    /// a proof state -- an environment with zero readable distributions
+    /// and an environment that could not be read are different answers,
+    /// and only the assurance distinguishes them.
+    pub distributions: usize,
 }
 
-/// Fingerprint the interpreter and the distributions it resolves.
+/// Reading the pieces of an environment, so a test can fail one.
 ///
-/// Reads directory *names* under `site-packages` -- `name-version.dist-info`
-/// is the installed-distribution record, and its name already carries
-/// both. No dependency file is opened, hashed, or indexed: the goal is
-/// a dependency-resolution identity, not a dependency code index.
+/// Permission bits are not a dependable failure mechanism (CI often
+/// runs as root, and Windows ignores the mode), so unreadability has to
+/// be injectable to be tested at all.
+pub trait EnvironmentFs {
+    /// Entry paths directly under `path`, or the reason it failed.
+    ///
+    /// # Errors
+    /// When the directory cannot be listed.
+    fn read_dir(&self, path: &Path) -> std::io::Result<Vec<PathBuf>>;
+    /// # Errors
+    /// When the file cannot be read.
+    fn read(&self, path: &Path) -> std::io::Result<Vec<u8>>;
+    fn is_dir(&self, path: &Path) -> bool;
+}
+
+/// The real filesystem.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RealFs;
+
+impl EnvironmentFs for RealFs {
+    fn read_dir(&self, path: &Path) -> std::io::Result<Vec<PathBuf>> {
+        let mut paths: Vec<PathBuf> = fs::read_dir(path)?
+            .map(|entry| entry.map(|entry| entry.path()))
+            .collect::<std::io::Result<_>>()?;
+        paths.sort();
+        Ok(paths)
+    }
+
+    fn read(&self, path: &Path) -> std::io::Result<Vec<u8>> {
+        fs::read(path)
+    }
+
+    fn is_dir(&self, path: &Path) -> bool {
+        path.is_dir()
+    }
+}
+
+/// Fingerprint the interpreter and the environment it resolves imports
+/// through.
+///
+/// Installation *metadata* only -- a distribution's `name-version` and
+/// the `RECORD` that pins what its install wrote. No dependency source
+/// is opened, hashed, walked or indexed: the goal is a
+/// dependency-resolution identity, not a dependency code index.
 #[must_use]
 pub fn environment_identity(
     workspace_root: &Path,
     settings: &PythonSettings,
+) -> EnvironmentIdentity {
+    environment_identity_with(workspace_root, settings, &RealFs)
+}
+
+/// [`environment_identity`] over an injected filesystem.
+#[must_use]
+pub fn environment_identity_with(
+    workspace_root: &Path,
+    settings: &PythonSettings,
+    filesystem: &dyn EnvironmentFs,
 ) -> EnvironmentIdentity {
     let mut fields: Vec<(String, String)> = vec![
         (
@@ -249,37 +311,9 @@ pub fn environment_identity(
         ),
     ];
 
-    let (probe, distributions) = match settings
-        .venv_path
-        .as_ref()
-        .map(|venv| resolve_under(workspace_root, venv))
-    {
-        None => (
-            EnvironmentProbe::Unknown {
-                reason: "no venv path is configured",
-            },
-            Vec::new(),
-        ),
-        Some(venv) => match site_packages(&venv) {
-            None => (
-                EnvironmentProbe::Unknown {
-                    reason: "no site-packages under the configured venv",
-                },
-                Vec::new(),
-            ),
-            Some(directory) => {
-                let found = distributions_in(&directory);
-                (
-                    EnvironmentProbe::Observed {
-                        distributions: found.len(),
-                    },
-                    found,
-                )
-            }
-        },
-    };
-    for name in &distributions {
-        fields.push(("distribution".to_owned(), name.clone()));
+    let observation = observe_environment(workspace_root, settings, filesystem);
+    for (name, value) in &observation.facts {
+        fields.push((name.clone(), value.clone()));
     }
 
     let borrowed: Vec<(&str, &str)> = fields
@@ -287,8 +321,170 @@ pub fn environment_identity(
         .map(|(name, value)| (name.as_str(), value.as_str()))
         .collect();
     EnvironmentIdentity {
-        fingerprint: db::fingerprint("python-semantic-env-2", &borrowed),
-        probe,
+        fingerprint: db::fingerprint("python-semantic-env-3", &borrowed),
+        assurance: match observation.unproven {
+            None => EnvironmentAssurance::Proven,
+            Some(reason) => EnvironmentAssurance::Unknown { reason },
+        },
+        distributions: observation.distributions,
+    }
+}
+
+/// What one pass over `site-packages` established.
+#[derive(Default)]
+struct Observation {
+    /// Deterministic `(name, value)` facts for the fingerprint, in a
+    /// stable order.
+    facts: Vec<(String, String)>,
+    distributions: usize,
+    /// The first reason this environment cannot be proven, if any.
+    unproven: Option<String>,
+}
+
+impl Observation {
+    fn unproven(&mut self, reason: impl Into<String>) {
+        if self.unproven.is_none() {
+            self.unproven = Some(reason.into());
+        }
+    }
+}
+
+fn observe_environment(
+    workspace_root: &Path,
+    settings: &PythonSettings,
+    filesystem: &dyn EnvironmentFs,
+) -> Observation {
+    let mut observation = Observation::default();
+
+    let Some(venv) = settings
+        .venv_path
+        .as_ref()
+        .map(|venv| resolve_under(workspace_root, venv))
+    else {
+        observation.unproven("no venv path is configured");
+        return observation;
+    };
+    let Some(directory) = site_packages(&venv, filesystem) else {
+        observation.unproven("no site-packages under the configured venv");
+        return observation;
+    };
+    let Ok(entries) = filesystem.read_dir(&directory) else {
+        // An unreadable directory is an observation *failure*. Reporting
+        // it as an environment with no distributions would turn an I/O
+        // error into a proof.
+        observation.unproven("site-packages could not be read");
+        return observation;
+    };
+
+    for entry in entries {
+        let name = entry
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if let Some(stem) = name.strip_suffix(".dist-info") {
+            observation.distributions += 1;
+            observe_dist_info(&mut observation, stem, &entry, filesystem);
+        } else if let Some(stem) = name.strip_suffix(".egg-info") {
+            observation.distributions += 1;
+            observation
+                .facts
+                .push(("egg_info".to_owned(), stem.to_owned()));
+            // A legacy egg-info carries no immutable record of what was
+            // installed, so its contents can change under an unchanged
+            // name.
+            observation.unproven(format!("{name} is a legacy install without a RECORD"));
+        } else if name.ends_with(".egg-link") {
+            observation
+                .facts
+                .push(("egg_link".to_owned(), name.clone()));
+            observation.unproven(format!("{name} links a source checkout"));
+        } else if name.ends_with(".pth") {
+            observe_pth(&mut observation, &name, &entry, filesystem);
+        }
+    }
+    observation
+}
+
+/// A distribution proves itself by its `RECORD`: the installer's own
+/// manifest of what it wrote, which changes on a same-version reinstall
+/// whose contents differ.
+fn observe_dist_info(
+    observation: &mut Observation,
+    stem: &str,
+    directory: &Path,
+    filesystem: &dyn EnvironmentFs,
+) {
+    observation
+        .facts
+        .push(("distribution".to_owned(), stem.to_owned()));
+
+    match filesystem.read(&directory.join("RECORD")) {
+        Ok(bytes) => observation.facts.push((
+            format!("record:{stem}"),
+            db::fingerprint(
+                "python-dist-record-1",
+                &[("record", &String::from_utf8_lossy(&bytes))],
+            ),
+        )),
+        Err(_) => observation.unproven(format!("{stem} has no readable RECORD")),
+    }
+
+    // PEP 610. An editable or local-path install resolves to a source
+    // tree that changes with no installed metadata moving at all.
+    if let Ok(bytes) = filesystem.read(&directory.join("direct_url.json")) {
+        let text = String::from_utf8_lossy(&bytes).into_owned();
+        observation.facts.push((
+            format!("direct_url:{stem}"),
+            db::fingerprint("python-dist-direct-url-1", &[("direct_url", &text)]),
+        ));
+        if is_mutable_source(&text) {
+            observation.unproven(format!("{stem} is installed from mutable local source"));
+        }
+    }
+}
+
+/// Whether a PEP 610 `direct_url.json` denotes source that can change
+/// underneath an unchanged installation.
+fn is_mutable_source(text: &str) -> bool {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
+        // Metadata that cannot be understood cannot clear the install.
+        return true;
+    };
+    // A non-editable directory install is a *copy*, and `RECORD`
+    // already pins what was copied. An editable one is a pointer at a
+    // tree that keeps moving.
+    value
+        .get("dir_info")
+        .and_then(|info| info.get("editable"))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+}
+
+/// A `.pth` is executed by `site` at interpreter start: a path line adds
+/// a directory to `sys.path`, and an `import` line runs code. Neither is
+/// covered by any distribution's metadata.
+fn observe_pth(
+    observation: &mut Observation,
+    name: &str,
+    path: &Path,
+    filesystem: &dyn EnvironmentFs,
+) {
+    let Ok(bytes) = filesystem.read(path) else {
+        observation.unproven(format!("{name} could not be read"));
+        return;
+    };
+    let text = String::from_utf8_lossy(&bytes).into_owned();
+    observation.facts.push((
+        format!("pth:{name}"),
+        db::fingerprint("python-pth-1", &[("pth", &text)]),
+    ));
+    if text
+        .lines()
+        .any(|line| !line.trim().is_empty() && !line.trim_start().starts_with('#'))
+    {
+        // Its own bytes are fingerprinted, but what a path line points
+        // at is an external tree this observer does not walk.
+        observation.unproven(format!("{name} injects import paths"));
     }
 }
 
@@ -302,39 +498,20 @@ fn resolve_under(workspace_root: &Path, candidate: &str) -> PathBuf {
 }
 
 /// `<venv>/lib/pythonX.Y/site-packages`, or the Windows layout.
-fn site_packages(venv: &Path) -> Option<PathBuf> {
+fn site_packages(venv: &Path, filesystem: &dyn EnvironmentFs) -> Option<PathBuf> {
     let windows = venv.join("Lib").join("site-packages");
-    if windows.is_dir() {
+    if filesystem.is_dir(&windows) {
         return Some(windows);
     }
-    let lib = venv.join("lib");
-    let mut candidates: Vec<PathBuf> = fs::read_dir(lib)
+    let mut candidates: Vec<PathBuf> = filesystem
+        .read_dir(&venv.join("lib"))
         .ok()?
-        .filter_map(|entry| entry.ok().map(|entry| entry.path().join("site-packages")))
-        .filter(|path| path.is_dir())
+        .into_iter()
+        .map(|entry| entry.join("site-packages"))
+        .filter(|path| filesystem.is_dir(path))
         .collect();
     candidates.sort();
     candidates.into_iter().next()
-}
-
-/// Every installed distribution's `name-version`, sorted.
-fn distributions_in(site_packages: &Path) -> Vec<String> {
-    let Ok(entries) = fs::read_dir(site_packages) else {
-        return Vec::new();
-    };
-    let mut found: Vec<String> = entries
-        .filter_map(|entry| entry.ok())
-        .filter_map(|entry| {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            let stem = name
-                .strip_suffix(".dist-info")
-                .or_else(|| name.strip_suffix(".egg-info"))?;
-            Some(stem.to_owned())
-        })
-        .collect();
-    found.sort();
-    found.dedup();
-    found
 }
 
 // ---------------------------------------------------------------------
@@ -720,14 +897,22 @@ pub fn revalidate_context(
 }
 
 /// The inputs one owner's publication is validated against.
+///
+/// The environment enters twice, and has to: its fingerprint says
+/// *which* environment, and its assurance says whether that fingerprint
+/// is worth comparing. A persisted publication can only be restored as
+/// CURRENT when both hold.
 #[must_use]
 pub fn current_inputs(
     context: &AnalysisContext,
     config: &ConfigBasis,
     capabilities: &CapabilityReport,
     inventory: &str,
+    environment: &EnvironmentIdentity,
 ) -> CurrentInputs {
-    CurrentInputs::new(context, config, capabilities).with_inventory(inventory)
+    CurrentInputs::new(context, config, capabilities)
+        .with_inventory(inventory)
+        .with_environment_proven(environment.assurance.is_proven())
 }
 
 /// One owner's refresh outcome, or why it did not happen.

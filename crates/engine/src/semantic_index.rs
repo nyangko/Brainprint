@@ -72,6 +72,11 @@ pub const CONFIG_CHANGED_CODE: &str = "SEMANTIC_CONFIG_CHANGED";
 /// `last_error_code` for one invalidated by an environment/toolchain
 /// change.
 pub const ENVIRONMENT_CHANGED_CODE: &str = "SEMANTIC_ENVIRONMENT_CHANGED";
+/// `last_error_code` for a persisted publication that cannot be proven
+/// still current because the environment it was computed against is not
+/// observable. Not the same as [`ENVIRONMENT_CHANGED_CODE`]: nothing was
+/// seen to move, and nothing could be seen to hold either.
+pub const ENVIRONMENT_UNPROVEN_CODE: &str = "SEMANTIC_ENVIRONMENT_UNPROVEN";
 /// `last_error_code` for one whose analysis profile is no longer
 /// comparable with the current semantics.
 pub const PROFILE_INCOMPATIBLE_CODE: &str = "SEMANTIC_PROFILE_INCOMPATIBLE";
@@ -467,6 +472,17 @@ pub struct CurrentInputs {
     pub environment_fingerprint: String,
     pub inventory_fingerprint: Option<String>,
     pub profile: AnalysisProfile,
+    /// Whether the environment behind `environment_fingerprint` could
+    /// actually be observed well enough to prove a *persisted*
+    /// publication still current.
+    ///
+    /// A separate axis from the fingerprint on purpose. An unobservable
+    /// environment still has a deterministic identity -- randomizing it
+    /// would churn every publication every run -- but equal identity
+    /// then proves nothing, because the thing that would have been
+    /// compared was never read. `true` for a caller that is validating
+    /// against an environment the backend has just answered from.
+    pub environment_proven: bool,
 }
 
 impl CurrentInputs {
@@ -483,7 +499,15 @@ impl CurrentInputs {
             environment_fingerprint: context.toolchain.fingerprint(),
             inventory_fingerprint: None,
             profile: AnalysisProfile::semantic(context, capabilities),
+            environment_proven: true,
         }
+    }
+
+    /// Say whether the environment behind these inputs is proven.
+    #[must_use]
+    pub const fn with_environment_proven(mut self, proven: bool) -> Self {
+        self.environment_proven = proven;
+        self
     }
 
     #[must_use]
@@ -1139,6 +1163,15 @@ impl SemanticIndex {
         };
         if !compatibility.keeps_publication() {
             self.mark_dirty(owner, PROFILE_INCOMPATIBLE_CODE)?;
+            return self.status(owner);
+        }
+
+        if !current.environment_proven {
+            // Equality of two deterministic fingerprints is not proof
+            // when neither side was observed. Restoring CURRENT here
+            // would claim a persisted answer describes an environment
+            // nobody looked at.
+            self.mark_dirty(owner, ENVIRONMENT_UNPROVEN_CODE)?;
             return self.status(owner);
         }
 

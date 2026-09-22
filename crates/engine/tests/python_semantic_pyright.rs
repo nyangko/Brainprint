@@ -664,10 +664,31 @@ fn the_real_backend_follows_a_workspace_change_through_the_lifecycle() {
         ResourceLanguage::Python,
     )
     .expect("inventory");
+    // ... but only when the environment those inputs name can be
+    // proven. This fixture configures no venv, so it cannot be, and a
+    // persisted publication must not restore itself CURRENT off an
+    // equality nobody verified (#19 task 8 corrective patch).
+    let unproven =
+        lifecycle::current_inputs(&context, &config, &capabilities, &inventory, &environment);
+    assert!(
+        !environment.assurance.is_proven(),
+        "no venv is configured: {:?}",
+        environment.assurance
+    );
+    let answers = lifecycle::revalidate_context(&index, &context, &unproven).expect("revalidate");
+    assert!(
+        answers
+            .iter()
+            .any(|(owner, status)| owner == &impl_owner && !status.is_current()),
+        "an unprovable environment owes a refresh: {answers:?}"
+    );
+
+    // The basis itself is untouched: with the environment proven, the
+    // same reopen restores CURRENT with no process involved.
     let answers = lifecycle::revalidate_context(
         &index,
         &context,
-        &lifecycle::current_inputs(&context, &config, &capabilities, &inventory),
+        &unproven.clone().with_environment_proven(true),
     )
     .expect("revalidate");
     assert!(
