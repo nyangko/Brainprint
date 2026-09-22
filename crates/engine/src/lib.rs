@@ -6,6 +6,7 @@ pub mod calls;
 pub mod component;
 pub mod config;
 pub mod coverage;
+pub mod csharp_semantic;
 pub mod db;
 pub mod discovery;
 pub mod domain;

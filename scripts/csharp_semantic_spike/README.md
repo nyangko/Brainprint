@@ -146,6 +146,47 @@ MSBuild, so a membership change needs the project reloaded, which is a
 heavier operation than an edit and has its own barrier
 (`workspace/projectInitializationComplete`).
 
+### Three protocol rules that are not advisory
+
+Measured after the two design decisions were locked, while building the
+production backend, driven through Brainprint's own launcher, host and
+protocol code. Each of these was found by the live server rejecting what
+a reading of the spec alone would have produced.
+
+### `didChange` must carry a range, or the server exits
+
+The handshake advertises `textDocumentSync { openClose: true, change: 2 }`,
+and `change: 2` (Incremental) is not advisory. A `didChange` whose
+single content change has no `range` does not get ignored: the server
+**exits**, and the next request on that connection fails with "the
+connection is closed". A full replacement therefore has to be expressed
+as the replacement of the whole previous document, which means the
+client has to keep the text it last sent.
+
+A duplicate `didOpen` is a separate, milder violation: it does not kill
+the connection, but the server answers in-flight requests with
+`-32800 RequestCancelled`.
+
+### Requests can be withdrawn, and withdrawal is not an answer
+
+`textDocument/definition` in flight while its document is being
+re-analysed comes back `-32800`. Read as an empty answer that would
+publish "nothing is there", which is the one thing it does not mean.
+
+### A project reload has to name the project that owns the change
+
+Adding `src/Core/Runner.Part3.cs` changes `Core.csproj`'s Compile item
+set without touching any project file. Reloading only the project files
+that *themselves* changed therefore reloads nothing, and then waits for
+a `projectInitializationComplete` that will never come. The owning
+project has to be named.
+
+With all of the above right, the locked lifecycle holds as written: a
+content edit is current after the document synchronization barrier, and
+an added declaration is current after the project reload and
+`projectInitializationComplete`. Both are asserted end-to-end in
+`crates/engine/tests/i4_csharp_acceptance.rs`.
+
 ### Multi-target: representable, with an honest limitation
 
 A `<TargetFrameworks>net10.0;netstandard2.0</TargetFrameworks>` project

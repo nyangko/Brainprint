@@ -5,10 +5,12 @@ namespace Core.Tests;
 
 public sealed class RunnerTests
 {
+    // A declared type reference to a partial type, from another project.
+    private readonly Runner _shared = new Runner();
+
     public bool ComputeReturnsSeedPlusExtra()
     {
-        var runner = new Runner();
-        return runner.Compute(1) == 2;
+        return _shared.Compute(1) == 2;
     }
 
     public bool ParseSelectsTheStringOverload()
