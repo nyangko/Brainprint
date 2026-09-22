@@ -40,6 +40,24 @@ An unavailable measurement is `null`. A measured zero is `0`.
   structured and text-fallback lines are kept apart on purpose: a text
   match is not a Relation, and only I3 may claim it is. See
   `i2-acceptance-report.md`.
+- `brainprint-i3-index` / `brainprint-i3` / `brainprint-i3-cold` — the
+  I3 Relation Graph re-measurement of the same scenario
+  (`cargo run -p brainprint-engine --example i3_benchmark`). The index
+  line is the cost I3 adds, the plain line is the query flow comparable
+  with the two above, and the cold line is both together. See
+  `i3-acceptance-report.md`.
+
+Metrics the result schema has no column for — prepared source bytes,
+relation query count, traversal size, confirmed/gap counts, broad
+searches avoided — are recorded as `key=value` pairs in `notes`, which
+is where the existing lines already carry scenario detail.
+
+`process_cpu_ms` and `peak_rss_bytes` are `null` on the Rust harness
+lines: the Workspace denies `unsafe_code`, so `getrusage` (what the
+Python baseline uses for those two columns) is not reachable from a
+harness example. Measure them around the process instead:
+`/usr/bin/time -l ./target/debug/examples/i3_benchmark ...` on macOS, or
+`/usr/bin/time -v` with GNU coreutils.
 
 ## Promotion
 

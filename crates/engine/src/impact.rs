@@ -571,11 +571,18 @@ impl ImpactTraversal {
                 // One canonical edge, however many paths reach it. An
                 // edge already emitted is still walked through: the
                 // endpoint behind it may not have been reached yet.
-                if state.emitted_edges.insert(key) {
+                //
+                // The budget is checked *before* the edge is recorded
+                // as emitted (#17 task 15): recording it first and then
+                // stopping would mark an edge this run never returned,
+                // and a resume -- which skips what is already emitted
+                // -- would drop it for good.
+                if !state.emitted_edges.contains(&key) {
                     if state.edge_count >= budget.max_edges {
                         stopped = Some(Truncation::EdgeBudget);
                         break;
                     }
+                    state.emitted_edges.insert(key);
                     state.edge_count += 1;
                     edges.push(ImpactEdge {
                         relation: relation.clone(),
