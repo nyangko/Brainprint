@@ -49,8 +49,12 @@ use brainprint_engine::{
         refresh_resource, toolchain_identity,
     },
     graph::{GraphEndpoint, RelationKind},
+    impact::{Budget, ImpactIntent, ImpactTraversal},
     logical_symbol,
-    relations::RelationIndex,
+    prepare::InspectPreparer,
+    related_tests::RelatedTests,
+    relations::{Direction, RelationIndex},
+    resolution::Dispatch,
     resolution::Support,
     resource::{Resource, ResourceLanguage, ResourceStore},
     runtime::{CancelToken, RequestFailure},
@@ -62,6 +66,7 @@ use brainprint_engine::{
     semantic_index::SemanticIndex,
     symbol::{Symbol, SymbolStore},
 };
+use rusqlite::Connection;
 
 /// How long a project load may take before the test gives up.
 ///
@@ -392,6 +397,105 @@ impl Slice {
             }
         }
         None
+    }
+
+    /// Every C# Resource, refreshed. What a whole-Workspace semantic
+    /// pass produces, which is what the query APIs then read.
+    fn refresh_all(&self, queries: &HostQueries<'_>) {
+        for rel in self.sources() {
+            self.refresh(queries, &rel);
+        }
+    }
+
+    fn outgoing(&self, from: &GraphEndpoint, kinds: &[RelationKind]) -> Vec<GraphEndpoint> {
+        RelationIndex::open(&self.db_path)
+            .expect("index.db")
+            .outgoing(from, kinds)
+            .expect("outgoing")
+            .confirmed
+            .into_iter()
+            .map(|relation| relation.target)
+            .collect()
+    }
+
+    fn incoming(&self, into: &GraphEndpoint, kinds: &[RelationKind]) -> Vec<GraphEndpoint> {
+        RelationIndex::open(&self.db_path)
+            .expect("index.db")
+            .incoming(into, kinds)
+            .expect("incoming")
+            .confirmed
+            .into_iter()
+            .map(|relation| relation.source)
+            .collect()
+    }
+
+    /// Every confirmed relation into `into`, with its dispatch.
+    fn incoming_dispatch(
+        &self,
+        into: &GraphEndpoint,
+        kinds: &[RelationKind],
+    ) -> Vec<(GraphEndpoint, Dispatch)> {
+        RelationIndex::open(&self.db_path)
+            .expect("index.db")
+            .incoming(into, kinds)
+            .expect("incoming")
+            .confirmed
+            .into_iter()
+            .map(|relation| (relation.source, relation.dispatch))
+            .collect()
+    }
+
+    /// A readable name for an endpoint, for assertion messages.
+    fn name_of(&self, endpoint: &GraphEndpoint) -> String {
+        match endpoint {
+            GraphEndpoint::Symbol(symbol) => Connection::open(&self.db_path)
+                .expect("index.db")
+                .query_row(
+                    "SELECT resource.path_key || '::' || symbol.qualified_name FROM symbol \
+                     JOIN resource ON resource.id = symbol.resource_id WHERE symbol.uid = ?1",
+                    rusqlite::params![symbol.to_bytes().to_vec()],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap_or_else(|_| format!("{symbol:?}")),
+            other => format!("{other:?}"),
+        }
+    }
+
+    fn names(&self, endpoints: &[GraphEndpoint]) -> Vec<String> {
+        let mut found: Vec<String> = endpoints.iter().map(|one| self.name_of(one)).collect();
+        found.sort();
+        found.dedup();
+        found
+    }
+
+    /// The single symbol whose qualified name matches, in one file.
+    fn only(&self, rel: &str, qualified_name: &str) -> Symbol {
+        let found: Vec<Symbol> = self
+            .symbols(rel)
+            .into_iter()
+            .filter(|symbol| symbol.qualified_name == qualified_name)
+            .collect();
+        assert_eq!(
+            found.len(),
+            1,
+            "{qualified_name} is declared once in {rel}, found {}",
+            found.len()
+        );
+        found.into_iter().next().expect("one")
+    }
+
+    /// The symbol whose declaration contains `needle`, for the several
+    /// overloads and same-name members the fixture keeps as traps.
+    fn symbol_with(&self, rel: &str, qualified_name: &str, needle: &str) -> Symbol {
+        let text = self.text(rel);
+        self.symbols(rel)
+            .into_iter()
+            .filter(|symbol| symbol.qualified_name == qualified_name)
+            .find(|symbol| {
+                text.get(symbol.span.start_byte..symbol.span.end_byte)
+                    .is_some_and(|body| body.contains(needle))
+            })
+            .unwrap_or_else(|| panic!("{qualified_name} containing {needle:?} in {rel}"))
     }
 
     fn offset_of(&self, rel: &str, needle: &str, nth: usize) -> usize {
@@ -889,4 +993,458 @@ fn granting_trust_invalidates_an_untrusted_publication() {
         trusted.fingerprint(),
         "trust is part of what a publication was based on"
     );
+}
+
+// ---------------------------------------------------------------------
+// The whole-Workspace slice
+// ---------------------------------------------------------------------
+
+/// One pass over the whole fixture, read back through the ordinary
+/// query APIs.
+///
+/// Everything asserted here travels `Roslyn → adapter → evidence →
+/// publication → merge → query`. A probe that got the right answer out
+/// of the backend proves nothing on its own; what matters is that the
+/// canonical graph says it afterwards, to a caller who has never heard
+/// of C#.
+///
+/// One test rather than twelve because one solution load is eight
+/// seconds and the assertions are independent of each other.
+#[test]
+#[ignore = "needs the restored Roslyn language server"]
+fn the_csharp_slice_holds_against_the_real_backend() {
+    let Some(install) = install_or_skip() else {
+        return;
+    };
+    let slice = Slice::open("slice", 30, &install, ProjectExecutionTrust::Trusted);
+    slice.with_host(|queries| {
+        slice.refresh_all(queries);
+
+        // ---- Alias and global using -------------------------------
+        //
+        // `using Alias = Contracts.Model;` and a same-named
+        // `Contracts.Other.Model` that must not win.
+        let alias_site = slice.offset_of("src/App/Program.cs", "Alias Aliased", 0);
+        let alias_target =
+            slice.target_at("src/App/Program.cs", alias_site, alias_site + "Alias".len());
+        let model = slice.only("src/Contracts/Models.cs", "Contracts.Model");
+        let trap = slice.only("src/Contracts/Traps.cs", "Contracts.Other.Model");
+        assert_eq!(
+            alias_target,
+            Some(GraphEndpoint::Symbol(model.id)),
+            "an alias resolves to the type it was bound to, not to the name"
+        );
+        assert_ne!(alias_target, Some(GraphEndpoint::Symbol(trap.id)));
+
+        // `RunnerTests.cs` has no file-level `using Core;` -- only the
+        // project-wide `global using Core;` -- so this binding exists
+        // only if the compiler's view of imports was used.
+        let global_site = slice.offset_of(TEST_FILE, "Runner _shared", 0);
+        assert!(
+            matches!(
+                slice.target_at(TEST_FILE, global_site, global_site + "Runner".len()),
+                Some(GraphEndpoint::Logical(_))
+            ),
+            "a type reached through `global using` still binds"
+        );
+
+        // ---- Overloads --------------------------------------------
+        let string_overload = slice.symbol_with(
+            "src/Core/Overloads.cs",
+            "Core.Overloads.Parse",
+            "string value",
+        );
+        let int_overload =
+            slice.symbol_with("src/Core/Overloads.cs", "Core.Overloads.Parse", "int value");
+        let object_overload = slice.symbol_with(
+            "src/Core/Overloads.cs",
+            "Core.Overloads.Parse",
+            "object value",
+        );
+        for (call, expected, label) in [
+            ("Overloads.Parse(\"x\")", string_overload.id, "string"),
+            ("Overloads.Parse(1)", int_overload.id, "int"),
+        ] {
+            let site = slice.offset_of("src/App/Program.cs", call, 0);
+            assert_eq!(
+                slice.target_at("src/App/Program.cs", site, site + "Overloads.Parse".len()),
+                Some(GraphEndpoint::Symbol(expected)),
+                "{call} selects the {label} overload"
+            );
+        }
+        assert_ne!(string_overload.id, int_overload.id);
+        assert_ne!(string_overload.id, object_overload.id);
+
+        // A generic method is its own declaration, not one of the
+        // `Parse` family.
+        let convert = slice.only("src/Core/Overloads.cs", "Core.Overloads.Convert");
+        let convert_site = slice.offset_of("src/App/Program.cs", "Overloads.Convert", 0);
+        assert_eq!(
+            slice.target_at(
+                "src/App/Program.cs",
+                convert_site,
+                convert_site + "Overloads.Convert".len()
+            ),
+            Some(GraphEndpoint::Symbol(convert.id)),
+            "a generic method resolves to its own declaration"
+        );
+
+        // ---- References -------------------------------------------
+        //
+        // Read as incoming edges on the declaration, which is what
+        // "who uses this" is in the canonical graph.
+        let parse_users = slice.incoming(
+            &GraphEndpoint::Symbol(string_overload.id),
+            &[RelationKind::Calls, RelationKind::References],
+        );
+        assert!(
+            !parse_users.is_empty(),
+            "the string overload has callers: {:?}",
+            slice.names(&parse_users)
+        );
+        let users = slice.names(&parse_users);
+        assert!(
+            users.iter().any(|name| name.starts_with("src/App/")),
+            "including one in another project: {users:?}"
+        );
+
+        // A reference to a partial type is one binding to the group,
+        // however many declarations Roslyn reported.
+        let logical = match slice.target_at(TEST_FILE, global_site, global_site + "Runner".len()) {
+            Some(GraphEndpoint::Logical(logical)) => logical,
+            other => panic!("expected the group, got {other:?}"),
+        };
+        let group_users = slice.incoming(
+            &GraphEndpoint::Logical(logical),
+            &[RelationKind::References, RelationKind::UsesType],
+        );
+        assert!(
+            !group_users.is_empty(),
+            "the group is what references point at"
+        );
+
+        // ---- Calls and honest dispatch -----------------------------
+        let base_run = slice.only("src/Core/BaseRunner.cs", "Core.BaseRunner.Run");
+        let not_virtual = slice.only("src/Core/BaseRunner.cs", "Core.BaseRunner.NotVirtual");
+        let virtual_callers =
+            slice.incoming_dispatch(&GraphEndpoint::Symbol(base_run.id), &[RelationKind::Calls]);
+        assert!(
+            !virtual_callers.is_empty(),
+            "`based.Run()` binds to the declaration its static type names"
+        );
+        assert!(
+            virtual_callers
+                .iter()
+                .all(|(_, dispatch)| *dispatch == Dispatch::Unknown),
+            "a virtual callee is not what necessarily runs: {virtual_callers:?}"
+        );
+        let final_callers = slice.incoming_dispatch(
+            &GraphEndpoint::Symbol(not_virtual.id),
+            &[RelationKind::Calls],
+        );
+        assert!(
+            !final_callers.is_empty()
+                && final_callers
+                    .iter()
+                    .all(|(_, dispatch)| *dispatch == Dispatch::Static),
+            "a non-virtual callee is bound exactly where it points: {final_callers:?}"
+        );
+
+        // ---- Extension method --------------------------------------
+        let label = slice.only("src/Core/Extensions.cs", "Core.RunnerExtensions.Label");
+        let unrelated_label =
+            slice.only("src/Core/Extensions.cs", "Core.UnrelatedExtensions.Label");
+        let label_site = slice.offset_of("src/App/Program.cs", "runner.Label()", 0);
+        assert_eq!(
+            slice.target_at(
+                "src/App/Program.cs",
+                label_site,
+                label_site + "runner.Label".len()
+            ),
+            Some(GraphEndpoint::Symbol(label.id)),
+            "an extension call targets the static declaration that defines it"
+        );
+        assert!(
+            slice
+                .incoming(
+                    &GraphEndpoint::Symbol(unrelated_label.id),
+                    &[RelationKind::Calls]
+                )
+                .is_empty(),
+            "and not the one that merely shares its name"
+        );
+
+        // ---- Overrides ---------------------------------------------
+        let middle_run = slice.only("src/Core/Sealed.cs", "Core.Middle.Run");
+        let leaf_run = slice.only("src/Core/Sealed.cs", "Core.Leaf.Run");
+        let middle = slice.only("src/Core/Sealed.cs", "Core.Middle");
+        assert_eq!(
+            slice.outgoing(
+                &GraphEndpoint::Symbol(middle_run.id),
+                &[RelationKind::Overrides]
+            ),
+            vec![GraphEndpoint::Symbol(base_run.id)],
+            "virtual -> override"
+        );
+        assert_eq!(
+            slice.outgoing(
+                &GraphEndpoint::Symbol(leaf_run.id),
+                &[RelationKind::Overrides]
+            ),
+            vec![GraphEndpoint::Symbol(middle_run.id)],
+            "a sealed override overrides the nearest declaration, transitively"
+        );
+        let _ = middle;
+
+        // The partial case: `Compute` is declared in `Part2`, and the
+        // base list is written in `Part1`. A derivation that read only
+        // its own declaration's edges would find no ancestor at all.
+        let compute = slice.only("src/Core/Runner.Part2.cs", "Core.Runner.Compute");
+        let base_compute = slice.only("src/Core/BaseRunner.cs", "Core.BaseRunner.Compute");
+        assert_eq!(
+            slice.outgoing(
+                &GraphEndpoint::Symbol(compute.id),
+                &[RelationKind::Overrides]
+            ),
+            vec![GraphEndpoint::Symbol(base_compute.id)],
+            "abstract -> override, across two declarations of one type"
+        );
+
+        // The traps declare `Run` and override nothing.
+        for (file, name) in [
+            ("src/Core/BaseRunner.cs", "Core.Unrelated.Run"),
+            ("src/Core/Implementers.cs", "Core.NotARunner.Run"),
+        ] {
+            let trap = slice.only(file, name);
+            assert!(
+                slice
+                    .outgoing(&GraphEndpoint::Symbol(trap.id), &[RelationKind::Overrides])
+                    .is_empty(),
+                "{name} shares a name and nothing else"
+            );
+        }
+
+        // ---- Implementation target ---------------------------------
+        let interface_run = slice.only("src/Contracts/IRunner.cs", "Contracts.IRunner.Run");
+        let implementers = slice.incoming(
+            &GraphEndpoint::Symbol(interface_run.id),
+            &[RelationKind::Implements],
+        );
+        let found = slice.names(&implementers);
+        assert!(
+            found
+                .iter()
+                .any(|name| name == "src/Core/Implementers.cs::Core.OtherRunner.Run"),
+            "the implementation query finds every implementing member: {found:?}"
+        );
+        assert!(
+            found
+                .iter()
+                .any(|name| name == "src/Core/Runner.Part2.cs::Core.Runner.Run"),
+            "including the explicit `void IRunner.Run()`: {found:?}"
+        );
+        for excluded in [
+            "src/Core/BaseRunner.cs::Core.Unrelated.Run",
+            "src/Core/Implementers.cs::Core.NotARunner.Run",
+            // The implicit `Run` in Part1 overrides the base; the
+            // explicit declaration is what the interface reaches.
+            "src/Core/Runner.Part1.cs::Core.Runner.Run",
+        ] {
+            assert!(
+                !found.iter().any(|name| name == excluded),
+                "{excluded} does not implement IRunner.Run: {found:?}"
+            );
+        }
+
+        // ---- Type surface ------------------------------------------
+        for (rel, name) in [
+            ("src/Contracts/Models.cs", "Contracts.Model"),
+            ("src/Contracts/Models.cs", "Contracts.Tally"),
+            ("src/Contracts/Models.cs", "Contracts.Level"),
+            ("src/Contracts/Models.cs", "Contracts.Snapshot"),
+            ("src/Contracts/Models.cs", "Contracts.Box"),
+            ("src/Contracts/IRunner.cs", "Contracts.IRunner"),
+        ] {
+            let declared = slice.only(rel, name);
+            assert!(
+                declared.span.end_byte > declared.span.start_byte,
+                "{name} is a declaration with a span"
+            );
+        }
+        // A generic type used as a return type resolves to the generic
+        // declaration, not to a constructed instantiation.
+        // A parameter type and a field type are anchored by I3, and
+        // both resolve. A *return* type and a generic type argument are
+        // not anchored -- `Box<Model> Wrap(Model model)` gives one type
+        // site, on the parameter -- so there is nothing for this tier
+        // to prove about them and the capability says PARTIAL rather
+        // than this test pretending otherwise.
+        let model_parameter = slice.offset_of("src/Core/Overloads.cs", "Model model", 0);
+        assert_eq!(
+            slice.target_at(
+                "src/Core/Overloads.cs",
+                model_parameter,
+                model_parameter + "Model".len()
+            ),
+            Some(GraphEndpoint::Symbol(model.id)),
+            "a parameter type resolves"
+        );
+        let boxed = slice.only("src/Contracts/Models.cs", "Contracts.Box");
+        assert!(
+            slice
+                .incoming(&GraphEndpoint::Symbol(boxed.id), &[RelationKind::UsesType])
+                .is_empty(),
+            "and a return type is not anchored, so it is a gap rather than a guess"
+        );
+
+        // ---- Cross-project ------------------------------------------
+        //
+        // App -> Core -> Contracts, and Core.Tests -> Core, all proved
+        // rather than assumed from the project references.
+        let runner_part1 = slice.only("src/Core/Runner.Part1.cs", "Core.Runner");
+        let irunner = slice.only("src/Contracts/IRunner.cs", "Contracts.IRunner");
+        assert!(
+            slice
+                .outgoing(
+                    &GraphEndpoint::Symbol(runner_part1.id),
+                    &[RelationKind::Implements]
+                )
+                .contains(&GraphEndpoint::Symbol(irunner.id)),
+            "Core -> Contracts, at the type level"
+        );
+    });
+}
+
+// ---------------------------------------------------------------------
+// Agent-facing surfaces
+// ---------------------------------------------------------------------
+
+/// Impact, related tests and prepared source, through the unchanged
+/// common APIs.
+#[test]
+#[ignore = "needs the restored Roslyn language server"]
+fn the_agent_surfaces_answer_for_csharp() {
+    let Some(install) = install_or_skip() else {
+        return;
+    };
+    let slice = Slice::open("surfaces", 31, &install, ProjectExecutionTrust::Trusted);
+    slice.with_host(|queries| {
+        slice.refresh_all(queries);
+
+        let base_run = slice.only("src/Core/BaseRunner.cs", "Core.BaseRunner.Run");
+        let middle_run = slice.only("src/Core/Sealed.cs", "Core.Middle.Run");
+        let impact = ImpactTraversal::open(&slice.db_path)
+            .expect("index.db")
+            .run(
+                ImpactIntent::PublicSignatureChange,
+                &GraphEndpoint::Symbol(base_run.id),
+                &Budget::default(),
+            )
+            .expect("impact");
+        assert!(
+            impact
+                .nodes
+                .iter()
+                .any(|node| node.endpoint == GraphEndpoint::Symbol(middle_run.id)),
+            "a signature change on a virtual member reaches its overrides"
+        );
+
+        let irunner = slice.only("src/Contracts/IRunner.cs", "Contracts.IRunner");
+        let runner_part1 = slice.only("src/Core/Runner.Part1.cs", "Core.Runner");
+        let interface_impact = ImpactTraversal::open(&slice.db_path)
+            .expect("index.db")
+            .run(
+                ImpactIntent::BaseInterfaceChange,
+                &GraphEndpoint::Symbol(irunner.id),
+                &Budget::default(),
+            )
+            .expect("impact");
+        assert!(
+            interface_impact
+                .nodes
+                .iter()
+                .any(|node| node.endpoint == GraphEndpoint::Symbol(runner_part1.id)),
+            "an interface change reaches the types that implement it"
+        );
+
+        // A partial type's change reaches its consumers without the
+        // graph growing one relation per declaration.
+        let compute = slice.only("src/Core/Runner.Part2.cs", "Core.Runner.Compute");
+        let related = RelatedTests::open(&slice.db_path)
+            .expect("index.db")
+            .for_target(
+                &GraphEndpoint::Symbol(compute.id),
+                ImpactIntent::PublicSignatureChange,
+                &Budget::default(),
+            )
+            .expect("related tests");
+        assert!(
+            related
+                .candidates
+                .iter()
+                .any(|candidate| candidate.path_rel.contains("RunnerTests")),
+            "the test that exercises it is reachable: {:?}",
+            related
+                .candidates
+                .iter()
+                .map(|candidate| &candidate.path_rel)
+                .collect::<Vec<_>>()
+        );
+
+        // Prepared inspection: current source, not a line number to go
+        // and read. A hard gate.
+        let prepared = InspectPreparer::open(&slice.db_path, &slice.workspace)
+            .expect("preparer")
+            .prepare(
+                &GraphEndpoint::Symbol(base_run.id),
+                Direction::Incoming,
+                &[RelationKind::Calls, RelationKind::Overrides],
+            )
+            .expect("prepared");
+        assert!(prepared.confirmed_count() > 0);
+        assert!(
+            prepared.source_complete(),
+            "every prepared range carries verified current source"
+        );
+        for relation in &prepared.relations {
+            for item in &relation.evidence {
+                assert!(
+                    item.evidence_range.is_some(),
+                    "a semantic result with only a location: {:?}",
+                    item.location
+                );
+                assert!(item.unavailable.is_none(), "{:?}", item.unavailable);
+            }
+        }
+
+        // And for a partial type, preparation carries the declaration
+        // set -- both files -- rather than a synthetic span for the
+        // group, which has no source of its own.
+        let logical_site = slice.offset_of(TEST_FILE, "Runner _shared", 0);
+        let Some(GraphEndpoint::Logical(logical)) =
+            slice.target_at(TEST_FILE, logical_site, logical_site + "Runner".len())
+        else {
+            panic!("the group");
+        };
+        let group_prepared = InspectPreparer::open(&slice.db_path, &slice.workspace)
+            .expect("preparer")
+            .prepare(
+                &GraphEndpoint::Logical(logical),
+                Direction::Incoming,
+                &[RelationKind::References, RelationKind::UsesType],
+            )
+            .expect("prepared");
+        assert!(
+            group_prepared.declarations.len() >= 2,
+            "a logical type prepares every declaration it owns: {:?}",
+            group_prepared.declarations.len()
+        );
+        assert!(
+            group_prepared
+                .ranges
+                .iter()
+                .any(|range| range.source.contains("partial class Runner")),
+            "and their current source comes back"
+        );
+    });
 }

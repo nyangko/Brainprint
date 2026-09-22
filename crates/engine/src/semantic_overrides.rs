@@ -194,6 +194,165 @@ pub fn derive(
     Ok(produced)
 }
 
+/// Derive every interface member the types in `owner` implement.
+///
+/// The same shape as [`derive`] and for the same reason -- no measured
+/// backend answers "which interface member does this implement" -- but
+/// over `IMPLEMENTS` rather than `EXTENDS`, and with the target
+/// required to be declared by an **interface**. That requirement is
+/// what keeps the two apart: walking a class's bases as well is
+/// necessary (a type implements the interfaces its bases declare), and
+/// without it `Runner.Run` would reach `BaseRunner.Run` and be labelled
+/// an implementation of something that is not an interface member at
+/// all.
+///
+/// `explicit` maps a member to the interface its declaration names, for
+/// C#'s `void IRunner.Run()`. It does two jobs. Such a member matches
+/// only that interface. And it *claims* the name: an implicitly named
+/// sibling no longer implements the same interface member, because in
+/// the language it does not -- the explicit declaration is what
+/// interface dispatch reaches.
+///
+/// # Errors
+/// When the graph or the index cannot be read.
+pub fn derive_implements(
+    connection: &Connection,
+    owner: &Resource,
+    occurrences: &[Occurrence],
+    extra_interfaces: &[(SymbolId, SymbolId)],
+    context_key: &str,
+    basis: &EvidenceBasis,
+    explicit: &BTreeMap<SymbolId, String>,
+) -> Result<Derivation, GraphError> {
+    let own = list_for_resource(connection, owner.id).map_err(sql)?;
+    let mut produced = Derivation::default();
+    let mut members: BTreeMap<SymbolId, Vec<Symbol>> = BTreeMap::new();
+
+    for declaring in own.iter().filter(|symbol| {
+        matches!(
+            symbol.kind,
+            SymbolKind::Class | SymbolKind::Struct | SymbolKind::Record
+        )
+    }) {
+        let ancestry = ancestors_over(
+            connection,
+            declaring.id,
+            extra_interfaces,
+            &[RelationKind::Extends, RelationKind::Implements],
+        )?;
+        // Which interfaces a sibling has already claimed by name.
+        //
+        // Every declaration of the type, not only this file's: the
+        // explicit `void IRunner.Run()` may be written in the other
+        // half of a partial class, and it still takes the name there.
+        let claimed: BTreeSet<(String, String)> = members_of(
+            connection,
+            declaring.id,
+            &mut members,
+            &mut produced.ancestor_resources,
+        )?
+        .iter()
+        .filter_map(|symbol| {
+            explicit
+                .get(&symbol.id)
+                .map(|interface| (interface.clone(), symbol.name.clone()))
+        })
+        .collect();
+
+        for member in own
+            .iter()
+            .filter(|symbol| symbol.parent_id == Some(declaring.id))
+            .filter(|symbol| overridable(symbol.kind))
+        {
+            let Some(site) = definition_site(occurrences, member.id) else {
+                continue;
+            };
+            let named = explicit.get(&member.id).map(String::as_str);
+            let mut found: BTreeSet<SymbolId> = BTreeSet::new();
+            for depth in ancestry.by_depth.keys() {
+                for ancestor in &ancestry.by_depth[depth] {
+                    let interface = interface_named(connection, *ancestor)?;
+                    let Some(interface_name) = interface else {
+                        continue;
+                    };
+                    match named {
+                        // An explicit declaration implements the one
+                        // interface it names, and nothing else.
+                        Some(wanted) if wanted != interface_name => continue,
+                        // An implicit one does not implement what an
+                        // explicit sibling already implements.
+                        None if claimed
+                            .contains(&(interface_name.clone(), member.name.clone())) =>
+                        {
+                            continue;
+                        }
+                        _ => {}
+                    }
+                    for candidate in members_of(
+                        connection,
+                        *ancestor,
+                        &mut members,
+                        &mut produced.ancestor_resources,
+                    )? {
+                        if candidate.name == member.name && candidate.kind == member.kind {
+                            found.insert(candidate.id);
+                        }
+                    }
+                }
+            }
+            match found.len() {
+                1 => produced.evidence.push(SemanticEvidence {
+                    context_key: context_key.to_owned(),
+                    capability: SemanticCapability::Implements,
+                    relation_kind: Some(RelationKind::Implements),
+                    basis: basis.clone(),
+                    occurrence: Some(site),
+                    source: Some(GraphEndpoint::Symbol(member.id)),
+                    outcome: SemanticOutcome::Resolved {
+                        target: GraphEndpoint::Symbol(
+                            found.into_iter().next().expect("exactly one"),
+                        ),
+                    },
+                    // Which member a declaration implements is written,
+                    // not dispatched.
+                    dispatch: Dispatch::Static,
+                    support: Support::Supported,
+                }),
+                // A member implementing two interfaces that both
+                // declare the name really does implement both, and one
+                // occurrence binds to one relation. Reported rather
+                // than halved.
+                candidates if candidates > 1 => produced.unproven.push(UnprovenOverride {
+                    method: member.id,
+                    occurrence: site,
+                    reason: UnprovenReason::AmbiguousAncestors { candidates },
+                }),
+                _ => {}
+            }
+        }
+    }
+    Ok(produced)
+}
+
+/// The name of `symbol`, if it is an interface.
+fn interface_named(
+    connection: &Connection,
+    symbol: SymbolId,
+) -> Result<Option<String>, GraphError> {
+    let row: Option<(String, String)> = connection
+        .query_row(
+            "SELECT kind, name FROM symbol WHERE uid = ?1",
+            rusqlite::params![symbol.to_bytes().to_vec()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map(Some)
+        .or_else(|error| match error {
+            rusqlite::Error::QueryReturnedNoRows => Ok(None),
+            other => Err(other),
+        })?;
+    Ok(row.and_then(|(kind, name)| (kind == "INTERFACE").then_some(name)))
+}
+
 enum Resolution {
     Found(SymbolId),
     Unproven(UnprovenReason),
@@ -267,12 +426,23 @@ fn members_of<'a>(
             cache.insert(class, Vec::new());
             return Ok(cache.get(&class).expect("just inserted"));
         };
+        // Every declaration of the type, not just this one: a partial
+        // type's members are spread across its files, and an inherited
+        // member is inherited wherever it was written.
+        let mut declared = Vec::new();
+        for declaration in siblings_of(connection, class)? {
+            let Some(from) = resource_of(connection, declaration)? else {
+                continue;
+            };
+            read.insert(from);
+            declared.extend(
+                list_for_resource(connection, from)
+                    .map_err(sql)?
+                    .into_iter()
+                    .filter(|symbol| symbol.parent_id == Some(declaration)),
+            );
+        }
         read.insert(resource);
-        let declared = list_for_resource(connection, resource)
-            .map_err(sql)?
-            .into_iter()
-            .filter(|symbol| symbol.parent_id == Some(class))
-            .collect();
         cache.insert(class, declared);
     }
     Ok(cache.get(&class).expect("present"))
@@ -280,16 +450,31 @@ fn members_of<'a>(
 
 /// Every proven ancestor of `class`, by depth.
 ///
-/// Read straight off the canonical `EXTENDS` edges, whose source is the
-/// subclass Symbol. It was not always: I3 used to publish a Python base
-/// list from the Resource, because the walker collects type evidence
-/// before it emits the class Symbol. That is fixed at the source, and
-/// this reads one inheritance model rather than reconstructing a second
-/// one from spans.
+/// Read straight off the canonical edges, whose source is the subclass
+/// Symbol. It was not always: I3 used to publish a Python base list from
+/// the Resource, because the walker collects type evidence before it
+/// emits the class Symbol. That is fixed at the source, and this reads
+/// one inheritance model rather than reconstructing a second one from
+/// spans.
 fn ancestors(
     connection: &Connection,
     class: SymbolId,
     extra: &[(SymbolId, SymbolId)],
+) -> Result<Ancestry, GraphError> {
+    ancestors_over(connection, class, extra, &[RelationKind::Extends])
+}
+
+/// The same, following a chosen set of edge kinds.
+///
+/// `EXTENDS` alone answers "what does this override". Adding
+/// `IMPLEMENTS` answers "which interface member does this implement",
+/// because a type implements the interfaces its bases declare as well
+/// as its own.
+fn ancestors_over(
+    connection: &Connection,
+    class: SymbolId,
+    extra: &[(SymbolId, SymbolId)],
+    kinds: &[RelationKind],
 ) -> Result<Ancestry, GraphError> {
     let mut by_depth: BTreeMap<usize, Vec<SymbolId>> = BTreeMap::new();
     let mut seen: BTreeSet<SymbolId> = BTreeSet::from([class]);
@@ -301,29 +486,46 @@ fn ancestors(
             continue;
         }
         let mut direct: Vec<SymbolId> = Vec::new();
-        for relation in relations_from(
-            connection,
-            &GraphEndpoint::Symbol(current),
-            Some(RelationKind::Extends),
-        )? {
-            match relation.target {
-                GraphEndpoint::Symbol(base) => direct.push(base),
-                // A base that is one semantic type with several
-                // declarations (#19 task 12). Its members are spread
-                // across those declarations, so every one of them is an
-                // ancestor to read -- picking one would lose members
-                // that really are inherited.
-                GraphEndpoint::Logical(base) => direct.extend(
-                    crate::logical_symbol::declarations(connection, base).map_err(|error| {
-                        GraphError::Sqlite(rusqlite::Error::InvalidParameterName(error.to_string()))
-                    })?,
-                ),
-                // A base outside the Workspace. Its members are not
-                // indexed and must not be, so "no ancestor declares
-                // this" stops being a reliable answer and the
-                // derivation says so instead of pretending otherwise.
-                GraphEndpoint::External(_) => opaque = true,
-                GraphEndpoint::Resource(_) | GraphEndpoint::Domain(_) => {}
+        // A type written across several declarations inherits once, and
+        // the base list may be written in any one of them. So the edges
+        // to read are every declaration's, not this declaration's --
+        // otherwise a member in `Runner.Part2.cs` would have no
+        // ancestors at all, because `: BaseRunner` is in `Part1`.
+        let mut sources = vec![current];
+        for group in siblings_of(connection, current)? {
+            if group != current {
+                sources.push(group);
+            }
+        }
+        for source in sources {
+            for relation in kinds
+                .iter()
+                .map(|kind| relations_from(connection, &GraphEndpoint::Symbol(source), Some(*kind)))
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
+                .flatten()
+            {
+                match relation.target {
+                    GraphEndpoint::Symbol(base) => direct.push(base),
+                    // A base that is one semantic type with several
+                    // declarations (#19 task 12). Its members are spread
+                    // across those declarations, so every one of them is an
+                    // ancestor to read -- picking one would lose members
+                    // that really are inherited.
+                    GraphEndpoint::Logical(base) => direct.extend(
+                        crate::logical_symbol::declarations(connection, base).map_err(|error| {
+                            GraphError::Sqlite(rusqlite::Error::InvalidParameterName(
+                                error.to_string(),
+                            ))
+                        })?,
+                    ),
+                    // A base outside the Workspace. Its members are not
+                    // indexed and must not be, so "no ancestor declares
+                    // this" stops being a reliable answer and the
+                    // derivation says so instead of pretending otherwise.
+                    GraphEndpoint::External(_) => opaque = true,
+                    GraphEndpoint::Resource(_) | GraphEndpoint::Domain(_) => {}
+                }
             }
         }
         // A base this same refresh proved and has not merged yet. Same
@@ -343,6 +545,30 @@ fn ancestors(
         }
     }
     Ok(Ancestry { by_depth, opaque })
+}
+
+/// Every declaration of the type `class` declares, including itself.
+///
+/// One entry for a language that writes a type once, which is every
+/// language but this one; several when a `LogicalSymbol` says the
+/// declarations belong together.
+fn siblings_of(connection: &Connection, class: SymbolId) -> Result<Vec<SymbolId>, GraphError> {
+    let groups = crate::logical_symbol::groups_of(connection, class).map_err(logical)?;
+    let mut found = vec![class];
+    for group in groups {
+        for declaration in
+            crate::logical_symbol::declarations(connection, group).map_err(logical)?
+        {
+            if !found.contains(&declaration) {
+                found.push(declaration);
+            }
+        }
+    }
+    Ok(found)
+}
+
+fn logical(error: crate::logical_symbol::LogicalSymbolError) -> GraphError {
+    GraphError::Sqlite(rusqlite::Error::InvalidParameterName(error.to_string()))
 }
 
 /// The `DEFINITION` Occurrence that declares `member`.

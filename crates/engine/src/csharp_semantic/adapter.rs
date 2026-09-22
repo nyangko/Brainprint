@@ -56,7 +56,7 @@ use crate::{
     runtime::{RequestFailure, RequestOptions, RuntimeLease, RuntimeRequest, SemanticRequestKey},
     semantic::{SemanticCapability, SemanticEvidence, SemanticOutcome},
     semantic_normalize::{SymbolMatch, resource_by_path_key, symbol_at_span},
-    symbol::{Occurrence, SymbolKind},
+    symbol::{Occurrence, Symbol, SymbolKind},
 };
 
 /// The site vocabulary and Workspace lookups shared with every other
@@ -340,6 +340,9 @@ pub struct Normalizer<'a> {
     /// Logical symbols this pass created or confirmed, with the
     /// declarations proved into them.
     grouped: BTreeMap<LogicalSymbolId, BTreeSet<SymbolId>>,
+    /// What each resolved alias declaration binds to, by the line it is
+    /// written on. See [`Normalizer::through_alias`].
+    aliases: BTreeMap<(ResourceId, u32), GraphEndpoint>,
 }
 
 impl<'a> Normalizer<'a> {
@@ -360,7 +363,33 @@ impl<'a> Normalizer<'a> {
             texts: BTreeMap::new(),
             read: BTreeMap::new(),
             grouped: BTreeMap::new(),
+            aliases: BTreeMap::new(),
         }
+    }
+
+    /// Record what an alias declaration was proved to bind to.
+    ///
+    /// `using Alias = Contracts.Model;` declares a name, and the
+    /// measured server answers a *use* of that name with the alias
+    /// declaration itself -- line 3, the word `Alias` -- which is not a
+    /// Symbol and never will be. The type it stands for is the answer
+    /// to a different question the same pass already asked: the
+    /// directive's own right-hand side, `Contracts.Model`, which
+    /// resolves to the type.
+    ///
+    /// So an alias use is resolved by chaining those two answers. Both
+    /// links are the compiler's; nothing here splits a dotted name or
+    /// matches by text. The join is positional -- a C# `using`
+    /// directive is written on one line -- and an alias written across
+    /// several lines simply stays a gap rather than resolving to
+    /// something else.
+    fn remember_alias(&mut self, resource: ResourceId, line: u32, target: GraphEndpoint) {
+        self.aliases.insert((resource, line), target);
+    }
+
+    /// The type an alias declaration at this location stands for.
+    fn through_alias(&self, resource: ResourceId, line: u32) -> Option<GraphEndpoint> {
+        self.aliases.get(&(resource, line)).cloned()
     }
 
     /// Every Resource whose current bytes a resolution depended on.
@@ -437,7 +466,12 @@ impl<'a> Normalizer<'a> {
         }
         match self.symbol_for(location)? {
             Some(symbol) => Ok(Target::Endpoint(GraphEndpoint::Symbol(symbol))),
-            None => Ok(Target::Unmappable(UnresolvedReason::NoStructuralBinding)),
+            None => Ok(self
+                .through_alias(resource.id, location.range.start.line)
+                .map_or(
+                    Target::Unmappable(UnresolvedReason::NoStructuralBinding),
+                    Target::Endpoint,
+                )),
         }
     }
 
@@ -584,6 +618,9 @@ pub struct ResourceEvidence {
     /// Sites the backend withdrew rather than answered. Incomplete
     /// coverage, recorded rather than guessed at.
     pub withdrawn: Vec<crate::evidence::OccurrenceRef>,
+    /// `(type, base)` pairs this pass proved, so the override and
+    /// interface derivations can use an edge that has not merged yet.
+    pub resolved_bases: Vec<(SymbolId, SymbolId)>,
     pub retained_external: Vec<RetainedExternal>,
     pub deferred: Vec<DeferredGap>,
     /// Logical symbols proved, with their declarations.
@@ -604,7 +641,7 @@ pub struct ResourceRequest<'a> {
 /// How this backend reads a shared [`ResolvableKind`].
 trait CSharpSite {
     fn capability(self, outcome: &SemanticOutcome) -> SemanticCapability;
-    fn dispatch(self, site: &SemanticSite) -> Dispatch;
+    fn dispatch(self, connection: &Connection, outcome: &SemanticOutcome) -> Dispatch;
 }
 
 impl CSharpSite for ResolvableKind {
@@ -634,17 +671,107 @@ impl CSharpSite for ResolvableKind {
     /// is what executes. Calling that STATIC would turn "here is the
     /// declaration" into "here is what runs", which C# does not support
     /// anyone saying.
-    fn dispatch(self, site: &SemanticSite) -> Dispatch {
-        match self {
-            Self::Calls
-                if site.module_hint.is_some()
-                    || site.reason == UnresolvedReason::ReceiverTypeRequired =>
-            {
-                Dispatch::Unknown
-            }
-            _ => Dispatch::Static,
+    ///
+    /// So dispatch is read off the resolved declaration, which is the
+    /// only place the answer is written: a `virtual`, `abstract` or
+    /// `override` member, or any member of an interface, can be
+    /// dispatched somewhere else at run time. Everything else in C# --
+    /// a static method, a sealed override, an ordinary non-virtual
+    /// method, a type reference -- is bound exactly where it points.
+    /// `Overloads.Parse("x")` is not made unknowable by the fact that
+    /// some other call in the file is.
+    fn dispatch(self, connection: &Connection, outcome: &SemanticOutcome) -> Dispatch {
+        if self != Self::Calls {
+            return Dispatch::Static;
+        }
+        let SemanticOutcome::Resolved {
+            target: GraphEndpoint::Symbol(target),
+        } = outcome
+        else {
+            return Dispatch::Static;
+        };
+        if overridable_target(connection, *target).unwrap_or(true) {
+            Dispatch::Unknown
+        } else {
+            Dispatch::Static
         }
     }
+}
+
+/// EXTENDS or IMPLEMENTS, once the target's own kind is known.
+///
+/// A base list does not say which it is -- `class Runner : BaseRunner,
+/// IRunner` writes both the same way -- so the answer is the *target's*
+/// declared kind. I3 gets this right whenever the target is in the same
+/// file, and cannot when it is not: an unresolved base defaults to
+/// EXTENDS because something has to be recorded. Correcting it is what
+/// this tier is for, and it is a correction rather than a guess,
+/// because by now the compiler has said which declaration it is.
+fn base_list_kind(
+    connection: &Connection,
+    kind: ResolvableKind,
+    outcome: &SemanticOutcome,
+) -> crate::graph::RelationKind {
+    use crate::graph::RelationKind;
+    if !matches!(kind, ResolvableKind::Extends | ResolvableKind::Implements) {
+        return kind.relation_kind();
+    }
+    let target = match outcome {
+        SemanticOutcome::Resolved {
+            target: GraphEndpoint::Symbol(symbol),
+        } => Some(*symbol),
+        // Every declaration of a partial type agrees on its kind, so
+        // reading one answers for the group.
+        SemanticOutcome::Resolved {
+            target: GraphEndpoint::Logical(logical),
+        } => crate::logical_symbol::declarations(connection, *logical)
+            .ok()
+            .and_then(|declarations| declarations.into_iter().next()),
+        _ => None,
+    };
+    let Some(target) = target else {
+        return kind.relation_kind();
+    };
+    match describe(connection, target) {
+        Ok(Some(descriptor)) if descriptor.kind == SymbolKind::Interface => {
+            RelationKind::Implements
+        }
+        Ok(Some(_)) => RelationKind::Extends,
+        _ => kind.relation_kind(),
+    }
+}
+
+/// Whether a resolved callee could be dispatched to something else.
+///
+/// True for `virtual`, `abstract` and non-`sealed` `override` members,
+/// and for every member an interface declares. `Err` is treated as
+/// unknown by the caller, because failing to read a declaration is not
+/// evidence that it is final.
+fn overridable_target(connection: &Connection, target: SymbolId) -> Result<bool, rusqlite::Error> {
+    use rusqlite::{OptionalExtension, params};
+    let row: Option<(String, Option<String>)> = connection
+        .query_row(
+            "SELECT COALESCE(symbol.signature, ''), parent.kind \
+             FROM symbol LEFT JOIN symbol AS parent ON parent.id = symbol.parent_symbol_id \
+             WHERE symbol.uid = ?1",
+            params![target.to_bytes().to_vec()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    let Some((signature, parent_kind)) = row else {
+        return Ok(true);
+    };
+    if parent_kind.as_deref() == Some("INTERFACE") {
+        return Ok(true);
+    }
+    let words: Vec<&str> = signature
+        .split(|character: char| !character.is_alphanumeric() && character != '_')
+        .collect();
+    let sealed = words.contains(&"sealed");
+    Ok(!sealed
+        && (words.contains(&"virtual")
+            || words.contains(&"abstract")
+            || words.contains(&"override")))
 }
 
 /// Ask the backend about every site this Resource offers, and normalize
@@ -689,12 +816,44 @@ pub fn resolve_resource(
 
         let name = (!site.lookup_name.is_empty()).then_some(site.lookup_name.clone());
         let outcome = normalize(normalizer, &locations, name.as_deref(), site)?;
+
+        // An `import` site that resolved is either an ordinary import or
+        // the right-hand side of an alias declaration. Either way it is
+        // what a use of the name written on this line stands for.
+        if site.kind == ResolvableKind::Imports
+            && let SemanticOutcome::Resolved { target } = &outcome
+        {
+            let line = map
+                .range(site.occurrence.start_byte, site.occurrence.end_byte)
+                .map(|range| range.start.line)
+                .unwrap_or_default();
+            normalizer.remember_alias(request.owner.id, line, target.clone());
+        }
         let source = source_endpoint(request.owner.id, request.occurrences, site.occurrence);
+        let dispatch = site.kind.dispatch(normalizer.connection, &outcome);
+        let relation_kind = base_list_kind(normalizer.connection, site.kind, &outcome);
+
+        if matches!(
+            site.kind,
+            ResolvableKind::Extends | ResolvableKind::Implements
+        ) && let SemanticOutcome::Resolved {
+            target: GraphEndpoint::Symbol(base),
+        } = &outcome
+            && let GraphEndpoint::Symbol(declaring) = source
+        {
+            produced.resolved_bases.push((declaring, *base));
+        }
 
         produced.evidence.push(SemanticEvidence {
             context_key: request.context_key.to_owned(),
-            capability: site.kind.capability(&outcome),
-            relation_kind: Some(site.kind.relation_kind()),
+            capability: if relation_kind == crate::graph::RelationKind::Implements
+                && site.kind == ResolvableKind::Extends
+            {
+                SemanticCapability::Implements
+            } else {
+                site.kind.capability(&outcome)
+            },
+            relation_kind: Some(relation_kind),
             basis: EvidenceBasis {
                 owner_resource: request.owner.id,
                 owner_resource_revision: request.owner.resource_revision.clone(),
@@ -706,7 +865,7 @@ pub fn resolve_resource(
             source: Some(source),
             outcome,
             support: Support::Supported,
-            dispatch: site.kind.dispatch(site),
+            dispatch,
         });
     }
 
@@ -900,4 +1059,111 @@ pub fn reopen_projects(
     queries
         .call(&CSharpRequest::OpenProjects { uris })
         .map(|_| ())
+}
+
+// ---------------------------------------------------------------------
+// Declaration claims
+// ---------------------------------------------------------------------
+
+/// Which members of `owner` are written `override`.
+///
+/// Syntax only, and validation evidence only: it never creates an edge.
+/// A claim whose base member cannot be proven is reported as an honest
+/// gap by [`crate::semantic_overrides`]; an edge still needs proven
+/// inheritance. C# requires the keyword, so unlike TypeScript a member
+/// without it is not an override -- but that is the *language's*
+/// guarantee, not this function's, and the derivation still only
+/// follows proven edges.
+#[must_use]
+pub fn override_members(
+    owner_text: &str,
+    symbols: &[Symbol],
+    occurrences: &[Occurrence],
+) -> BTreeSet<SymbolId> {
+    crate::typescript_semantic::adapter::override_keyword_members(owner_text, symbols, occurrences)
+}
+
+/// The other Resources that declare the same types as `symbols` do.
+///
+/// A partial type's declarations, minus the ones already in hand. What
+/// a claim written in one half has to be read from, to be honoured in
+/// the other.
+///
+/// # Errors
+/// When the index cannot be read.
+pub fn sibling_resources(
+    connection: &Connection,
+    owner: ResourceId,
+    symbols: &[Symbol],
+) -> Result<BTreeSet<ResourceId>, AdapterError> {
+    let mut found = BTreeSet::new();
+    for symbol in symbols {
+        for group in crate::logical_symbol::groups_of(connection, symbol.id).map_err(index)? {
+            for declaration in
+                crate::logical_symbol::declarations(connection, group).map_err(index)?
+            {
+                if let Some(descriptor) = describe(connection, declaration).map_err(index)?
+                    && descriptor.resource != owner
+                {
+                    found.insert(descriptor.resource);
+                }
+            }
+        }
+    }
+    Ok(found)
+}
+
+/// Which members of `owner` explicitly implement a named interface, and
+/// which interface each names.
+///
+/// `void IRunner.Run() { }` is C#'s explicit form, and the qualifier is
+/// part of the declaration rather than a modifier: it sits between the
+/// return type and the member name. So the interface is read from the
+/// text immediately before the name -- `IRunner.` -- and nothing else
+/// is consulted.
+///
+/// This matters twice over. The explicit member implements exactly the
+/// interface it names. And it takes the name: a sibling `Run` that
+/// looks like an implementation of `IRunner.Run` is not one, because
+/// interface dispatch reaches the explicit declaration instead.
+#[must_use]
+pub fn explicit_interface_members(
+    owner_text: &str,
+    symbols: &[Symbol],
+    occurrences: &[Occurrence],
+) -> BTreeMap<SymbolId, String> {
+    let mut found = BTreeMap::new();
+    for member in symbols.iter().filter(|symbol| {
+        matches!(
+            symbol.kind,
+            SymbolKind::Method | SymbolKind::Property | SymbolKind::Field
+        )
+    }) {
+        let Some(name_site) = occurrences.iter().find(|occurrence| {
+            occurrence.kind == crate::symbol::OccurrenceKind::Definition
+                && occurrence.containing_symbol_id == Some(member.id)
+        }) else {
+            continue;
+        };
+        let Some(before) = owner_text.get(member.span.start_byte..name_site.span.start_byte) else {
+            continue;
+        };
+        // The qualifier is the identifier immediately before the dot
+        // that immediately precedes the name.
+        let Some(qualifier) = before.strip_suffix('.') else {
+            continue;
+        };
+        let interface: String = qualifier
+            .chars()
+            .rev()
+            .take_while(|character| character.is_alphanumeric() || *character == '_')
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+        if !interface.is_empty() {
+            found.insert(member.id, interface);
+        }
+    }
+    found
 }

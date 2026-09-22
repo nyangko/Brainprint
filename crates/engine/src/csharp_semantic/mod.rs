@@ -322,6 +322,10 @@ impl From<crate::evidence::EvidenceError> for CSharpSemanticError {
         Self::Sqlite(rusqlite::Error::InvalidParameterName(error.to_string()))
     }
 }
+fn logical(error: crate::graph::GraphError) -> CSharpSemanticError {
+    CSharpSemanticError::Sqlite(rusqlite::Error::InvalidParameterName(error.to_string()))
+}
+
 impl From<crate::logical_symbol::LogicalSymbolError> for CSharpSemanticError {
     fn from(error: crate::logical_symbol::LogicalSymbolError) -> Self {
         Self::Sqlite(rusqlite::Error::InvalidParameterName(error.to_string()))
@@ -352,6 +356,9 @@ pub struct RefreshOutcome {
     pub evidence_count: usize,
     /// The logical symbols this pass proved.
     pub grouped: BTreeSet<LogicalSymbolId>,
+    /// Declarations that look like an override or an implementation and
+    /// could not be proven to be one. Reported, never guessed at.
+    pub unproven: Vec<crate::semantic_overrides::UnprovenOverride>,
     /// One line per piece of evidence. Diagnostic only.
     pub report: Vec<String>,
 }
@@ -429,7 +436,81 @@ pub fn refresh_resource(
             context_key: &context_key,
         },
     )?;
-    let extra_sources = normalizer.sources_read().clone();
+    let mut extra_sources = normalizer.sources_read().clone();
+
+    // `OVERRIDES` and member-level `IMPLEMENTS` are not written at a
+    // use site, so no gap carries them. Both are derived from edges
+    // someone proved -- inheritance and interface lists -- and anchored
+    // on the overriding or implementing declaration's own Occurrence.
+    // The `override` keyword and the `IRunner.` qualifier are *claims*:
+    // they decide which interface a member may match and whether an
+    // unprovable claim is worth reporting, never that an edge exists.
+    let own_symbols = symbol::list_for_resource(connection, owner.id)?;
+    let evidence_basis = crate::resolution::EvidenceBasis {
+        owner_resource: owner.id,
+        owner_resource_revision: owner.resource_revision.clone(),
+        generation_id: 0,
+        analysis_profile_id,
+        resolution_context_key: None,
+    };
+    let declared_overrides = adapter::override_members(&owner_text, &own_symbols, &occurrences);
+    let mut explicit = adapter::explicit_interface_members(&owner_text, &own_symbols, &occurrences);
+    // A partial type's other halves: an explicit `void IRunner.Run()`
+    // written there still takes the name here, so the claim has to be
+    // read from every declaration of the type.
+    for sibling in adapter::sibling_resources(connection, owner.id, &own_symbols)? {
+        let Some(resource) = adapter::resource_by_id(connection, sibling)? else {
+            continue;
+        };
+        let Ok(text) = fs::read_to_string(request.workspace_root.join(&resource.path_rel)) else {
+            continue;
+        };
+        explicit.extend(adapter::explicit_interface_members(
+            &text,
+            &symbol::list_for_resource(connection, resource.id)?,
+            &symbol::list_occurrences_for_resource(connection, resource.id)?,
+        ));
+        extra_sources.insert(resource.id, resource.resource_revision);
+    }
+    let mut derived = crate::semantic_overrides::derive(
+        connection,
+        &owner,
+        &occurrences,
+        &produced.resolved_bases,
+        &context_key,
+        &evidence_basis,
+        &declared_overrides,
+    )
+    .map_err(logical)?;
+    let mut implemented = crate::semantic_overrides::derive_implements(
+        connection,
+        &owner,
+        &occurrences,
+        &produced.resolved_bases,
+        &context_key,
+        &evidence_basis,
+        &explicit,
+    )
+    .map_err(logical)?;
+    // An ancestor's declaration is part of the proof, so the basis has
+    // to name it: `Runner.Run OVERRIDES BaseRunner.Run` stops being
+    // true when the file declaring `BaseRunner` moves.
+    for ancestor in derived
+        .ancestor_resources
+        .iter()
+        .chain(&implemented.ancestor_resources)
+    {
+        if let Some(resource) = adapter::resource_by_id(connection, *ancestor)? {
+            extra_sources.insert(resource.id, resource.resource_revision);
+        }
+    }
+    produced.evidence.append(&mut derived.evidence);
+    produced.evidence.append(&mut implemented.evidence);
+    let unproven: Vec<crate::semantic_overrides::UnprovenOverride> = derived
+        .unproven
+        .into_iter()
+        .chain(implemented.unproven)
+        .collect();
 
     let mut basis = SemanticBasis::new(request.context, request.config, owner.id)
         .with_source(owner.id, owner.resource_revision.clone());
@@ -483,6 +564,7 @@ pub fn refresh_resource(
         merged,
         evidence_count: produced.evidence.len(),
         withdrawn: produced.withdrawn,
+        unproven,
         grouped: produced.grouped.keys().copied().collect(),
         deferred: produced.deferred,
         report,

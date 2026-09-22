@@ -1,5 +1,4 @@
 using Contracts;
-using Core;
 
 namespace Core.Tests;
 

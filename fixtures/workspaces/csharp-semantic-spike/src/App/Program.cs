@@ -7,6 +7,10 @@ namespace App;
 
 public static class Program
 {
+    // A declared type reference through the alias, so the binding has
+    // an anchor. `Contracts.Other.Model` shares the simple name.
+    private static readonly Alias Aliased = new Alias();
+
     public static void Main()
     {
         var runner = new Runner();
@@ -28,7 +32,7 @@ public static class Program
 
         // Generic method and generic type.
         var c = Overloads.Convert(runner.Name);
-        var boxed = Overloads.Wrap(new Alias());
+        var boxed = Overloads.Wrap(Aliased);
 
         // Extension method.
         var label = runner.Label();
