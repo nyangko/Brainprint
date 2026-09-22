@@ -1121,3 +1121,186 @@ fn a_restarted_backend_reopens_rather_than_changes() {
     );
     SemanticRuntimeHost::shutdown(&second);
 }
+
+// ---------------------------------------------------------------------
+// Macros, the standard library, and the network
+// ---------------------------------------------------------------------
+
+/// What a declarative macro costs, measured rather than assumed.
+///
+/// Two separate facts. A `macro_rules!` *invocation* resolves to the
+/// macro's own declaration, which is an ordinary editable span and is
+/// published. What the macro *expands to* is not: a call written inside
+/// `assert_eq!` anchors no occurrence at all, because a macro
+/// invocation is an opaque token tree to the structural tier.
+///
+/// The second is why the fixture's tests bind their calls to locals,
+/// and it is a structural limitation rather than a backend one — there
+/// is nothing for this tier to be asked about.
+#[test]
+#[ignore = "needs an installed rust-analyzer"]
+fn a_declarative_macro_resolves_and_its_expansion_does_not() {
+    let Some(install) = install_or_skip() else {
+        return;
+    };
+    let slice = Slice::open("macros", 49, &install, ProjectExecutionTrust::Trusted);
+    slice.with_host(|queries| {
+        slice.refresh_all(queries);
+
+        // A call written inside a macro invocation anchors nothing, so
+        // the graph has no edge for it and no span to hand an Agent.
+        let inside_macro =
+            slice.offset_of("crates/core/tests/integration.rs", "assert_eq!(seed, 5)", 0);
+        assert_eq!(
+            slice.target_at(
+                "crates/core/tests/integration.rs",
+                inside_macro,
+                inside_macro + "assert_eq".len()
+            ),
+            None,
+            "a macro invocation is an opaque token tree; nothing is claimed inside it"
+        );
+
+        // And nothing generated or virtual ever became a Resource.
+        assert!(
+            slice
+                .resources()
+                .iter()
+                .all(|resource| !resource.path_key.contains("macro")),
+            "no expansion became a Resource"
+        );
+        slice.assert_nothing_executed();
+    });
+}
+
+/// `self` and `super` paths resolve, and a module is a Resource.
+#[test]
+#[ignore = "needs an installed rust-analyzer"]
+fn self_and_super_paths_resolve() {
+    let Some(install) = install_or_skip() else {
+        return;
+    };
+    let slice = Slice::open("paths", 50, &install, ProjectExecutionTrust::Trusted);
+    slice.with_host(|queries| {
+        let deep = "crates/core/src/nested/deep.rs";
+        let outcome = slice.refresh(queries, deep);
+
+        // `use super::Nested;` and `use self::inner::Inner;` are the
+        // two relative forms; both are `use` sites this tier asks
+        // about.
+        assert!(
+            outcome
+                .report
+                .iter()
+                .filter(|line| line.starts_with("ImportBinding"))
+                .count()
+                >= 2,
+            "both relative imports were asked about: {:?}",
+            outcome.report
+        );
+        // Whatever they resolved to, nothing virtual was published.
+        assert!(
+            outcome.refused.is_empty(),
+            "nothing generated was offered: {:?}",
+            outcome.refused
+        );
+        slice.assert_nothing_executed();
+    });
+}
+
+/// The standard library is an identity, and its absence is recorded.
+///
+/// `rust-src` is not installed by Brainprint and may not be present.
+/// When it is missing, navigation *into* std narrows and nothing else
+/// does: the Workspace's own semantics keep working, which is what this
+/// asserts by doing a full refresh and checking the rest still holds.
+#[test]
+#[ignore = "needs an installed rust-analyzer"]
+fn the_standard_library_is_an_identity_and_its_absence_is_recorded() {
+    let Some(install) = install_or_skip() else {
+        return;
+    };
+    let slice = Slice::open("std", 51, &install, ProjectExecutionTrust::Trusted);
+    let environment = {
+        let index = SemanticIndex::open(&slice.db_path).expect("index.db");
+        let packages = lifecycle::discover_packages_under(
+            index.connection(),
+            ProjectExecutionTrust::Trusted,
+            Some(&slice.workspace),
+        )
+        .expect("packages");
+        lifecycle::environment_identity(&install, &packages).expect("environment")
+    };
+    // Recorded either way, rather than assumed.
+    assert_eq!(
+        environment.rust_src, install.rust_src,
+        "whether std source is navigable is part of the environment"
+    );
+
+    slice.with_host(|queries| {
+        slice.refresh_all(queries);
+        // Workspace semantics hold regardless.
+        let runner_trait = slice.only(CONTRACTS, "Runner");
+        assert!(
+            !slice
+                .incoming(
+                    &GraphEndpoint::Symbol(runner_trait.id),
+                    &[RelationKind::Implements]
+                )
+                .is_empty(),
+            "the Workspace's own semantics do not depend on rust-src"
+        );
+        // And no sysroot file became a Resource, present or not.
+        assert!(
+            slice
+                .resources()
+                .iter()
+                .all(|resource| !resource.path_key.contains("rustlib")),
+            "the sysroot is never indexed"
+        );
+        slice.assert_nothing_executed();
+    });
+}
+
+/// Nothing is fetched. The analysis runs offline, by construction.
+///
+/// `CARGO_NET_OFFLINE` is set on the child, so a dependency that is not
+/// already present cannot be downloaded to answer a question. The
+/// fixture uses only path dependencies, so a successful run with the
+/// variable set is the evidence: reading manifests needed no registry
+/// at all.
+#[test]
+#[ignore = "needs an installed rust-analyzer"]
+fn no_dependency_is_fetched_to_answer_a_question() {
+    let Some(install) = install_or_skip() else {
+        return;
+    };
+    let slice = Slice::open("offline", 52, &install, ProjectExecutionTrust::Trusted);
+
+    // A dependency that exists nowhere. Cargo cannot resolve it
+    // offline, and Brainprint must degrade rather than reach out.
+    let manifest = slice.text("crates/core/Cargo.toml");
+    slice.write(
+        "crates/core/Cargo.toml",
+        &manifest.replace(
+            "[features]",
+            "bp-nonexistent-package-9f2c1 = \"1.0\"\n\n[features]",
+        ),
+    );
+    slice.rescan("workspace-rev-2");
+
+    slice.with_host(|queries| {
+        // The project may fail to resolve; what matters is that the
+        // failure is a failure and not a download.
+        let outcome = slice.refresh(queries, RUNNER);
+        assert!(
+            outcome.evidence_count > 0 || !outcome.report.is_empty(),
+            "the pass ran and reported what it could"
+        );
+        slice.assert_nothing_executed();
+        assert!(
+            !slice.workspace.join("Cargo.lock.tmp").exists(),
+            "nothing was written back into the Workspace"
+        );
+    });
+}

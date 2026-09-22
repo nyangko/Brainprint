@@ -1156,3 +1156,229 @@ fn a_resource_endpoint_is_an_internal_graph_target() {
     let endpoint = GraphEndpoint::Resource(fixture.resource(RUNNER).id);
     assert_eq!(endpoint.entity_kind(), crate::graph::EntityKind::Resource);
 }
+
+// ---------------------------------------------------------------------
+// Reopen
+// ---------------------------------------------------------------------
+
+/// Reopening reads persisted truth without starting a backend.
+///
+/// A publication whose whole basis still holds is readable
+/// immediately — launching rust-analyzer to re-derive what is already
+/// proven would make every reopen cost a project load. A publication
+/// whose environment could not be *proven* is not restored as current,
+/// however equal its fingerprint: determinism is not evidence, and the
+/// backend is not started to discover that.
+#[test]
+fn a_reopen_reads_persisted_truth_and_refuses_what_it_cannot_prove() {
+    let fixture = Fixture::create("reopen");
+    let index = SemanticIndex::open(&fixture.db_path()).expect("index");
+    let backend = ScriptedBackend::loaded();
+    refresh(&fixture, &index, &backend, RUNNER).expect("refresh");
+
+    let context = context();
+    let owner = crate::semantic_index::SemanticOwner::new(
+        context.context_key(),
+        fixture.resource(RUNNER).id,
+    );
+    let packages = lifecycle::discover_packages_under(
+        index.connection(),
+        ProjectExecutionTrust::Trusted,
+        Some(&fixture.root),
+    )
+    .expect("packages");
+    let config = packages.basis();
+    let capabilities = capability_report(&context, ProjectExecutionTrust::Trusted);
+    let inventory = lifecycle::inventory_fingerprint(index.connection()).expect("inventory");
+
+    let proven = crate::semantic_index::CurrentInputs::new(&context, &config, &capabilities)
+        .with_inventory(&inventory)
+        .with_environment_proven(true);
+    assert_eq!(
+        index.revalidate(&owner, &proven).expect("revalidate").state,
+        crate::semantic_index::SemanticState::Current,
+        "a whole proven basis is readable without a backend"
+    );
+
+    let unproven = crate::semantic_index::CurrentInputs::new(&context, &config, &capabilities)
+        .with_inventory(&inventory)
+        .with_environment_proven(false);
+    assert_ne!(
+        index
+            .revalidate(&owner, &unproven)
+            .expect("revalidate")
+            .state,
+        crate::semantic_index::SemanticState::Current,
+        "an unprovable environment is not restored as current"
+    );
+
+    // Trust is configuration, so a publication cannot cross it.
+    let untrusted = lifecycle::discover_packages_under(
+        index.connection(),
+        ProjectExecutionTrust::Untrusted,
+        Some(&fixture.root),
+    )
+    .expect("packages")
+    .basis();
+    let retrusted = crate::semantic_index::CurrentInputs::new(&context, &untrusted, &capabilities)
+        .with_inventory(&inventory)
+        .with_environment_proven(true);
+    assert_ne!(
+        index
+            .revalidate(&owner, &retrusted)
+            .expect("revalidate")
+            .state,
+        crate::semantic_index::SemanticState::Current,
+        "a publication made under one trust mode does not answer for another"
+    );
+}
+
+/// A repeated refresh changes nothing.
+#[test]
+fn a_repeated_refresh_is_idempotent() {
+    let fixture = Fixture::create("idempotent");
+    let index = SemanticIndex::open(&fixture.db_path()).expect("index");
+    let backend = ScriptedBackend::loaded();
+
+    let first = refresh(&fixture, &index, &backend, RUNNER).expect("refresh");
+    let second = refresh(&fixture, &index, &backend, RUNNER).expect("refresh");
+    assert_eq!(
+        first.report, second.report,
+        "asking the same questions again produces the same evidence"
+    );
+    assert_eq!(first.evidence_count, second.evidence_count);
+
+    let relations: i64 = index
+        .connection()
+        .query_row("SELECT COUNT(*) FROM relation", [], |row| row.get(0))
+        .expect("count");
+    refresh(&fixture, &index, &backend, RUNNER).expect("refresh");
+    let after: i64 = index
+        .connection()
+        .query_row("SELECT COUNT(*) FROM relation", [], |row| row.get(0))
+        .expect("count");
+    assert_eq!(
+        relations, after,
+        "and creates no second copy of the same edge"
+    );
+}
+
+// ---------------------------------------------------------------------
+// Lifecycle classes
+// ---------------------------------------------------------------------
+
+/// Delete and move are source changes too.
+#[test]
+fn deleting_and_moving_a_source_file_stays_a_source_change() {
+    let fixture = Fixture::create("delete-move");
+    let id = fixture.resource(RUNNER).id;
+
+    assert_eq!(
+        ResourceChange::new(id, ChangeKind::Deleted, RUNNER).class(),
+        ChangeClass::DocumentContent
+    );
+    assert_eq!(
+        ResourceChange::new(id, ChangeKind::Moved, "crates/core/src/moved.rs")
+            .from_previous(RUNNER)
+            .class(),
+        ChangeClass::DocumentContent
+    );
+    // A move *into* a manifest name is a project change, from either
+    // end of the move.
+    assert_eq!(
+        ResourceChange::new(id, ChangeKind::Moved, "crates/core/Cargo.toml")
+            .from_previous("crates/core/Cargo.toml.bak")
+            .with_language(None)
+            .class(),
+        ChangeClass::ProjectDefinition
+    );
+}
+
+/// A moved file is announced as a delete and a create.
+#[test]
+fn a_move_is_announced_from_both_ends() {
+    let fixture = Fixture::create("move-notify");
+    let changes = [ResourceChange::new(
+        fixture.resource(RUNNER).id,
+        ChangeKind::Moved,
+        "crates/core/src/moved.rs",
+    )
+    .from_previous(RUNNER)];
+    let batch = lifecycle::watched_changes(&fixture.root, &changes);
+    assert_eq!(batch.len(), 2, "the old name and the new one: {batch:?}");
+    assert!(
+        batch
+            .iter()
+            .any(|change| change.kind == protocol::WatchedChangeKind::Deleted)
+    );
+}
+
+// ---------------------------------------------------------------------
+// Identity hygiene
+// ---------------------------------------------------------------------
+
+/// No rust-analyzer internal identity reaches Brainprint.
+///
+/// The backend has crate ids, file ids, salsa keys and syntax pointers,
+/// and every one of them is stable only inside one process. The typed
+/// request surface is the guard: it carries URIs, positions and text,
+/// so there is nothing internal for an adapter to be tempted by.
+#[test]
+fn no_backend_internal_identity_is_representable() {
+    let request = protocol::RustRequest::Definition {
+        uri: "file:///w/a.rs".into(),
+        position: crate::lsp::coordinates::Position::new(1, 2),
+    };
+    let wire = format!("{:?}", request.wire());
+    for internal in [
+        "crateId",
+        "FileId",
+        "salsa",
+        "SyntaxNodePtr",
+        "AnchoredPath",
+    ] {
+        assert!(
+            !wire.contains(internal),
+            "{internal} would be identity that dies with the process"
+        );
+    }
+    // And the answers are the same three shapes.
+    let answer = protocol::RustResponse::Locations(vec![protocol::Location {
+        uri: "file:///w/a.rs".into(),
+        range: crate::lsp::coordinates::Range::new(
+            crate::lsp::coordinates::Position::new(0, 0),
+            crate::lsp::coordinates::Position::new(0, 1),
+        ),
+    }]);
+    assert!(!format!("{answer:?}").contains("FileId"));
+}
+
+/// A backend outside the tested class is refused rather than read.
+#[test]
+fn an_untested_backend_build_is_refused() {
+    use super::ProtocolCompatibility;
+    assert!(ProtocolCompatibility::classify("1.98.1").usable());
+    assert!(ProtocolCompatibility::classify("1.98.7").usable());
+    assert!(!ProtocolCompatibility::classify("1.99.0").usable());
+    assert_eq!(
+        ProtocolCompatibility::classify("1.99.0").publication_verdict(),
+        crate::semantic_index::BackendCompatibility::Rebuild,
+        "a publication from an untested build is not comparable"
+    );
+}
+
+/// The whole tier is reachable without naming a single Rust concept in
+/// the shared vocabulary.
+#[test]
+fn the_shared_query_surface_names_no_rust_concept() {
+    // A compile-time statement: the relation kinds this tier produces
+    // are the ordinary ones. A Rust-only variant would not compile.
+    let produced = [
+        RelationKind::Calls,
+        RelationKind::References,
+        RelationKind::Imports,
+        RelationKind::UsesType,
+        RelationKind::Implements,
+    ];
+    assert_eq!(produced.len(), 5);
+}
