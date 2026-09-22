@@ -1,0 +1,8 @@
+[package]
+name = "bp-contracts"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "bp_contracts"
+path = "src/lib.rs"

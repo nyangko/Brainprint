@@ -1,0 +1,16 @@
+[package]
+name = "bp-core"
+version.workspace = true
+edition.workspace = true
+build = "build.rs"
+
+[lib]
+name = "bp_core"
+path = "src/lib.rs"
+
+[dependencies]
+bp-contracts = { path = "../contracts" }
+
+[features]
+default = []
+extra = []

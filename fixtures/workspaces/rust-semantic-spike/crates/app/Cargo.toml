@@ -1,0 +1,12 @@
+[package]
+name = "bp-app"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "bp-app"
+path = "src/main.rs"
+
+[dependencies]
+bp-core = { path = "../core" }
+bp-contracts = { path = "../contracts" }
