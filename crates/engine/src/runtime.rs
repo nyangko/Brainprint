@@ -1343,6 +1343,16 @@ mod tests {
         ) -> Result<RuntimeResponse, HostError> {
             self.executions.fetch_add(1, Ordering::SeqCst);
             let label = String::from_utf8_lossy(&request.payload).into_owned();
+            // Read the behavior *before* announcing arrival. A test that
+            // waits for `await_entered` and then changes the behavior for
+            // the next request must not be able to change this one's:
+            // signalling first left a window where a request meant to
+            // block echoed instead, and the runtime went READY under a
+            // test asserting BUSY.
+            let behavior = *self
+                .behavior
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             {
                 let mut entered = self
                     .entered
@@ -1352,10 +1362,6 @@ mod tests {
             }
             self.entered_signal.notify_all();
 
-            let behavior = *self
-                .behavior
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
             match behavior {
                 Behavior::Echo => {}
                 Behavior::Blocked => {
@@ -1506,6 +1512,23 @@ mod tests {
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
             }
         }
+    }
+
+    /// Wait for a runtime to come back to rest.
+    ///
+    /// A request's worker thread finishes a moment after its waiter has
+    /// been answered, so sampling the state immediately after a `wait`
+    /// races with a *sibling* request still unwinding. The claim being
+    /// tested is "the runtime returns to READY", which is what this
+    /// asserts; the instant it happens is not part of any contract.
+    fn settles_ready(lease: &RuntimeLease) {
+        for _ in 0..400 {
+            if lease.state() == RuntimeState::Ready {
+                return;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(lease.state(), RuntimeState::Ready, "never settled");
     }
 
     impl SemanticBackendLauncher for FakeLauncher {
@@ -1866,7 +1889,7 @@ mod tests {
         let _ = release.send(());
         let answer = kept.wait(RequestOptions::default()).expect("other work");
         assert_eq!(answer.payload, b"answer:wanted".to_vec());
-        assert_eq!(lease.state(), RuntimeState::Ready);
+        settles_ready(&lease);
     }
 
     #[test]
