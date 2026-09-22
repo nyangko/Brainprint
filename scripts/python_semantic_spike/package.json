@@ -1,0 +1,13 @@
+{
+  "name": "brainprint-python-semantic-spike",
+  "version": "0.0.0",
+  "private": true,
+  "description": "#19 task 5 transport probe. Not a Brainprint runtime dependency.",
+  "scripts": {
+    "probe": "node probe.js"
+  },
+  "dependencies": {
+    "pyright": "1.1.414",
+    "pyright-typeserver": "1.1.414"
+  }
+}

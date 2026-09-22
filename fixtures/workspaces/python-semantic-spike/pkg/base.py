@@ -1,0 +1,3 @@
+class Base:
+    def run(self, value: int) -> str:
+        ...
