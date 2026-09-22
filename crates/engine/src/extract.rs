@@ -644,12 +644,16 @@ impl Walker<'_> {
 
         // Environment and configuration keys the syntax settles (#17
         // task 12). Same arrangement: the set and the spans belong to
-        // that module. A dynamic key has no literal to point at, so it
-        // gets no Occurrence -- there would be nothing to bind.
+        // that module.
+        //
+        // A dynamic key gets an Occurrence too, over the key
+        // *expression* (#17 task 14). It binds to no DomainEntity --
+        // there is no key to name -- but the site is real, and without
+        // it the access disappears at publication and a later
+        // `0 USES_ENV` looks like a complete zero. The Occurrence is
+        // what task 7's unresolved reference anchors to.
         for access in crate::domain::key_accesses_at(node, self.dialect, self.source) {
-            if matches!(access.key, crate::domain::KeyLiteral::Static(_)) {
-                push(OccurrenceKind::KeySite, access.span);
-            }
+            push(OccurrenceKind::KeySite, access.span);
         }
     }
 

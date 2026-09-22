@@ -40,6 +40,7 @@ use brainprint_core::{ResourceId, SymbolId};
 
 use crate::{
     calls::{CallOutcome, ResolvedCall, UnresolvedCall},
+    domain::{KeyAccess, KeyLiteral},
     evidence::OccurrenceRef,
     graph::{self, GraphEndpoint, RelationKind},
     imports::{ImportOutcome, ResolvedImport, UnresolvedImport},
@@ -146,6 +147,11 @@ pub enum UnresolvedReason {
     /// An `override` marker: which base member it overrides needs the
     /// type hierarchy.
     OverrideTargetRequiresSemantics,
+    /// A recognized environment or configuration access whose key is
+    /// an expression rather than a literal. The API is certain and the
+    /// site is real; the key it names is a runtime value, so there is
+    /// no entity to point at (#17 task 12/14).
+    DynamicKeyExpression,
 }
 
 impl UnresolvedReason {
@@ -167,6 +173,7 @@ impl UnresolvedReason {
             Self::TypeSemanticsRequired => "TYPE_SEMANTICS_REQUIRED",
             Self::RelationKindNotStructural => "RELATION_KIND_NOT_STRUCTURAL",
             Self::OverrideTargetRequiresSemantics => "OVERRIDE_TARGET_REQUIRES_SEMANTICS",
+            Self::DynamicKeyExpression => "DYNAMIC_KEY_EXPRESSION",
         }
     }
 
@@ -187,6 +194,7 @@ impl UnresolvedReason {
             "TYPE_SEMANTICS_REQUIRED" => Self::TypeSemanticsRequired,
             "RELATION_KIND_NOT_STRUCTURAL" => Self::RelationKindNotStructural,
             "OVERRIDE_TARGET_REQUIRES_SEMANTICS" => Self::OverrideTargetRequiresSemantics,
+            "DYNAMIC_KEY_EXPRESSION" => Self::DynamicKeyExpression,
             other => {
                 return Err(GapError::UnknownReason {
                     raw: other.to_owned(),
@@ -217,7 +225,10 @@ impl UnresolvedReason {
     pub const fn is_unsupported_construct(self) -> bool {
         matches!(
             self,
-            Self::CompoundSpecifier | Self::NotANameExpression | Self::RelationKindNotStructural
+            Self::CompoundSpecifier
+                | Self::NotANameExpression
+                | Self::RelationKindNotStructural
+                | Self::DynamicKeyExpression
         )
     }
 }
@@ -409,6 +420,38 @@ const fn reason_of_call(reason: UnresolvedCall) -> UnresolvedReason {
         UnresolvedCall::NameNotInModule => UnresolvedReason::NameNotInModule,
         UnresolvedCall::NotANameExpression => UnresolvedReason::NotANameExpression,
     }
+}
+
+/// The gaps #17 task 12's env/config extraction leaves.
+///
+/// A recognized access whose key is an expression is the one case
+/// where Brainprint *knows* a relation site exists and cannot name its
+/// target. Before this it was a runtime fact only: the access was
+/// dropped at publication, and a later query saw `0 USES_ENV` with
+/// nothing to say it was incomplete -- a false zero. It is persisted
+/// the same way every other unattributable use site is, as an
+/// unresolved reference against the Occurrence that states it. No
+/// `unknown` DomainEntity is invented, no candidate is guessed, and
+/// the expression's text is not stored -- [`KeyApi::path`] names the
+/// API, which is all the syntax actually establishes.
+#[must_use]
+pub fn key_gaps(accesses: &[KeyAccess]) -> Vec<UnresolvedEvidence> {
+    accesses
+        .iter()
+        .filter(|access| access.key == KeyLiteral::Dynamic)
+        .map(|access| UnresolvedEvidence {
+            occurrence: OccurrenceRef {
+                kind: OccurrenceKind::KeySite,
+                start_byte: access.span.start_byte,
+                end_byte: access.span.end_byte,
+            },
+            intended: IntendedRelation::Known(access.domain().relation_kind()),
+            lookup_name: access.api.path().to_owned(),
+            module_hint: access.api.namespace().map(ToOwned::to_owned),
+            reason: UnresolvedReason::DynamicKeyExpression,
+            candidates: Vec::new(),
+        })
+        .collect()
 }
 
 /// The gaps #17 task 6's type resolution left, including the override

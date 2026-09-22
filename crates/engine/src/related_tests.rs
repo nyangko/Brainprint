@@ -49,6 +49,7 @@ use brainprint_core::ResourceId;
 use rusqlite::{OptionalExtension, params};
 
 use crate::{
+    coverage::{AnswerState, CoverageLimit, CoverageReport},
     graph::{self, GraphEndpoint, RelationKind},
     impact::{
         Budget, ImpactEdge, ImpactError, ImpactIntent, ImpactResult, ImpactTraversal, Truncation,
@@ -140,13 +141,37 @@ pub struct TestCoverage {
 }
 
 impl TestCoverage {
+    /// Every specific reason this projection is not the whole set
+    /// (#17 task 14).
+    ///
+    /// Task 10's limits, plus the two this layer adds: role coverage
+    /// (a test whose Resource has no known role would not have been
+    /// recognised) and the supporting-path cut, which is a third
+    /// truncation dimension distinct from candidate and traversal
+    /// truncation.
+    #[must_use]
+    pub fn limits(&self) -> CoverageReport {
+        let mut report = self.impact.limits();
+        report.note_if(
+            self.traversal_truncation.is_some(),
+            CoverageLimit::TraversalTruncated,
+        );
+        report.note_if(self.unknown_role > 0, CoverageLimit::UnknownResourceRole);
+        report.note_if(
+            self.unresolved_owner > 0,
+            CoverageLimit::UnreadableResourceOwner,
+        );
+        report.note_if(
+            self.paths_truncated > 0,
+            CoverageLimit::SupportingPathTruncated,
+        );
+        report
+    }
+
     /// Whether "these are the related tests" may be claimed outright.
     #[must_use]
-    pub const fn is_complete(&self) -> bool {
-        self.impact.is_complete()
-            && self.traversal_truncation.is_none()
-            && self.unknown_role == 0
-            && self.unresolved_owner == 0
+    pub fn is_complete(&self) -> bool {
+        self.limits().is_complete()
     }
 }
 
@@ -177,14 +202,20 @@ pub struct RelatedTestProjection {
 impl RelatedTestProjection {
     #[must_use]
     pub fn outcome(&self) -> ProjectionOutcome {
-        if !self.candidates.is_empty() {
-            return ProjectionOutcome::Candidates;
+        match self.answer_state() {
+            AnswerState::Confirmed => ProjectionOutcome::Candidates,
+            AnswerState::NoneUnderCompleteCoverage => ProjectionOutcome::NoneUnderCompleteCoverage,
+            AnswerState::NoneWithIncompleteCoverage => {
+                ProjectionOutcome::NoneWithIncompleteCoverage
+            }
         }
-        if self.coverage.is_complete() {
-            ProjectionOutcome::NoneUnderCompleteCoverage
-        } else {
-            ProjectionOutcome::NoneWithIncompleteCoverage
-        }
+    }
+
+    /// The same three-way outcome in the vocabulary every other
+    /// relation surface answers in (#17 task 14).
+    #[must_use]
+    pub fn answer_state(&self) -> AnswerState {
+        self.coverage.limits().state(self.candidates.len())
     }
 }
 

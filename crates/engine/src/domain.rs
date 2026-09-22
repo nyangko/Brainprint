@@ -120,6 +120,22 @@ impl KeyApi {
         }
     }
 
+    /// The API as written, canonically. Not source text: one fixed
+    /// string per recognized API, so a dynamic access can say *what*
+    /// was seen without a key to name it (#17 task 14).
+    #[must_use]
+    pub const fn path(self) -> &'static str {
+        match self {
+            Self::PythonOsGetenv => "os.getenv",
+            Self::PythonOsEnviron => "os.environ",
+            Self::JsProcessEnvMember | Self::JsProcessEnvIndex => "process.env",
+            Self::RustEnvVar => "std::env::var",
+            Self::CSharpEnvironment => "Environment.GetEnvironmentVariable",
+            Self::CSharpAppSettings => "ConfigurationManager.AppSettings",
+            Self::CSharpConnectionStrings => "ConfigurationManager.ConnectionStrings",
+        }
+    }
+
     /// The store the key lives in, when the API names one. Part of the
     /// entity's natural key: an app setting and a connection string
     /// with the same name are different keys.

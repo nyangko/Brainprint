@@ -51,7 +51,7 @@ use crate::{
     component::{self, ComponentRow, FreshnessState, ProcessingState},
     domain::{domain_relations, extract_key_accesses},
     evidence::{EvidenceError, OccurrenceRef, RelationEvidence, replace_resource_graph},
-    gaps::{UnresolvedEvidence, call_gaps, import_gaps, type_gaps},
+    gaps::{UnresolvedEvidence, call_gaps, import_gaps, key_gaps, type_gaps},
     generation::PublicationGrant,
     graph, identity,
     imports::{WorkspaceModules, extract_imports, import_relations, resolve_imports},
@@ -440,6 +440,10 @@ fn analyze(
     let mut gaps = import_gaps(&imports);
     gaps.extend(call_gaps(&calls));
     gaps.extend(type_gaps(&types));
+    // A dynamic env/config key is a use site with no nameable target.
+    // Without this the access disappears at publication and a later
+    // `0 USES_ENV` looks complete (#17 task 14).
+    gaps.extend(key_gaps(&keys));
     // A gap must anchor to a real Occurrence too, and never to one a
     // resolved relation already claims (#17 task 7).
     let claimed: Vec<(usize, usize)> = evidence

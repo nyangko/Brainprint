@@ -54,6 +54,7 @@ use std::{collections::HashMap, error::Error, fmt, path::Path};
 use brainprint_core::ResourceId;
 
 use crate::{
+    coverage::{AnswerState, CoverageLimit, CoverageReport},
     graph::{GraphEndpoint, RelationKind},
     inspect::{ReadError, SourceReader, SourceVerification},
     parser::SourceSpan,
@@ -202,6 +203,31 @@ impl PreparedInspection {
     #[must_use]
     pub fn confirmed_count(&self) -> usize {
         self.relations.len()
+    }
+
+    /// Why the *graph* behind this inspection is not the whole story
+    /// (#17 task 14).
+    ///
+    /// Task 8's relation coverage, plus whether the index as a whole
+    /// is current. Deliberately **not** source preparation: a
+    /// confirmed relation whose current source could not be read is
+    /// still a confirmed relation, and a file that read cleanly does
+    /// not make an incomplete graph complete. That axis is
+    /// [`Self::source_complete`].
+    #[must_use]
+    pub fn limits(&self) -> CoverageReport {
+        let mut report = self.coverage.limits();
+        report.note_if(
+            !self.currentness.is_current(),
+            CoverageLimit::IndexNotCurrent,
+        );
+        report
+    }
+
+    /// What the relation half of this inspection may claim.
+    #[must_use]
+    pub fn answer_state(&self) -> AnswerState {
+        self.limits().state(self.confirmed_count())
     }
 
     /// Whether every confirmed evidence location came back with its

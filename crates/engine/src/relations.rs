@@ -54,9 +54,11 @@ use brainprint_core::{ResourceId, SymbolId};
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::{
+    coverage::{AnswerState, CoverageLimit, CoverageReport},
     db::DbOpenError,
     gaps::{GapError, IntendedRelation, UnresolvedReason},
     graph::{self, GraphEndpoint, GraphError, Relation, RelationKind},
+    graph_lifecycle,
     parser::{SourcePoint, SourceSpan},
     resolution::{
         Dispatch, Freshness, Resolution, Support, TargetScope, freshness_of, support_of,
@@ -197,17 +199,54 @@ pub struct Coverage {
 }
 
 impl Coverage {
+    /// Every specific reason this answer is not the whole story
+    /// (#17 task 14).
+    ///
+    /// The one place a direct query's completeness is decided, so that
+    /// impact, related tests and prepared inspection do not each grow
+    /// a slightly different rule.
+    #[must_use]
+    pub fn limits(&self) -> CoverageReport {
+        let mut report = CoverageReport::new();
+        report.note_if(
+            !matches!(self.attribution, GapAttribution::SourceScoped),
+            CoverageLimit::ReverseScopeNotEnumerable,
+        );
+        report.note_if(self.gaps > 0, CoverageLimit::UnresolvedEvidence);
+        report.note_if(self.ambiguous > 0, CoverageLimit::AmbiguousCandidates);
+        report.note_if(
+            self.requires_semantics > 0,
+            CoverageLimit::RequiresSemantics,
+        );
+        report.note_if(
+            self.unsupported_construct > 0,
+            CoverageLimit::UnsupportedConstruct,
+        );
+        report.note_if(self.truncated > 0, CoverageLimit::CandidateTruncated);
+        report.note_if(self.unattributed > 0, CoverageLimit::UnattributedGaps);
+        match self.scope {
+            Some(scope) => {
+                report.note_support(scope.support);
+                report.note_freshness(scope.freshness);
+            }
+            // A forward query with no indexed Resource behind it --
+            // an external package, a domain key -- states nothing
+            // about its own outgoing edges. A reverse query has no
+            // scope by construction and is already limited above.
+            None => report.note_if(
+                matches!(self.attribution, GapAttribution::SourceScoped),
+                CoverageLimit::UnsupportedScope,
+            ),
+        }
+        report
+    }
+
     /// Whether the confirmed results are everything the known
     /// structural evidence supports -- and therefore whether zero may
     /// be read as "none".
     #[must_use]
     pub fn is_complete(&self) -> bool {
-        matches!(self.attribution, GapAttribution::SourceScoped)
-            && self.gaps == 0
-            && self.unattributed == 0
-            && self.scope.is_some_and(|scope| {
-                scope.support == Support::Supported && scope.freshness == Freshness::Fresh
-            })
+        self.limits().is_complete()
     }
 }
 
@@ -239,7 +278,13 @@ impl RelationAnswer {
     /// none".
     #[must_use]
     pub fn confirmed_zero_is_none(&self) -> bool {
-        self.confirmed.is_empty() && self.coverage.is_complete()
+        matches!(self.answer_state(), AnswerState::NoneUnderCompleteCoverage)
+    }
+
+    /// What this answer is allowed to claim (#17 task 14).
+    #[must_use]
+    pub fn answer_state(&self) -> AnswerState {
+        self.coverage.limits().state(self.confirmed_count())
     }
 }
 
@@ -738,9 +783,23 @@ impl RelationIndex {
         })
     }
 
-    /// One Resource's derived support, and whether its structural
-    /// component is current. Cached: a query asks once per Resource,
-    /// not once per evidence span.
+    /// One Resource's derived support, and whether the index behind
+    /// its relations is current. Cached: a query asks once per
+    /// Resource, not once per evidence span.
+    ///
+    /// Two components have to be current for a relation answer to be:
+    /// the structure the evidence anchors to, and the `RELATION_INDEX`
+    /// publication itself (#17 task 13). A DIRTY relation component
+    /// still returns its last valid edges -- withholding them would be
+    /// a false zero -- but they are not current truth, so the derived
+    /// [`Freshness`] is DIRTY and no complete-negative claim survives
+    /// it (#17 task 14).
+    ///
+    /// A Resource with no `RELATION_INDEX` row at all has no relation
+    /// publication to be dirty about: a file that states no relations
+    /// is never published (#17 task 13's fast path), and calling that
+    /// not-current would make every relation-free file permanently
+    /// incomplete.
     fn resource_state(
         &self,
         resource: ResourceId,
@@ -754,11 +813,18 @@ impl RelationIndex {
                 detail: error.to_string(),
             }
         })?;
+        let relation_index =
+            graph_lifecycle::state_of(&self.connection, resource).map_err(|error| {
+                RelationError::Structural {
+                    detail: error.to_string(),
+                }
+            })?;
         let state = (
             support_of(structure.as_ref().map(|structure| structure.state)),
             structure.is_some_and(|structure| {
                 structure.freshness_state == crate::component::FreshnessState::Current
-            }),
+            }) && relation_index
+                .is_none_or(|state| state == crate::component::FreshnessState::Current),
         );
         states.insert(resource, state);
         Ok(state)

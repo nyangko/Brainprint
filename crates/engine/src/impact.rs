@@ -54,6 +54,7 @@ use std::{
 use brainprint_core::ResourceId;
 
 use crate::{
+    coverage::{AnswerState, CoverageLimit, CoverageReport},
     graph::{self, GraphEndpoint, RelationKind},
     relations::{Direction, RelationError, RelationGap, RelationIndex, RelationResult},
     resolution::{Freshness, Support},
@@ -278,19 +279,48 @@ pub struct ImpactCoverage {
 }
 
 impl ImpactCoverage {
+    /// Every specific reason this traversal is not the whole impact
+    /// (#17 task 14).
+    ///
+    /// Three independent dimensions, none of which is allowed to hide
+    /// behind the others: relation coverage gaps, candidate
+    /// truncation, and the traversal budget.
+    #[must_use]
+    pub fn limits(&self) -> CoverageReport {
+        let mut report = CoverageReport::new();
+        report.note_if(self.gaps > 0, CoverageLimit::UnresolvedEvidence);
+        report.note_if(self.ambiguous > 0, CoverageLimit::AmbiguousCandidates);
+        report.note_if(
+            self.requires_semantics > 0,
+            CoverageLimit::RequiresSemantics,
+        );
+        report.note_if(
+            self.unsupported_construct > 0,
+            CoverageLimit::UnsupportedConstruct,
+        );
+        report.note_if(
+            self.candidate_truncated > 0,
+            CoverageLimit::CandidateTruncated,
+        );
+        report.note_if(self.unattributed > 0, CoverageLimit::UnattributedGaps);
+        report.note_if(self.partial_support > 0, CoverageLimit::PartialSupport);
+        report.note_if(self.stale_evidence > 0, CoverageLimit::StaleEvidence);
+        report.note_if(
+            self.dirty_evidence > 0,
+            CoverageLimit::DirtyRelationComponent,
+        );
+        report.note_if(self.truncated, CoverageLimit::TraversalTruncated);
+        report
+    }
+
     /// Whether this traversal may be read as the whole impact.
     ///
     /// False for a budget truncation, for any gap, and for degraded
     /// evidence -- three different reasons, none of which is allowed to
     /// hide behind the others.
     #[must_use]
-    pub const fn is_complete(&self) -> bool {
-        !self.truncated
-            && self.gaps == 0
-            && self.unattributed == 0
-            && self.partial_support == 0
-            && self.stale_evidence == 0
-            && self.dirty_evidence == 0
+    pub fn is_complete(&self) -> bool {
+        self.limits().is_complete()
     }
 }
 
@@ -360,6 +390,23 @@ impl ImpactResult {
     #[must_use]
     pub const fn is_complete_walk(&self) -> bool {
         self.truncation.is_none()
+    }
+
+    /// Every reason this impact answer is not the whole story: the
+    /// coverage of what was walked, plus the budget that stopped the
+    /// walk (#17 task 14).
+    #[must_use]
+    pub fn limits(&self) -> CoverageReport {
+        let mut report = self.coverage.limits();
+        report.note_if(self.truncation.is_some(), CoverageLimit::TraversalTruncated);
+        report
+    }
+
+    /// What this impact answer is allowed to claim. Zero edges from a
+    /// walk that ran out of budget is never a complete negative.
+    #[must_use]
+    pub fn answer_state(&self) -> AnswerState {
+        self.limits().state(self.edges.len())
     }
 }
 

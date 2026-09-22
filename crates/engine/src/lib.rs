@@ -1,8 +1,11 @@
 //! Brainprint runtime engine implementation.
 
+#[cfg(test)]
+mod acceptance_coverage;
 pub mod calls;
 pub mod component;
 pub mod config;
+pub mod coverage;
 pub mod db;
 pub mod discovery;
 pub mod domain;
