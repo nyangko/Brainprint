@@ -42,6 +42,10 @@ mod tests {
 
     #[test]
     fn a_worker_runs() {
-        assert_eq!(Worker::new(2).run(), 2);
+        // Bound to locals: a call written inside `assert_eq!` is an
+        // opaque token tree to the structural tier.
+        let worker = Worker::new(2);
+        let seed = worker.run();
+        assert_eq!(seed, 2);
     }
 }

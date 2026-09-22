@@ -59,10 +59,13 @@ pub fn copy_tree(from: &Path, to: &Path) {
     fs::create_dir_all(to).expect("destination");
     for entry in fs::read_dir(from).expect("read fixture") {
         let entry = entry.expect("entry");
+        // Never carry build output -- it holds absolute paths from
+        // wherever it was produced, and `OUT_DIR` lives under it -- and
+        // never carry the marker a developer's own `cargo test` in the
+        // fixture would leave: the trust assertion must be about *this*
+        // run.
         let name = entry.file_name();
-        // Never copy build output: it holds absolute paths from
-        // wherever it was produced, and `OUT_DIR` lives under it.
-        if name == "target" {
+        if name == "target" || name == "build-rs-ran.marker" {
             continue;
         }
         let target = to.join(&name);

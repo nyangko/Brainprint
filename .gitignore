@@ -7,3 +7,8 @@
 /scripts/csharp_semantic_spike/packages/
 /fixtures/workspaces/csharp-semantic-spike/**/bin/
 /fixtures/workspaces/csharp-semantic-spike/**/obj/
+
+# The rust fixture's build script writes this if it is ever executed.
+# Acceptance asserts its absence, so it must never be committed.
+/fixtures/workspaces/rust-semantic-spike/**/build-rs-ran.marker
+/fixtures/workspaces/rust-semantic-spike/target/
