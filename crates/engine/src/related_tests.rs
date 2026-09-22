@@ -385,6 +385,14 @@ impl RelatedTests {
         coverage: &mut TestCoverage,
     ) -> Result<Option<Owner>, RelatedTestError> {
         let resource = match endpoint {
+            // A logical symbol lives in no single file -- its
+            // declarations do, and impact reaches those as ordinary
+            // Symbols. Counting it as an owner this model cannot name
+            // keeps the projection honest instead of picking a part.
+            GraphEndpoint::Logical(_) => {
+                coverage.unresolved_owner += 1;
+                return Ok(None);
+            }
             GraphEndpoint::Resource(id) => *id,
             GraphEndpoint::Symbol(id) => {
                 let uid: Option<Vec<u8>> = self

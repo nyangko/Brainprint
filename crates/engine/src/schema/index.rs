@@ -476,6 +476,87 @@ pub const INDEX_MIGRATIONS: &[Migration] = &[
               DELETE FROM component_state \
               WHERE component_kind = 'SEMANTIC_INDEX' AND scope_kind = 'ANALYSIS_CONTEXT';",
     },
+    Migration {
+        version: 9,
+        name: "logical_symbol_identity",
+        // #19 task 12. A C# `partial class` is one semantic type with
+        // several declarations, and Roslyn answers a reference to it with
+        // *all* of them. The canonical model had nowhere to put that: a
+        // `Symbol` is one Resource and one span by design, and task 4
+        // binds one Occurrence to exactly one relation
+        // (`UNIQUE (context_key, occurrence_id)`), which is a rule worth
+        // keeping -- a reference does bind to one thing.
+        //
+        // So the missing piece was never a second binding. It was the
+        // *thing* being bound to: one semantic symbol that owns several
+        // source declarations. That is what `logical_symbol` is, and it
+        // is deliberately language-neutral -- nothing here says C#, and a
+        // later language that merges declarations uses the same table.
+        //
+        // Source Symbols are untouched. They remain the exact editable
+        // declarations, and the group only points at them.
+        //
+        // `graph_entity` is rebuilt rather than altered because its
+        // exactly-one-payload CHECK has to learn a fifth column, and
+        // SQLite cannot alter a CHECK in place. Foreign keys are deferred
+        // to COMMIT for the swap, which is SQLite's own documented
+        // procedure -- `PRAGMA foreign_keys` is a no-op inside a
+        // transaction, `defer_foreign_keys` is not.
+        sql: "PRAGMA defer_foreign_keys = ON; \
+              CREATE TABLE logical_symbol ( \
+                  id INTEGER PRIMARY KEY, \
+                  uid BLOB NOT NULL UNIQUE, \
+                  identity_fingerprint TEXT NOT NULL UNIQUE, \
+                  context_key TEXT NOT NULL, \
+                  kind TEXT NOT NULL, \
+                  display_name TEXT NOT NULL, \
+                  created_generation INTEGER NOT NULL REFERENCES generation (id) \
+              ); \
+              CREATE INDEX idx_logical_symbol_context ON logical_symbol (context_key); \
+              CREATE TABLE logical_symbol_declaration ( \
+                  logical_symbol_id INTEGER NOT NULL \
+                      REFERENCES logical_symbol (id) ON DELETE CASCADE, \
+                  symbol_id INTEGER NOT NULL REFERENCES symbol (id) ON DELETE CASCADE, \
+                  context_key TEXT NOT NULL, \
+                  generation_id INTEGER NOT NULL REFERENCES generation (id), \
+                  PRIMARY KEY (logical_symbol_id, symbol_id) \
+              ); \
+              CREATE INDEX idx_logical_declaration_symbol \
+              ON logical_symbol_declaration (symbol_id); \
+              CREATE TABLE graph_entity_next ( \
+                  id INTEGER PRIMARY KEY, \
+                  entity_kind TEXT NOT NULL, \
+                  resource_id INTEGER REFERENCES resource (id), \
+                  symbol_id INTEGER REFERENCES symbol (id), \
+                  external_entity_id INTEGER REFERENCES external_entity (id), \
+                  domain_entity_id INTEGER REFERENCES domain_entity (id), \
+                  logical_symbol_id INTEGER REFERENCES logical_symbol (id), \
+                  CHECK ( \
+                      (CASE WHEN resource_id IS NOT NULL THEN 1 ELSE 0 END + \
+                       CASE WHEN symbol_id IS NOT NULL THEN 1 ELSE 0 END + \
+                       CASE WHEN external_entity_id IS NOT NULL THEN 1 ELSE 0 END + \
+                       CASE WHEN domain_entity_id IS NOT NULL THEN 1 ELSE 0 END + \
+                       CASE WHEN logical_symbol_id IS NOT NULL THEN 1 ELSE 0 END) = 1 \
+                  ) \
+              ); \
+              INSERT INTO graph_entity_next \
+                  (id, entity_kind, resource_id, symbol_id, external_entity_id, \
+                   domain_entity_id) \
+              SELECT id, entity_kind, resource_id, symbol_id, external_entity_id, \
+                     domain_entity_id FROM graph_entity; \
+              DROP TABLE graph_entity; \
+              ALTER TABLE graph_entity_next RENAME TO graph_entity; \
+              CREATE UNIQUE INDEX idx_graph_entity_resource \
+              ON graph_entity (resource_id) WHERE resource_id IS NOT NULL; \
+              CREATE UNIQUE INDEX idx_graph_entity_symbol \
+              ON graph_entity (symbol_id) WHERE symbol_id IS NOT NULL; \
+              CREATE UNIQUE INDEX idx_graph_entity_external \
+              ON graph_entity (external_entity_id) WHERE external_entity_id IS NOT NULL; \
+              CREATE UNIQUE INDEX idx_graph_entity_domain \
+              ON graph_entity (domain_entity_id) WHERE domain_entity_id IS NOT NULL; \
+              CREATE UNIQUE INDEX idx_graph_entity_logical \
+              ON graph_entity (logical_symbol_id) WHERE logical_symbol_id IS NOT NULL;",
+    },
 ];
 
 /// Open (creating and migrating if needed) an `index.db` at `path`.
@@ -562,7 +643,7 @@ mod tests {
     fn fresh_rebuildable_index_db_can_be_created() {
         let dir = TestDir::create("fresh");
         let opened = open(&dir.db_path()).expect("fresh index.db should migrate");
-        assert_eq!(opened.schema_version, 8);
+        assert_eq!(opened.schema_version, 9);
     }
 
     #[test]
@@ -789,14 +870,14 @@ mod tests {
         open(&dir.db_path()).expect("first open should migrate");
         let reopened = open(&dir.db_path()).expect("reopen should be a no-op");
 
-        assert_eq!(reopened.schema_version, 8);
+        assert_eq!(reopened.schema_version, 9);
         let ledger_count: u32 = reopened
             .connection
             .query_row("SELECT COUNT(*) FROM schema_migration", [], |row| {
                 row.get(0)
             })
             .expect("ledger should be queryable");
-        assert_eq!(ledger_count, 8, "migration must not reapply on reopen");
+        assert_eq!(ledger_count, 9, "migration must not reapply on reopen");
     }
 
     #[test]

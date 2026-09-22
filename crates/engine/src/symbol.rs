@@ -140,6 +140,13 @@ impl SymbolKind {
         }
     }
 
+    /// Decode a stored kind. Public so a caller reading Symbol rows
+    /// through another table shares this vocabulary rather than
+    /// re-deriving it (#19 task 12).
+    pub fn parse_public(raw: &str) -> Result<Self, SymbolError> {
+        Self::parse(raw)
+    }
+
     fn parse(raw: &str) -> Result<Self, SymbolError> {
         match raw {
             "CLASS" => Ok(Self::Class),

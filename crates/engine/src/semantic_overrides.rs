@@ -308,6 +308,16 @@ fn ancestors(
         )? {
             match relation.target {
                 GraphEndpoint::Symbol(base) => direct.push(base),
+                // A base that is one semantic type with several
+                // declarations (#19 task 12). Its members are spread
+                // across those declarations, so every one of them is an
+                // ancestor to read -- picking one would lose members
+                // that really are inherited.
+                GraphEndpoint::Logical(base) => direct.extend(
+                    crate::logical_symbol::declarations(connection, base).map_err(|error| {
+                        GraphError::Sqlite(rusqlite::Error::InvalidParameterName(error.to_string()))
+                    })?,
+                ),
                 // A base outside the Workspace. Its members are not
                 // indexed and must not be, so "no ancestor declares
                 // this" stops being a reliable answer and the

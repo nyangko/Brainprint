@@ -59,7 +59,7 @@
 
 use std::{error::Error, fmt, path::Path};
 
-use brainprint_core::{ResourceId, SymbolId};
+use brainprint_core::{LogicalSymbolId, ResourceId, SymbolId};
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::{
@@ -138,6 +138,9 @@ pub enum EntityKind {
     Symbol,
     External,
     Domain,
+    /// One semantic symbol that a language declared more than once. See
+    /// [`GraphEndpoint::Logical`].
+    Logical,
 }
 
 impl EntityKind {
@@ -148,6 +151,7 @@ impl EntityKind {
             Self::Symbol => "SYMBOL",
             Self::External => "EXTERNAL",
             Self::Domain => "DOMAIN",
+            Self::Logical => "LOGICAL",
         }
     }
 
@@ -157,6 +161,7 @@ impl EntityKind {
             "SYMBOL" => Ok(Self::Symbol),
             "EXTERNAL" => Ok(Self::External),
             "DOMAIN" => Ok(Self::Domain),
+            "LOGICAL" => Ok(Self::Logical),
             other => Err(GraphError::UnknownEntityKind {
                 raw: other.to_owned(),
             }),
@@ -213,6 +218,20 @@ pub enum GraphEndpoint {
     Symbol(SymbolId),
     External(ExternalEntity),
     Domain(DomainEntity),
+    /// One *semantic* symbol that owns several source declarations.
+    ///
+    /// C# is the first language that needs it: `partial class Runner`
+    /// declared across two files is one type, and a reference binds to
+    /// that type rather than to a file. Without this the only options
+    /// were to pick a declaration arbitrarily or to let one Occurrence
+    /// carry two bindings, and #19 task 12 locked both out.
+    ///
+    /// It is deliberately *not* a replacement for [`Self::Symbol`].
+    /// Every declaration remains its own source-owned Symbol -- the
+    /// exact editable span an Agent works on -- and this groups them.
+    /// A language whose declarations are singular never produces one,
+    /// which is why Python, TypeScript and Svelte are untouched.
+    Logical(LogicalSymbolId),
 }
 
 impl GraphEndpoint {
@@ -223,6 +242,7 @@ impl GraphEndpoint {
             Self::Symbol(_) => EntityKind::Symbol,
             Self::External(_) => EntityKind::External,
             Self::Domain(_) => EntityKind::Domain,
+            Self::Logical(_) => EntityKind::Logical,
         }
     }
 }
@@ -286,9 +306,13 @@ impl Relation {
 #[must_use]
 pub const fn target_scope_of(target: &GraphEndpoint) -> TargetScope {
     match target {
-        GraphEndpoint::Resource(_) | GraphEndpoint::Symbol(_) | GraphEndpoint::Domain(_) => {
-            TargetScope::Internal
-        }
+        // A logical symbol is a Workspace declaration set. It is internal
+        // for the same reason a Symbol is: every declaration it owns is
+        // source this Workspace can open.
+        GraphEndpoint::Resource(_)
+        | GraphEndpoint::Symbol(_)
+        | GraphEndpoint::Domain(_)
+        | GraphEndpoint::Logical(_) => TargetScope::Internal,
         GraphEndpoint::External(_) => TargetScope::External,
     }
 }
@@ -336,6 +360,12 @@ pub enum GraphError {
     UnknownSymbol {
         symbol_id: SymbolId,
     },
+    /// An endpoint named a `LogicalSymbolId` this `index.db` does not
+    /// have. A logical symbol is created by the tier that proves it, so
+    /// the graph points at one rather than inventing it.
+    UnknownLogicalSymbol {
+        logical_symbol_id: LogicalSymbolId,
+    },
     /// A relation named an endpoint that has no `graph_entity` yet.
     /// Entities are ensured explicitly, so that an edge can never bring a
     /// half-described endpoint into existence as a side effect.
@@ -366,6 +396,9 @@ impl fmt::Display for GraphError {
             }
             Self::UnknownResource { resource_id } => {
                 write!(formatter, "no resource row for {resource_id}")
+            }
+            Self::UnknownLogicalSymbol { logical_symbol_id } => {
+                write!(formatter, "no logical symbol row for {logical_symbol_id}")
             }
             Self::UnknownSymbol { symbol_id } => {
                 write!(formatter, "no symbol row for {symbol_id}")
@@ -802,7 +835,7 @@ pub(crate) fn endpoint_sort_key(endpoint: &GraphEndpoint) -> (u8, Vec<u8>) {
         GraphEndpoint::Resource(id) => (0, id.to_bytes().to_vec()),
         GraphEndpoint::Symbol(id) => (1, id.to_bytes().to_vec()),
         GraphEndpoint::External(external) => (
-            2,
+            3,
             format!(
                 "{}\u{1f}{}\u{1f}{}",
                 external.package_identity,
@@ -811,8 +844,9 @@ pub(crate) fn endpoint_sort_key(endpoint: &GraphEndpoint) -> (u8, Vec<u8>) {
             )
             .into_bytes(),
         ),
+        GraphEndpoint::Logical(id) => (2, id.to_bytes().to_vec()),
         GraphEndpoint::Domain(domain) => (
-            3,
+            4,
             format!("{}\u{1f}{}", domain.kind, domain.normalized_identity).into_bytes(),
         ),
     }
@@ -902,14 +936,22 @@ fn decode_relation(connection: &Connection, raw: RawRelationRow) -> Result<Relat
 /// `graph_entity`'s columns as stored: the kind plus its four mutually
 /// exclusive payload columns, of which the schema's CHECK guarantees
 /// exactly one is set.
-type RawEntityRow = (String, Option<i64>, Option<i64>, Option<i64>, Option<i64>);
+type RawEntityRow = (
+    String,
+    Option<i64>,
+    Option<i64>,
+    Option<i64>,
+    Option<i64>,
+    Option<i64>,
+);
 
 /// The endpoint one `graph_entity` row stands for. The row id goes in;
 /// only stable identity comes out.
 fn endpoint_of(connection: &Connection, entity_id: i64) -> Result<GraphEndpoint, GraphError> {
-    let (kind, resource, symbol, external, domain): RawEntityRow = connection.query_row(
-        "SELECT entity_kind, resource_id, symbol_id, external_entity_id, domain_entity_id \
-         FROM graph_entity WHERE id = ?1",
+    let (kind, resource, symbol, external, domain, logical): RawEntityRow = connection.query_row(
+        "SELECT entity_kind, resource_id, symbol_id, external_entity_id, \
+                    domain_entity_id, logical_symbol_id \
+             FROM graph_entity WHERE id = ?1",
         params![entity_id],
         |row| {
             Ok((
@@ -918,6 +960,7 @@ fn endpoint_of(connection: &Connection, entity_id: i64) -> Result<GraphEndpoint,
                 row.get(2)?,
                 row.get(3)?,
                 row.get(4)?,
+                row.get(5)?,
             ))
         },
     )?;
@@ -944,6 +987,17 @@ fn endpoint_of(connection: &Connection, entity_id: i64) -> Result<GraphEndpoint,
             Ok(GraphEndpoint::Symbol(SymbolId::from_bytes(stable_bytes(
                 &uid,
             ))))
+        }
+        EntityKind::Logical => {
+            let local = logical.ok_or(GraphError::MalformedEntity { kind })?;
+            let uid: Vec<u8> = connection.query_row(
+                "SELECT uid FROM logical_symbol WHERE id = ?1",
+                params![local],
+                |row| row.get(0),
+            )?;
+            Ok(GraphEndpoint::Logical(LogicalSymbolId::from_bytes(
+                stable_bytes(&uid),
+            )))
         }
         EntityKind::External => {
             let local = external.ok_or(GraphError::MalformedEntity { kind })?;
@@ -1025,6 +1079,7 @@ const fn payload_column(endpoint: &GraphEndpoint) -> &'static str {
         GraphEndpoint::Symbol(_) => "symbol_id",
         GraphEndpoint::External(_) => "external_entity_id",
         GraphEndpoint::Domain(_) => "domain_entity_id",
+        GraphEndpoint::Logical(_) => "logical_symbol_id",
     }
 }
 
@@ -1040,6 +1095,22 @@ fn payload_id(
     create: bool,
 ) -> Result<Option<i64>, GraphError> {
     match endpoint {
+        GraphEndpoint::Logical(id) => {
+            let found: Option<i64> = connection
+                .query_row(
+                    "SELECT id FROM logical_symbol WHERE uid = ?1",
+                    params![id.to_bytes().to_vec()],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            match (found, create) {
+                (Some(found), _) => Ok(Some(found)),
+                (None, true) => Err(GraphError::UnknownLogicalSymbol {
+                    logical_symbol_id: *id,
+                }),
+                (None, false) => Ok(None),
+            }
+        }
         GraphEndpoint::Resource(id) => {
             let found: Option<i64> = connection
                 .query_row(

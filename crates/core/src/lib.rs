@@ -5,4 +5,4 @@ pub mod id;
 pub mod protocol;
 
 pub use build::{BuildInfo, PACKAGE_VERSION, PRODUCT_NAME, PROTOCOL_VERSION};
-pub use id::{ParseStableIdError, ProjectId, ResourceId, SymbolId, WorkspaceId};
+pub use id::{LogicalSymbolId, ParseStableIdError, ProjectId, ResourceId, SymbolId, WorkspaceId};

@@ -97,6 +97,12 @@ define_stable_id!(
     SymbolId,
     "Stable identity for one declared symbol across edits that do not redeclare it."
 );
+define_stable_id!(
+    LogicalSymbolId,
+    "Stable identity for one *semantic* symbol that a language may declare more \
+     than once -- a C# partial type, and whatever later languages merge the same \
+     way. It groups existing `SymbolId` declarations; it never replaces them."
+);
 
 #[cfg(test)]
 mod tests {

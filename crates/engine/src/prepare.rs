@@ -51,7 +51,7 @@
 
 use std::{collections::HashMap, error::Error, fmt, path::Path};
 
-use brainprint_core::ResourceId;
+use brainprint_core::{ResourceId, SymbolId};
 
 use crate::{
     coverage::{AnswerState, CoverageLimit, CoverageReport},
@@ -181,6 +181,15 @@ pub struct PreparedInspection {
     /// definition source is not in this Workspace. Nothing is
     /// fabricated to fill the slot.
     pub target: Option<PreparedTarget>,
+    /// Every current declaration, when the anchor is one semantic symbol
+    /// declared more than once -- a C# `partial class`, and whatever
+    /// later languages merge the same way (#19 task 12).
+    ///
+    /// Empty for every other anchor, which is why a single-declaration
+    /// language sees nothing change. [`Self::target`] stays `None` for a
+    /// logical anchor: the group has no span of its own, and only its
+    /// declarations do.
+    pub declarations: Vec<PreparedTarget>,
     pub relations: Vec<PreparedRelation>,
     /// Every distinct range read, in deterministic order.
     pub ranges: Vec<PreparedRange>,
@@ -340,6 +349,9 @@ impl InspectPreparer {
         // The anchor's own declaration first, so it is range 0 whenever
         // there is one.
         let target = self.plan_target(anchor, &mut plan)?;
+        // And, when the anchor is one semantic symbol with several
+        // declarations, each of those.
+        let declarations = self.plan_declarations(anchor, &mut plan)?;
 
         let mut planned: Vec<Vec<PlannedEvidence>> = Vec::new();
         for relation in &answer.confirmed {
@@ -383,6 +395,17 @@ impl InspectPreparer {
                     .unavailable
                     .or_else(|| outcome.unavailable(target.range)),
             }),
+            declarations: declarations
+                .into_iter()
+                .map(|declaration| PreparedTarget {
+                    symbol: declaration.symbol,
+                    path_rel: declaration.path_rel,
+                    range: outcome.resolve(declaration.range),
+                    unavailable: declaration
+                        .unavailable
+                        .or_else(|| outcome.unavailable(declaration.range)),
+                })
+                .collect(),
             relations,
             ranges: outcome.ranges,
             gaps: answer.gaps.clone(),
@@ -402,10 +425,52 @@ impl InspectPreparer {
     ) -> Result<Option<PlannedTarget>, PrepareError> {
         let GraphEndpoint::Symbol(symbol_id) = anchor else {
             // A Resource is not a declaration, and an external package's
-            // source is not in this Workspace. Nothing is fabricated.
+            // source is not in this Workspace. Neither is a logical
+            // symbol: it has several declarations and no span of its
+            // own, so it is prepared through `plan_declarations`.
+            // Nothing is fabricated.
             return Ok(None);
         };
-        let metadata = match self.reader.inspect_symbol_metadata(*symbol_id) {
+        self.plan_symbol(*symbol_id, plan)
+    }
+
+    /// Every current declaration of a logical symbol.
+    ///
+    /// The projection #19 task 12 requires: an Agent asking about a C#
+    /// `partial class` gets the current source of *each* part, because
+    /// that is what the type is. There is no synthetic range for the
+    /// group itself -- a logical symbol is not written anywhere, and
+    /// inventing coordinates for it is exactly what the task forbids.
+    fn plan_declarations(
+        &self,
+        anchor: &GraphEndpoint,
+        plan: &mut ReadPlan,
+    ) -> Result<Vec<PlannedTarget>, PrepareError> {
+        let GraphEndpoint::Logical(logical) = anchor else {
+            return Ok(Vec::new());
+        };
+        let declarations =
+            crate::logical_symbol::declarations(self.reader.index().connection(), *logical)
+                .map_err(|error| {
+                    PrepareError::Query(QueryError::Sqlite(rusqlite::Error::InvalidParameterName(
+                        error.to_string(),
+                    )))
+                })?;
+        let mut planned = Vec::new();
+        for declaration in declarations {
+            if let Some(target) = self.plan_symbol(declaration, plan)? {
+                planned.push(target);
+            }
+        }
+        Ok(planned)
+    }
+
+    fn plan_symbol(
+        &self,
+        symbol_id: SymbolId,
+        plan: &mut ReadPlan,
+    ) -> Result<Option<PlannedTarget>, PrepareError> {
+        let metadata = match self.reader.inspect_symbol_metadata(symbol_id) {
             Ok(metadata) => metadata,
             Err(ReadError::Query(error)) => return Err(PrepareError::Query(error)),
             Err(ReadError::Sqlite(error)) => {

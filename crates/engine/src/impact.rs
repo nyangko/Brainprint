@@ -224,9 +224,21 @@ pub struct ImpactNode {
     /// Hops from the root.
     pub depth: usize,
     /// The endpoint it was first reached from, and along which kind.
-    /// `None` for the root. Following these back gives the path, without
-    /// storing one path per node.
+    /// `None` for the root, and for a declaration reached through
+    /// [`Self::declared_by`]. Following these back gives the path,
+    /// without storing one path per node.
     pub via: Option<(GraphEndpoint, RelationKind)>,
+    /// The logical symbol this node is a declaration of, when it was
+    /// reached that way rather than along an edge.
+    ///
+    /// A C# `partial class` is one semantic type with several
+    /// declarations (#19 task 12). Changing the type affects every
+    /// declaration of it, and that is not an edge -- it is what
+    /// declaring the same type *means*. So the traversal projects a
+    /// logical symbol onto its declarations rather than inventing a
+    /// relation kind to walk, which is also why the type-level relation
+    /// is stored once instead of once per part.
+    pub declared_by: Option<GraphEndpoint>,
     /// Whether this endpoint's own relations were queried. False for a
     /// node the budget stopped short of.
     pub expanded: bool,
@@ -539,6 +551,7 @@ impl ImpactTraversal {
                 endpoint: root.clone(),
                 depth: 0,
                 via: None,
+                declared_by: None,
                 expanded: false,
             });
         }
@@ -558,6 +571,48 @@ impl ImpactTraversal {
                 break;
             }
             deepest = deepest.max(depth);
+
+            // A logical symbol's declarations are part of what it
+            // affects. This is projection, not traversal: membership is
+            // canonical data, and expressing it as an edge would mean
+            // inventing a relation kind and storing the type-level fact
+            // once per declaration -- exactly what #19 task 12 locked
+            // out. Language-neutral: an endpoint kind no language
+            // produces simply never gets here.
+            if let GraphEndpoint::Logical(logical) = &endpoint {
+                for declaration in
+                    crate::logical_symbol::declarations(self.relations.connection(), *logical)
+                        .map_err(|error| {
+                            ImpactError::Relation(RelationError::Graph(
+                                crate::graph::GraphError::Sqlite(
+                                    rusqlite::Error::InvalidParameterName(error.to_string()),
+                                ),
+                            ))
+                        })?
+                {
+                    let part = GraphEndpoint::Symbol(declaration);
+                    if state.emitted_nodes.contains(&part) {
+                        continue;
+                    }
+                    if state.node_count >= budget.max_nodes {
+                        truncation = Some(Truncation::NodeBudget);
+                        break;
+                    }
+                    state.emit_node(part.clone());
+                    nodes.push(ImpactNode {
+                        endpoint: part.clone(),
+                        depth: depth + 1,
+                        via: None,
+                        declared_by: Some(endpoint.clone()),
+                        expanded: false,
+                    });
+                    deepest = deepest.max(depth + 1);
+                    state.frontier.push((part, depth + 1));
+                }
+                if truncation.is_some() {
+                    break;
+                }
+            }
 
             let answer = self.relations.incoming(&endpoint, &kinds)?;
             let mut node_gaps = Vec::new();
@@ -606,6 +661,7 @@ impl ImpactTraversal {
                     endpoint: next.clone(),
                     depth: depth + 1,
                     via: Some((endpoint.clone(), relation.kind)),
+                    declared_by: None,
                     expanded: false,
                 });
                 deepest = deepest.max(depth + 1);

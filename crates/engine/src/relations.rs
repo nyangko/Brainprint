@@ -632,8 +632,12 @@ impl RelationIndex {
                 None => Ok(Vec::new()),
             },
             // An external package or domain entity owns no source, so it
-            // states no use sites of its own.
-            GraphEndpoint::External(_) | GraphEndpoint::Domain(_) => Ok(Vec::new()),
+            // states no use sites of its own. Nor does a logical symbol:
+            // it is a grouping, and every use site it could own is owned
+            // by one of its declarations, which are ordinary Symbols.
+            GraphEndpoint::External(_) | GraphEndpoint::Domain(_) | GraphEndpoint::Logical(_) => {
+                Ok(Vec::new())
+            }
         }
     }
 
