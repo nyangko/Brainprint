@@ -915,7 +915,7 @@ fn push_prefix_filter(
 
 /// The smallest string strictly greater than every string starting with
 /// `prefix`, under SQLite's byte-wise TEXT comparison.
-fn prefix_upper_bound(prefix: &str) -> Option<String> {
+pub(crate) fn prefix_upper_bound(prefix: &str) -> Option<String> {
     let mut bytes = prefix.as_bytes().to_vec();
     while let Some(last) = bytes.pop() {
         if last < 0xFF {

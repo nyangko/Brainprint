@@ -2,6 +2,7 @@
 
 #[cfg(test)]
 mod acceptance_coverage;
+pub mod boundary;
 pub mod calls;
 pub mod component;
 pub mod config;

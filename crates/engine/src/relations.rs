@@ -924,7 +924,7 @@ fn raw_location_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawLocationRow>
 /// asked for. An inheritance entry whose target is unknown answers to
 /// both EXTENDS and IMPLEMENTS, because which one it is depends on that
 /// target (#17 task 6).
-fn intended_matches(intended: IntendedRelation, kinds: &[RelationKind]) -> bool {
+pub(crate) fn intended_matches(intended: IntendedRelation, kinds: &[RelationKind]) -> bool {
     match intended {
         IntendedRelation::Known(kind) => kinds.contains(&kind),
         IntendedRelation::Inheritance => {

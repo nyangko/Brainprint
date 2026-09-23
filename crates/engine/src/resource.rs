@@ -64,7 +64,7 @@ impl ResourceKind {
         }
     }
 
-    fn parse(raw: &str) -> Result<Self, ResourceError> {
+    pub(crate) fn parse(raw: &str) -> Result<Self, ResourceError> {
         match raw {
             "FILE" => Ok(Self::File),
             "DIRECTORY" => Ok(Self::Directory),
@@ -166,7 +166,7 @@ impl ResourceLanguage {
         }
     }
 
-    fn parse(raw: &str) -> Result<Self, ResourceError> {
+    pub(crate) fn parse(raw: &str) -> Result<Self, ResourceError> {
         match raw {
             "PYTHON" => Ok(Self::Python),
             "JAVASCRIPT" => Ok(Self::JavaScript),
