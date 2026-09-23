@@ -7,7 +7,7 @@
 
 use std::path::Path;
 
-use brainprint_core::{WorkItemId, WorkNoteId};
+use brainprint_core::{WorkItemId, WorkNoteId, WorkspaceId};
 use rusqlite::{Connection, OptionalExtension, Row, params};
 
 use super::{
@@ -164,6 +164,18 @@ impl WorkspaceKnowledgeStore {
     #[must_use]
     pub fn from_connection(connection: Connection) -> Self {
         Self { connection }
+    }
+
+    /// The Workspace this workspace.db was bound to by init, if any.
+    pub fn bound_workspace_id(&self) -> Result<Option<WorkspaceId>, KnowledgeError> {
+        let bound: Option<Vec<u8>> = self.connection.query_row(
+            "SELECT workspace_uid FROM db_meta WHERE id = 0",
+            [],
+            |row| row.get(0),
+        )?;
+        bound
+            .map(|bytes| super::uid_from_blob(&bytes, "db_meta"))
+            .transpose()
     }
 
     fn work_item_row_id(&self, uid: WorkItemId) -> Result<i64, KnowledgeError> {

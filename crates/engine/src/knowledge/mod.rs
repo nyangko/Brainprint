@@ -17,26 +17,33 @@
 //!
 //! Provided here: create, get by stable uid, bounded (`LIMIT`) lists by
 //! exact scope/status/key/topic, explicit status transitions, explicit
-//! lineage, current-state upsert. Not provided: precedence/applicability
-//! (task 2), WorkItem lifecycle planning (task 3), promotion (task 4),
-//! search/ranking of any kind.
+//! lineage, current-state upsert. Precedence/applicability is the read-only
+//! resolver in [`resolve()`] (task 2). Not provided: WorkItem lifecycle
+//! planning (task 3), promotion (task 4), search/ranking of any kind.
 
 mod global;
 mod model;
 mod project;
+mod resolve;
 mod workspace;
 
 use std::{error::Error, fmt, path::PathBuf};
 
 use brainprint_core::{
     BlueprintApplicationId, BlueprintId, DecisionId, PolicyId, ProjectId, ProjectStateId,
-    ResourceId, UserPreferenceId, WorkItemId, WorkNoteId,
+    ResourceId, UserPreferenceId, WorkItemId, WorkNoteId, WorkspaceId,
 };
 use rusqlite::{Connection, OptionalExtension, Params, Row, params};
 
 pub use global::GlobalKnowledgeStore;
 pub use model::*;
 pub use project::ProjectKnowledgeStore;
+pub use resolve::{
+    ApplicabilityContext, BlueprintDefinitionState, BlueprintEvidence, ConflictKind,
+    DirectiveTarget, EvidenceCategory, EvidenceRef, KnowledgeConflict, KnowledgeSources, Origin,
+    RequestDirective, ResolutionReason, ResolveError, ResolveRequest, Resolved, ResolvedKnowledge,
+    ShadowedItem, WorkItemEvidence, resolve,
+};
 pub use workspace::WorkspaceKnowledgeStore;
 
 use crate::{db, db::DbOpenError, registry::RegistryError, resolution::UnknownAxisValue};
@@ -196,7 +203,8 @@ impl_uid!(
     WorkItemId,
     WorkNoteId,
     ResourceId,
-    ProjectId
+    ProjectId,
+    WorkspaceId
 );
 
 pub(crate) fn blob<T: Uid>(id: T) -> Vec<u8> {
