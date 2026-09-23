@@ -28,6 +28,7 @@ pub mod merge;
 pub mod parser;
 pub mod paths;
 pub mod prepare;
+pub mod projection;
 pub mod python_semantic;
 pub mod query;
 pub mod reconcile;

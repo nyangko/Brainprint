@@ -254,6 +254,13 @@ impl ResolveRequest {
             work_item: None,
         }
     }
+
+    /// The resolver's own directive checks, without reading any store, so a
+    /// projection request (#20 task 5) validates directives by these rules
+    /// rather than a copy of them.
+    pub(crate) fn check_directives(&self) -> Result<(), ResolveError> {
+        directives(self).map(|_| ())
+    }
 }
 
 /// The stores of one Project and, optionally, the current Workspace.
