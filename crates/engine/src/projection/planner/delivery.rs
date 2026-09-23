@@ -134,6 +134,14 @@ pub enum DeliveryUnit<'a> {
 /// exact count is not known for that unit; nothing here estimates.
 pub trait ExactTokenCounter {
     fn exact_tokens(&self, unit: DeliveryUnit<'_>) -> Option<usize>;
+
+    /// The exact token cost of the `CurrentSource` an optional range will
+    /// become, when the caller already knows it without its body (e.g.
+    /// precomputed metadata). Under a token cap an optional range is
+    /// selected only with this; it is never read to find out.
+    fn exact_planned_source_tokens(&self, _range: &PlannedSourceRange) -> Option<usize> {
+        None
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -200,6 +208,10 @@ pub enum ContinuationUnavailable {
     /// The next unit exceeds the whole budget on its own; this chain can
     /// never deliver it. A fresh chain needs a larger budget.
     UnitExceedsBudget,
+    /// A token cap, and the next optional source range has no exact
+    /// planned token cost: it is not read to find out. A fresh chain needs
+    /// a preflight-capable counter or a budget without a token cap.
+    OptionalSourceTokenCostUnknown,
 }
 
 /// Which binding of a continuation no longer holds.
@@ -236,7 +248,8 @@ pub struct DeliveryPage {
     pub used_tokens: TokenUsage,
     /// True only when optional units remain undelivered.
     pub more_available: bool,
-    /// The caps the next unit did not fit; empty when nothing remains.
+    /// The caps the next unit did not fit; empty when nothing remains or
+    /// when no cap was proven exceeded (unknown optional-source tokens).
     pub limiting: BTreeSet<DeliveryDimension>,
     /// Exact count of optional units not yet delivered in this chain.
     pub omitted_units: usize,
@@ -267,6 +280,19 @@ pub enum DeliveryError {
     ContinuationMismatch(ContinuationMismatch),
     /// The bindings hold but the cursor key is not in this sequence.
     InvalidContinuationCursor,
+    /// A range selected on its exact planned token cost materialized at
+    /// another exact cost: the planned figure was not exact.
+    TokenPreflightMismatch {
+        planned: usize,
+        materialized: Option<usize>,
+    },
+    /// A selected optional range failed verification and its
+    /// `SourceUnavailable` does not fit even an empty page.
+    BudgetTooSmallForSelectedCorrectiveEvidence {
+        unit_bytes: usize,
+        unit_tokens: Option<usize>,
+        violated: BTreeSet<DeliveryDimension>,
+    },
     Planner(PlannerError),
 }
 
@@ -303,6 +329,22 @@ impl fmt::Display for DeliveryError {
             Self::InvalidContinuationCursor => {
                 formatter.write_str("continuation cursor is not in this delivery sequence")
             }
+            Self::TokenPreflightMismatch {
+                planned,
+                materialized,
+            } => write!(
+                formatter,
+                "planned source tokens {planned} but materialized {materialized:?}"
+            ),
+            Self::BudgetTooSmallForSelectedCorrectiveEvidence {
+                unit_bytes,
+                unit_tokens,
+                violated,
+            } => write!(
+                formatter,
+                "selected source is unavailable and its corrective unit ({unit_bytes} bytes, \
+                 tokens {unit_tokens:?}) exceeds the whole budget ({violated:?})"
+            ),
             Self::Planner(source) => write!(formatter, "{source}"),
         }
     }
@@ -469,6 +511,7 @@ impl Builder<'_> {
         Ok(Some(Stop {
             never_fits: !self.budget.over(Cost::ZERO, cost).is_empty(),
             limiting: over,
+            token_cost_unknown: false,
         }))
     }
 }
@@ -477,6 +520,8 @@ impl Builder<'_> {
 struct Stop {
     limiting: BTreeSet<DeliveryDimension>,
     never_fits: bool,
+    /// A token cap, and the next optional range has no exact planned cost.
+    token_cost_unknown: bool,
 }
 
 /// What the generation store says now.
@@ -582,6 +627,10 @@ impl ProjectionPlanner {
             (Some(stop), _) if stop.never_fits => {
                 (None, Some(ContinuationUnavailable::UnitExceedsBudget))
             }
+            (Some(stop), _) if stop.token_cost_unknown => (
+                None,
+                Some(ContinuationUnavailable::OptionalSourceTokenCostUnknown),
+            ),
             (
                 _,
                 Basis {
@@ -658,29 +707,50 @@ impl ProjectionPlanner {
                 Slot::Source(_) => {
                     // Budget before read: select by a lower bound of each
                     // unit's canonical bytes -- everything but the path and
-                    // hashes the read will add.
+                    // hashes the read will add -- and, under a token cap,
+                    // only by an exact planned token cost.
+                    let token_cap = page.budget.max_tokens.is_some();
                     let mut selected = Vec::new();
+                    let mut planned = Vec::new();
                     let mut bound = page.used;
                     let mut preflight = None;
                     for entry in &optional[index..] {
                         let Slot::Source(range) = &entry.slot else {
                             break;
                         };
+                        let tokens = if token_cap {
+                            let exact = page
+                                .counter
+                                .and_then(|counter| counter.exact_planned_source_tokens(range));
+                            if exact.is_none() {
+                                preflight = Some(Stop {
+                                    limiting: BTreeSet::new(),
+                                    never_fits: false,
+                                    token_cost_unknown: true,
+                                });
+                                break;
+                            }
+                            exact
+                        } else {
+                            None
+                        };
                         let cost = Cost {
                             items: 1,
                             bytes: source_floor(range),
-                            tokens: None,
+                            tokens,
                         };
                         let over = page.budget.over(bound, cost);
                         if !over.is_empty() {
                             preflight = Some(Stop {
                                 never_fits: !page.budget.over(Cost::ZERO, cost).is_empty(),
                                 limiting: over,
+                                token_cost_unknown: false,
                             });
                             break;
                         }
                         bound = bound.plus(cost);
                         selected.push(range.clone());
+                        planned.push(tokens);
                     }
                     self.count(|stats| stats.optional_source_selected += selected.len() as u64);
                     if selected.is_empty() {
@@ -689,11 +759,37 @@ impl ProjectionPlanner {
                     // Sorted by (Resource, revision, span): one verified read
                     // per Resource revision, and no further read once one
                     // does not fit.
+                    let mut planned = planned.into_iter();
                     for group in selected.chunk_by(|a, b| {
                         a.resource == b.resource && a.resource_revision == b.resource_revision
                     }) {
                         for item in self.read(group)? {
+                            let planned = planned.next().flatten();
+                            if let (Some(planned), EvidenceItem::CurrentSource(_)) =
+                                (planned, &item)
+                            {
+                                let materialized = page.counter.and_then(|counter| {
+                                    counter.exact_tokens(DeliveryUnit::Evidence(&item))
+                                });
+                                if materialized != Some(planned) {
+                                    return Err(DeliveryError::TokenPreflightMismatch {
+                                        planned,
+                                        materialized,
+                                    });
+                                }
+                            }
+                            let corrective = matches!(item, EvidenceItem::SourceUnavailable { .. });
+                            let cost = page.cost(DeliveryUnit::Evidence(&item))?;
                             if let Some(stop) = page.offer(item)? {
+                                if corrective && stop.never_fits {
+                                    return Err(
+                                        DeliveryError::BudgetTooSmallForSelectedCorrectiveEvidence {
+                                            unit_bytes: cost.bytes,
+                                            unit_tokens: cost.tokens,
+                                            violated: page.budget.over(Cost::ZERO, cost),
+                                        },
+                                    );
+                                }
                                 return Ok((index, Some(stop)));
                             }
                             index += 1;

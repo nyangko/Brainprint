@@ -17,12 +17,58 @@ fn items(cap: usize) -> DeliveryBudget {
     budget(Some(cap), None, None)
 }
 
-/// A test tokenizer with an exact, fixed cost per unit.
+/// A test tokenizer with an exact, fixed cost per unit -- so it also
+/// knows a planned source's cost without its body.
 struct FixedTokens(usize);
 
 impl ExactTokenCounter for FixedTokens {
     fn exact_tokens(&self, _: DeliveryUnit<'_>) -> Option<usize> {
         Some(self.0)
+    }
+
+    fn exact_planned_source_tokens(&self, _: &PlannedSourceRange) -> Option<usize> {
+        Some(self.0)
+    }
+}
+
+/// Exact for materialized units only: no planned-source preflight.
+struct MaterializedOnly(usize);
+
+impl ExactTokenCounter for MaterializedOnly {
+    fn exact_tokens(&self, _: DeliveryUnit<'_>) -> Option<usize> {
+        Some(self.0)
+    }
+}
+
+/// Plans a source at 5 tokens that materializes at 6.
+struct WrongPreflight;
+
+impl ExactTokenCounter for WrongPreflight {
+    fn exact_tokens(&self, unit: DeliveryUnit<'_>) -> Option<usize> {
+        match unit {
+            DeliveryUnit::Evidence(EvidenceItem::CurrentSource(_)) => Some(6),
+            _ => Some(1),
+        }
+    }
+
+    fn exact_planned_source_tokens(&self, _: &PlannedSourceRange) -> Option<usize> {
+        Some(5)
+    }
+}
+
+/// Plans a source at 1 token; a SourceUnavailable costs 10 000.
+struct CostlyCorrective;
+
+impl ExactTokenCounter for CostlyCorrective {
+    fn exact_tokens(&self, unit: DeliveryUnit<'_>) -> Option<usize> {
+        match unit {
+            DeliveryUnit::Evidence(EvidenceItem::SourceUnavailable { .. }) => Some(10_000),
+            _ => Some(1),
+        }
+    }
+
+    fn exact_planned_source_tokens(&self, _: &PlannedSourceRange) -> Option<usize> {
+        Some(1)
     }
 }
 
@@ -1299,5 +1345,185 @@ fn delivery_instrumentation_is_recorded() {
             after.optional_source_selected - before.optional_source_selected
                 <= after.optional_source_candidates - before.optional_source_candidates
         );
+    }
+}
+
+// ------------------------------------------- correction: token preflight
+
+/// Units ahead of the first optional source body on an unbounded page.
+fn units_before_sources(
+    planner: &ProjectionPlanner,
+    request: &ProjectionRequest,
+    projection: &PreparedProjection,
+) -> usize {
+    let everything = first(planner, request, projection, &items(10_000));
+    everything
+        .evidence
+        .iter()
+        .position(is_optional_source)
+        .expect("optional source exists")
+        + everything.gaps.len()
+}
+
+#[test]
+fn unknown_planned_source_tokens_are_never_read_to_find_out() {
+    let fixture = Fixture::standard("token-unknown");
+    let request = understand_shared(&fixture);
+    let planner = fixture.planner();
+    let projection = planner.plan(&request).expect("plan");
+    let facts = units_before_sources(&planner, &request, &projection);
+
+    let before = planner.stats();
+    let page = planner
+        .deliver(
+            &request,
+            &projection,
+            &budget(None, None, Some(7 * 10_000)),
+            None,
+            Some(&MaterializedOnly(7)),
+        )
+        .expect("page");
+    let after = planner.stats();
+    assert_eq!(page.used_items, facts, "every higher-priority fact fits");
+    assert_eq!(page.used_tokens, TokenUsage::Known(7 * facts));
+    assert!(after.optional_source_candidates - before.optional_source_candidates >= 4);
+    assert_eq!(
+        after.optional_source_selected,
+        before.optional_source_selected
+    );
+    assert_eq!(after.source_file_reads, before.source_file_reads, "no read");
+    assert_eq!(
+        after.source_bytes, before.source_bytes,
+        "nothing materialized"
+    );
+    assert!(page.more_available);
+    assert_eq!(page.continuation, None);
+    assert_eq!(
+        page.continuation_unavailable,
+        Some(ContinuationUnavailable::OptionalSourceTokenCostUnknown)
+    );
+    assert!(page.limiting.is_empty(), "no cap was proven exceeded");
+}
+
+#[test]
+fn exact_planned_source_tokens_select_and_read_only_what_fits() {
+    let fixture = Fixture::standard("token-exact");
+    let request = understand_shared(&fixture);
+    let planner = fixture.planner();
+    let projection = planner.plan(&request).expect("plan");
+    let facts = units_before_sources(&planner, &request, &projection);
+
+    // Room for every fact and two of the four call-site bodies.
+    let counter = FixedTokens(7);
+    let cap = 7 * (facts + 2);
+    let before = planner.stats();
+    let page = planner
+        .deliver(
+            &request,
+            &projection,
+            &budget(None, None, Some(cap)),
+            None,
+            Some(&counter),
+        )
+        .expect("page");
+    let after = planner.stats();
+    let delivered = page
+        .evidence
+        .iter()
+        .filter(|item| is_optional_source(item))
+        .count();
+    assert_eq!(delivered, 2);
+    assert_eq!(
+        after.optional_source_selected - before.optional_source_selected,
+        2,
+        "the excluded two are not selected"
+    );
+    let files: BTreeSet<ResourceId> = page
+        .evidence
+        .iter()
+        .filter_map(|item| match item {
+            EvidenceItem::CurrentSource(range) if range.role == RangeRole::EvidenceSpan => {
+                Some(range.resource)
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        after.source_file_reads - before.source_file_reads,
+        files.len() as u64,
+        "only the selected ranges' files are read"
+    );
+    assert_eq!(page.used_tokens, TokenUsage::Known(cap));
+    assert_eq!(page.limiting, BTreeSet::from([DeliveryDimension::Tokens]));
+    assert!(page.continuation.is_some());
+
+    // The whole chain stays under the cap and delivers every body.
+    let pages = chain(
+        &planner,
+        &request,
+        &projection,
+        &budget(None, None, Some(cap)),
+        Some(&counter),
+    );
+    for page in &pages {
+        assert!(matches!(page.used_tokens, TokenUsage::Known(used) if used <= cap));
+    }
+    assert_eq!(
+        flatten(&pages)
+            .iter()
+            .filter(|item| is_optional_source(item))
+            .count(),
+        4
+    );
+}
+
+#[test]
+fn a_planned_token_cost_that_does_not_materialize_is_an_error() {
+    let fixture = Fixture::standard("token-mismatch");
+    let request = understand_shared(&fixture);
+    let planner = fixture.planner();
+    let projection = planner.plan(&request).expect("plan");
+    assert!(matches!(
+        planner.deliver(
+            &request,
+            &projection,
+            &budget(None, None, Some(10_000)),
+            None,
+            Some(&WrongPreflight),
+        ),
+        Err(DeliveryError::TokenPreflightMismatch {
+            planned: 5,
+            materialized: Some(6)
+        })
+    ));
+}
+
+#[test]
+fn a_selected_source_whose_correction_never_fits_is_an_error() {
+    let fixture = Fixture::standard("corrective-never-fits");
+    let request = understand_shared(&fixture);
+    let planner = fixture.planner();
+    let projection = planner.plan(&request).expect("plan");
+    fs::write(
+        fixture.root.join("src/other.ts"),
+        OTHER_TS.replace("shared()", "shared( )"),
+    )
+    .expect("edit");
+    match planner.deliver(
+        &request,
+        &projection,
+        &budget(None, None, Some(1_000)),
+        None,
+        Some(&CostlyCorrective),
+    ) {
+        Err(DeliveryError::BudgetTooSmallForSelectedCorrectiveEvidence {
+            unit_tokens,
+            violated,
+            ..
+        }) => {
+            assert_eq!(unit_tokens, Some(10_000));
+            assert_eq!(violated, BTreeSet::from([DeliveryDimension::Tokens]));
+        }
+        other => panic!("{other:?}"),
     }
 }
