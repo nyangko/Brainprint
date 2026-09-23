@@ -25,7 +25,13 @@
 //! 7. Working State
 //! 8. corrective (conflict, source unavailable, coverage, currentness)
 
-use std::{cell::Cell, collections::BTreeSet, error::Error, fmt, path::Path};
+use std::{
+    cell::Cell,
+    collections::{BTreeMap, BTreeSet},
+    error::Error,
+    fmt,
+    path::Path,
+};
 
 use brainprint_core::{BlueprintApplicationId, ProjectId, ResourceId, WorkItemId, WorkspaceId};
 
@@ -35,6 +41,7 @@ use super::{
 };
 use crate::{
     coverage::{CoverageLimit, CoverageReport},
+    generation::{GenerationError, GenerationStore},
     graph::{self, GraphEndpoint},
     impact::{Budget, ImpactError, ImpactIntent},
     inspect::{ReadError, SourceReader},
@@ -105,6 +112,37 @@ pub struct PlannedSourceRange {
     pub requirement: SourceRequirement,
 }
 
+/// Which delivery tier an evidence item belongs to (#20 task 7 §7).
+/// Selection metadata only: never a fact, never persisted, never a score.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Relevance {
+    /// Target identity, selection, or its required source.
+    Target,
+    /// A relation found at the target itself.
+    DirectRelation,
+    /// A relation the I3 traversal found beyond the target.
+    TransitiveImpact,
+    /// Policy or a request directive.
+    ApplicableRule,
+    /// An exactly requested Decision / Preference / State / Blueprint.
+    RequestedKnowledge,
+    RelatedTest,
+    /// A relation gap: detail behind a coverage limit.
+    CoverageSupport,
+    WorkingState,
+    /// Conflict, source unavailable, coverage, currentness.
+    Corrective,
+}
+
+/// The planner's delivery sidecar for one evidence item, in the same
+/// position as the item. `impact_depth` is the I3 `ImpactEdge.depth`
+/// (0 = found at the root), kept because flattening loses it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeliveryHint {
+    pub relevance: Relevance,
+    pub impact_depth: Option<usize>,
+}
+
 /// One planned projection. Engine-internal; not a transport shape.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PreparedProjection {
@@ -118,6 +156,8 @@ pub struct PreparedProjection {
     pub gaps: Vec<ProjectionGap>,
     /// Required ranges (already read, merged) then optional candidates.
     pub source_plan: Vec<PlannedSourceRange>,
+    /// One hint per `evidence` item, same order.
+    pub delivery: Vec<DeliveryHint>,
 }
 
 /// What the planner actually did, counted as it happened. Observations,
@@ -132,6 +172,10 @@ pub struct PlannerStats {
     pub knowledge_resolves: u64,
     pub knowledge_items: u64,
     pub work_snapshots: u64,
+    /// Task 7: optional source ranges a page could have read, and the
+    /// ones its budget selected for reading.
+    pub optional_source_candidates: u64,
+    pub optional_source_selected: u64,
 }
 
 // ----------------------------------------------------------------- error
@@ -159,6 +203,7 @@ pub enum PlannerError {
     LogicalSymbol(LogicalSymbolError),
     Resolve(ResolveError),
     Prepare(PrepareError),
+    Generation(GenerationError),
 }
 
 impl fmt::Display for PlannerError {
@@ -183,6 +228,7 @@ impl fmt::Display for PlannerError {
             Self::LogicalSymbol(source) => write!(formatter, "{source}"),
             Self::Resolve(source) => write!(formatter, "{source}"),
             Self::Prepare(source) => write!(formatter, "{source}"),
+            Self::Generation(source) => write!(formatter, "{source}"),
         }
     }
 }
@@ -212,6 +258,7 @@ from_error!(
     LogicalSymbol(LogicalSymbolError),
     Resolve(ResolveError),
     Prepare(PrepareError),
+    Generation(GenerationError),
 );
 
 // --------------------------------------------------------------- planner
@@ -226,6 +273,7 @@ pub struct ProjectionPlanner {
     work: WorkRuntime,
     reader: SourceReader,
     tests: RelatedTests,
+    generations: GenerationStore,
     stats: Cell<PlannerStats>,
 }
 
@@ -259,6 +307,7 @@ impl ProjectionPlanner {
             work,
             reader: SourceReader::open(&paths.index_db, &entry.locator)?,
             tests: RelatedTests::open(&paths.index_db)?,
+            generations: GenerationStore::open(&paths.index_db)?,
             stats: Cell::new(PlannerStats::default()),
         })
     }
@@ -555,6 +604,13 @@ impl ProjectionPlanner {
             report: tests.coverage.limits(),
             confirmed: tests.candidates.len(),
         }));
+        for edge in &impact.edges {
+            let identity = describe(&EvidenceItem::Relation(edge.relation.clone())).3;
+            if let Some(identity) = identity {
+                let depth = plan.depths.entry(identity).or_insert(edge.depth);
+                *depth = (*depth).min(edge.depth);
+            }
+        }
         plan.relations(impact.edges.into_iter().map(|edge| edge.relation));
         plan.items.extend(
             impact
@@ -712,19 +768,22 @@ impl ProjectionPlanner {
 
     /// Read the required ranges only: exact duplicates dropped, overlaps
     /// in one Resource revision merged, one verified read per Resource.
-    /// A read that cannot be honest becomes `SourceUnavailable`.
     fn materialize(&self, plan: &mut Plan) -> Result<(), PlannerError> {
         let merged = merge(&plan.required);
-        let mut start = 0;
-        while start < merged.len() {
-            let (resource, revision) = (merged[start].resource, &merged[start].resource_revision);
-            let end = merged[start..]
-                .iter()
-                .position(|range| {
-                    range.resource != resource || &range.resource_revision != revision
-                })
-                .map_or(merged.len(), |offset| start + offset);
-            let group = &merged[start..end];
+        plan.items.extend(self.read(&merged)?);
+        plan.required = merged;
+        Ok(())
+    }
+
+    /// Read already merged ranges (sorted by Resource, revision, span):
+    /// one verified `read_ranges` per Resource revision, results in range
+    /// order. A read that cannot be honest becomes `SourceUnavailable`.
+    fn read(&self, merged: &[PlannedSourceRange]) -> Result<Vec<EvidenceItem>, PlannerError> {
+        let mut items = Vec::with_capacity(merged.len());
+        for group in merged
+            .chunk_by(|a, b| a.resource == b.resource && a.resource_revision == b.resource_revision)
+        {
+            let (resource, revision) = (group[0].resource, &group[0].resource_revision);
             let spans: Vec<SourceSpan> = group.iter().map(|range| range.span).collect();
             match self.reader.read_ranges(resource, revision, &spans) {
                 Ok(reads) => {
@@ -734,7 +793,7 @@ impl ProjectionPlanner {
                         stats.source_bytes += bytes as u64;
                     });
                     for (range, read) in group.iter().zip(reads) {
-                        plan.items.push(EvidenceItem::CurrentSource(PreparedRange {
+                        items.push(EvidenceItem::CurrentSource(PreparedRange {
                             resource: read.resource_id,
                             path_rel: read.path_rel,
                             resource_revision: read.resource_revision,
@@ -748,7 +807,7 @@ impl ProjectionPlanner {
                 Err(error) => {
                     let reason = unavailable_from(error)?;
                     for range in group {
-                        plan.items.push(EvidenceItem::SourceUnavailable {
+                        items.push(EvidenceItem::SourceUnavailable {
                             resource: range.resource,
                             span: range.span,
                             reason: reason.clone(),
@@ -756,10 +815,8 @@ impl ProjectionPlanner {
                     }
                 }
             }
-            start = end;
         }
-        plan.required = merged;
-        Ok(())
+        Ok(items)
     }
 }
 
@@ -776,6 +833,8 @@ struct Plan {
     items: Vec<EvidenceItem>,
     gaps: Vec<ProjectionGap>,
     required: Vec<PlannedSourceRange>,
+    /// Shallowest impact depth by relation identity.
+    depths: BTreeMap<Vec<u8>, usize>,
 }
 
 impl Plan {
@@ -908,14 +967,20 @@ impl Plan {
         let mut source_plan = self.required;
         source_plan.extend(optional);
 
+        let evidence = order(self.items);
+        let delivery = evidence
+            .iter()
+            .map(|item| hint(item, &self.depths))
+            .collect();
         PreparedProjection {
             workspace,
             project,
             intent,
             target,
-            evidence: order(self.items),
+            evidence,
             gaps: self.gaps,
             source_plan,
+            delivery,
         }
     }
 }
@@ -1106,6 +1171,28 @@ fn describe(item: &EvidenceItem) -> (u8, u8, Vec<u8>, Option<Vec<u8>>) {
     }
 }
 
+fn hint(item: &EvidenceItem, depths: &BTreeMap<Vec<u8>, usize>) -> DeliveryHint {
+    let (category, _, _, identity) = describe(item);
+    let impact_depth = identity.and_then(|identity| depths.get(&identity).copied());
+    let relevance = match (category, item) {
+        (5, EvidenceItem::Relation(_)) if impact_depth.unwrap_or(0) > 0 => {
+            Relevance::TransitiveImpact
+        }
+        (5, EvidenceItem::Relation(_)) => Relevance::DirectRelation,
+        (5, _) => Relevance::CoverageSupport,
+        (1 | 2, _) | (_, EvidenceItem::IndexCurrentness { .. }) => Relevance::Target,
+        (3, _) => Relevance::ApplicableRule,
+        (4, _) => Relevance::RequestedKnowledge,
+        (6, _) => Relevance::RelatedTest,
+        (7, _) => Relevance::WorkingState,
+        _ => Relevance::Corrective,
+    };
+    DeliveryHint {
+        relevance,
+        impact_depth,
+    }
+}
+
 /// (category, variant, sort key).
 type OrderKey = (u8, u8, Vec<u8>);
 
@@ -1126,6 +1213,14 @@ fn order(items: Vec<EvidenceItem>) -> Vec<EvidenceItem> {
     keyed.sort_by(|a, b| a.0.cmp(&b.0));
     keyed.into_iter().map(|(_, item)| item).collect()
 }
+
+mod delivery;
+
+pub use delivery::{
+    ContinuationMismatch, ContinuationUnavailable, DeliveryBudget, DeliveryContinuation,
+    DeliveryDimension, DeliveryError, DeliveryKey, DeliveryPage, DeliveryUnit, ExactTokenCounter,
+    TokenUsage,
+};
 
 #[cfg(test)]
 mod tests;

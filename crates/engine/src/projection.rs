@@ -570,11 +570,13 @@ impl EvidenceItem {
     }
 }
 
-mod planner;
+pub mod planner;
+
+mod canonical;
 
 pub use planner::{
-    PlannedSourceRange, PlannerError, PlannerStats, PreparedProjection, ProjectionGap,
-    ProjectionPlanner, SourceRequirement,
+    DeliveryHint, PlannedSourceRange, PlannerError, PlannerStats, PreparedProjection,
+    ProjectionGap, ProjectionPlanner, Relevance, SourceRequirement,
 };
 
 #[cfg(test)]

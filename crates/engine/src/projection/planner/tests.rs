@@ -1917,3 +1917,5 @@ fn planner_instrumentation_is_recorded() {
     }
     assert_eq!(planner.stats().plans, 5);
 }
+
+mod delivery;
