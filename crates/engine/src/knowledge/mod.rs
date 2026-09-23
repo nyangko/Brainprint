@@ -19,12 +19,13 @@
 //! exact scope/status/key/topic, explicit status transitions, explicit
 //! lineage, current-state upsert. Precedence/applicability is the read-only
 //! resolver in [`resolve()`] (task 2). The WorkItem lifecycle is
-//! [`WorkRuntime`] (task 3). Not provided: promotion (task 4),
-//! search/ranking of any kind.
+//! [`WorkRuntime`] (task 3). WorkNote → project truth promotion is
+//! [`PromotionRuntime`] (task 4). Not provided: search/ranking of any kind.
 
 mod global;
 mod model;
 mod project;
+mod promotion;
 mod resolve;
 mod work;
 mod workspace;
@@ -33,13 +34,18 @@ use std::{error::Error, fmt, path::PathBuf};
 
 use brainprint_core::{
     BlueprintApplicationId, BlueprintId, DecisionId, IndexIncarnationId, PolicyId, ProjectId,
-    ProjectStateId, ResourceId, UserPreferenceId, WorkItemId, WorkNoteId, WorkspaceId,
+    ProjectStateId, PromotionId, ResourceId, UserPreferenceId, WorkItemId, WorkNoteId, WorkspaceId,
 };
 use rusqlite::{Connection, OptionalExtension, Params, Row, params};
 
 pub use global::GlobalKnowledgeStore;
 pub use model::*;
 pub use project::ProjectKnowledgeStore;
+pub use promotion::{
+    DecisionLineageAction, DecisionTarget, PolicyTarget, ProjectStateTarget, PromotionBasis,
+    PromotionError, PromotionEvidence, PromotionLineage, PromotionOutcome, PromotionReceipt,
+    PromotionRequest, PromotionResult, PromotionRuntime, PromotionTarget,
+};
 pub use resolve::{
     ApplicabilityContext, BlueprintDefinitionState, BlueprintEvidence, ConflictKind,
     DirectiveTarget, EvidenceCategory, EvidenceRef, KnowledgeConflict, KnowledgeSources, Origin,
@@ -212,7 +218,8 @@ impl_uid!(
     ResourceId,
     ProjectId,
     WorkspaceId,
-    IndexIncarnationId
+    IndexIncarnationId,
+    PromotionId
 );
 
 pub(crate) fn blob<T: Uid>(id: T) -> Vec<u8> {
@@ -374,6 +381,23 @@ fn link_and_retire<T: Uid>(
     link_kind: &str,
     retire_to: Option<&str>,
 ) -> Result<(), KnowledgeError> {
+    let transaction = connection.unchecked_transaction()?;
+    link_and_retire_in(&transaction, table, from, to, link_kind, retire_to)?;
+    transaction.commit()?;
+    Ok(())
+}
+
+/// [`link_and_retire`]'s checks and writes without a transaction of its
+/// own, for a caller already holding one on `connection` (task 4
+/// promotion, whose receipt must commit together with the lineage).
+pub(crate) fn link_and_retire_in<T: Uid>(
+    transaction: &Connection,
+    table: &LinkTable,
+    from: T,
+    to: T,
+    link_kind: &str,
+    retire_to: Option<&str>,
+) -> Result<(), KnowledgeError> {
     let invalid = |reason: String| KnowledgeError::InvalidTransition {
         what: table.item,
         reason,
@@ -381,9 +405,8 @@ fn link_and_retire<T: Uid>(
     if from.uid_bytes() == to.uid_bytes() {
         return Err(invalid(format!("{from} cannot {link_kind} itself")));
     }
-    let transaction = connection.unchecked_transaction()?;
     let lookup = |uid: T| -> Result<(i64, String), KnowledgeError> {
-        row_id_and_status(&transaction, table.item, &blob(uid))?.ok_or(KnowledgeError::NotFound {
+        row_id_and_status(transaction, table.item, &blob(uid))?.ok_or(KnowledgeError::NotFound {
             what: table.item,
             uid: uid.to_string(),
         })
@@ -411,7 +434,6 @@ fn link_and_retire<T: Uid>(
             params![status, db::now_millis_text(), to_id],
         )?;
     }
-    transaction.commit()?;
     Ok(())
 }
 
@@ -779,6 +801,19 @@ fn get_state(
              WHERE scope_kind = ?1 AND ifnull(scope_key, '') = ?2 AND state_key = ?3"
         ),
         params![scope.kind().as_str(), scope.key().unwrap_or_default(), key],
+        decode_state,
+    )
+}
+
+fn get_state_by_uid(
+    connection: &Connection,
+    table: &str,
+    uid: ProjectStateId,
+) -> Result<Option<ProjectState>, KnowledgeError> {
+    query_one(
+        connection,
+        &format!("SELECT {STATE_COLUMNS} FROM {table} WHERE uid = ?1"),
+        params![blob(uid)],
         decode_state,
     )
 }

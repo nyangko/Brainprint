@@ -802,6 +802,47 @@ impl WorkspaceKnowledgeStore {
         self.require_work_note(uid)
     }
 
+    /// Task 4's PROMOTED writer, separate from [`Self::set_work_note_status`]
+    /// on purpose: OPEN → PROMOTED(target) in one compare-and-set, and a
+    /// note already PROMOTED to the same target is an idempotent success.
+    /// Any other state -- RESOLVED, DISCARDED, PROMOTED elsewhere -- is
+    /// refused and never rewritten.
+    pub(crate) fn mark_work_note_promoted(
+        &self,
+        uid: WorkNoteId,
+        target: PromotedItem,
+    ) -> Result<WorkNote, KnowledgeError> {
+        let (kind, target_uid) = match target {
+            PromotedItem::Policy(id) => (PromotedItemKind::Policy, blob(id)),
+            PromotedItem::Decision(id) => (PromotedItemKind::Decision, blob(id)),
+            PromotedItem::ProjectState(id) => (PromotedItemKind::ProjectState, blob(id)),
+        };
+        self.connection.execute(
+            "UPDATE work_note SET status = ?1, promoted_item_kind = ?2, promoted_item_uid = ?3, \
+               updated_at = ?4 WHERE uid = ?5 AND status = ?6",
+            params![
+                WorkNoteStatus::Promoted.as_str(),
+                kind.as_str(),
+                target_uid,
+                db::now_millis_text(),
+                blob(uid),
+                WorkNoteStatus::Open.as_str(),
+            ],
+        )?;
+        let note = self.require_work_note(uid)?;
+        if note.promoted_item != Some(target) {
+            return Err(KnowledgeError::InvalidTransition {
+                what: "work_note",
+                reason: format!(
+                    "{} (target {:?}) -> PROMOTED {target:?}",
+                    note.status.as_str(),
+                    note.promoted_item
+                ),
+            });
+        }
+        Ok(note)
+    }
+
     fn require_work_note(&self, uid: WorkNoteId) -> Result<WorkNote, KnowledgeError> {
         self.get_work_note(uid)?.ok_or(KnowledgeError::NotFound {
             what: "work_note",

@@ -1616,7 +1616,7 @@ fn migrations_are_idempotent_on_reopen() {
     let dir = TestDir::create("idempotent");
     for (name, kind, expected) in [
         ("global.db", DbKind::Global, 4u32),
-        ("project.db", DbKind::Project, 3),
+        ("project.db", DbKind::Project, 4),
         ("workspace.db", DbKind::Workspace, 5),
     ] {
         let path = dir.db(name);
@@ -1685,6 +1685,7 @@ fn no_generic_knowledge_store_exists() {
             "db_meta",
             "decision",
             "decision_link",
+            "knowledge_promotion",
             "policy",
             "policy_link",
             "project_state",

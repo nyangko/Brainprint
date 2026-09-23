@@ -3,8 +3,10 @@
 
 use std::path::Path;
 
-use brainprint_core::{BlueprintApplicationId, BlueprintId, DecisionId, PolicyId, ProjectId};
-use rusqlite::{Connection, Row, params};
+use brainprint_core::{
+    BlueprintApplicationId, BlueprintId, DecisionId, PolicyId, ProjectId, ProjectStateId,
+};
+use rusqlite::{Connection, Row, Transaction, params};
 
 use super::{
     Blueprint, BlueprintApplication, BlueprintApplicationStatus, BlueprintOwnerKind, BlueprintRef,
@@ -107,6 +109,16 @@ impl ProjectKnowledgeStore {
             });
         }
         Ok(store)
+    }
+
+    /// A project.db transaction several primitives run in; every
+    /// primitive uses this same connection (task 4 promotion).
+    pub(crate) fn begin(&self) -> Result<Transaction<'_>, KnowledgeError> {
+        Ok(self.connection.unchecked_transaction()?)
+    }
+
+    pub(crate) const fn connection(&self) -> &Connection {
+        &self.connection
     }
 
     // ---- Policy ----
@@ -406,6 +418,14 @@ impl ProjectKnowledgeStore {
         scope: &KnowledgeScope,
     ) -> Result<Option<ProjectState>, KnowledgeError> {
         super::get_state(&self.connection, "project_state", key, scope)
+    }
+
+    /// By stable id, e.g. a promotion receipt's target.
+    pub fn get_project_state_by_uid(
+        &self,
+        uid: ProjectStateId,
+    ) -> Result<Option<ProjectState>, KnowledgeError> {
+        super::get_state_by_uid(&self.connection, "project_state", uid)
     }
 
     pub fn upsert_project_state(

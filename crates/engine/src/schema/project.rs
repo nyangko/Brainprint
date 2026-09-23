@@ -19,6 +19,10 @@
 //! one. `project_state.uid` gives each entry the stable identity a
 //! `work_note` promotion target references across DBs (#20 D4).
 //!
+//! v4 (#20 task 4) adds `knowledge_promotion`, the one-row-per-promoted-
+//! WorkNote receipt that makes the workspace.db → project.db promotion
+//! retryable without a cross-DB transaction.
+//!
 //! `knowledge_search_fts` is explicitly optional/derived per #13 task 6 §17
 //! and is not created.
 
@@ -156,6 +160,57 @@ pub const PROJECT_MIGRATIONS: &[Migration] = &[
             ON project_state (scope_kind, ifnull(scope_key, ''), state_key);
     ",
     },
+    Migration {
+        version: 4,
+        name: "add_knowledge_promotion_receipt",
+        // #20 task 4 / #13 I5 task 4 amendment. One row per promoted
+        // WorkNote: the crash-safe idempotency key of the two-DB promotion
+        // protocol and its provenance link. `target_uid` names a policy,
+        // decision, or project_state row by stable ID; there is no generic
+        // FK across three tables. The CHECKs restate the P0 category and
+        // authority gates so a hand-written row cannot contradict them.
+        sql: "
+        CREATE TABLE knowledge_promotion (
+            id INTEGER PRIMARY KEY,
+            uid BLOB NOT NULL UNIQUE CHECK (typeof(uid) = 'blob' AND length(uid) = 16),
+            workspace_uid BLOB NOT NULL
+                CHECK (typeof(workspace_uid) = 'blob' AND length(workspace_uid) = 16),
+            work_note_uid BLOB NOT NULL
+                CHECK (typeof(work_note_uid) = 'blob' AND length(work_note_uid) = 16),
+            work_note_kind TEXT NOT NULL,
+            work_note_source_kind TEXT NOT NULL,
+            work_note_fingerprint TEXT NOT NULL,
+            target_kind TEXT NOT NULL,
+            target_uid BLOB NOT NULL
+                CHECK (typeof(target_uid) = 'blob' AND length(target_uid) = 16),
+            request_fingerprint TEXT NOT NULL,
+            promotion_basis TEXT NOT NULL,
+            authority_source_kind TEXT NOT NULL,
+            authority_source_locator TEXT,
+            authority_source_revision TEXT,
+            lineage_kind TEXT,
+            lineage_target_uid BLOB
+                CHECK (lineage_target_uid IS NULL
+                       OR (typeof(lineage_target_uid) = 'blob' AND length(lineage_target_uid) = 16)),
+            created_at TEXT NOT NULL,
+            UNIQUE (workspace_uid, work_note_uid),
+            CHECK ((work_note_kind = 'PROPOSAL' AND target_kind IN ('POLICY', 'DECISION'))
+                   OR (work_note_kind = 'OBSERVATION' AND target_kind = 'PROJECT_STATE')),
+            CHECK ((promotion_basis = 'USER_EXPLICIT'
+                        AND authority_source_kind = 'USER_EXPLICIT')
+                   OR (promotion_basis = 'AUTHORITATIVE_ARTIFACT'
+                        AND authority_source_kind = 'AUTHORITATIVE_ARTIFACT')
+                   OR (promotion_basis = 'VALIDATED_PROJECT_OBSERVATION'
+                        AND authority_source_kind = 'OBSERVED'
+                        AND target_kind = 'PROJECT_STATE')),
+            CHECK ((lineage_kind IS NULL) = (lineage_target_uid IS NULL)),
+            CHECK (lineage_kind IS NULL
+                   OR (lineage_kind = 'POLICY_SUPERSEDES' AND target_kind = 'POLICY')
+                   OR (lineage_kind IN ('DECISION_SUPERSEDES', 'DECISION_REVERSES')
+                       AND target_kind = 'DECISION'))
+        );
+    ",
+    },
 ];
 
 /// Open (creating and migrating if needed) a `project.db` at `path`.
@@ -220,7 +275,7 @@ mod tests {
     fn fresh_project_db_migrates_successfully() {
         let dir = TestDir::create("fresh");
         let opened = open(&dir.db_path()).expect("fresh project.db should migrate");
-        assert_eq!(opened.schema_version, 3);
+        assert_eq!(opened.schema_version, 4);
     }
 
     #[test]
@@ -335,7 +390,7 @@ mod tests {
         }
 
         let reopened = open(&dir.db_path()).expect("reopen should be a no-op migration-wise");
-        assert_eq!(reopened.schema_version, 3);
+        assert_eq!(reopened.schema_version, 4);
 
         let ledger_count: u32 = reopened
             .connection
@@ -343,7 +398,7 @@ mod tests {
                 row.get(0)
             })
             .expect("ledger should be queryable");
-        assert_eq!(ledger_count, 3, "migration must not reapply on reopen");
+        assert_eq!(ledger_count, 4, "migration must not reapply on reopen");
 
         let title: String = reopened
             .connection
