@@ -25,60 +25,10 @@ use std::{
 use brainprint_core::{ProjectId, WorkspaceId};
 use rusqlite::{Connection, OptionalExtension, params};
 
-use crate::db::{self, DbKind, DbOpenError, Migration};
-
-const GLOBAL_MIGRATIONS: &[Migration] = &[
-    Migration {
-        version: 1,
-        name: "create_project_workspace_registry",
-        sql: "
-            CREATE TABLE project_registry (
-                id INTEGER PRIMARY KEY,
-                project_uid BLOB NOT NULL UNIQUE,
-                home_locator TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            );
-            CREATE INDEX idx_project_registry_locator ON project_registry (home_locator);
-
-            CREATE TABLE workspace_registry (
-                id INTEGER PRIMARY KEY,
-                workspace_uid BLOB NOT NULL UNIQUE,
-                project_uid BLOB NOT NULL REFERENCES project_registry (project_uid),
-                locator TEXT NOT NULL,
-                is_project_home INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            );
-            CREATE INDEX idx_workspace_registry_project ON workspace_registry (project_uid);
-            CREATE INDEX idx_workspace_registry_locator ON workspace_registry (locator);
-        ",
-    },
-    Migration {
-        version: 2,
-        name: "create_project_git_lineage",
-        sql: "
-            CREATE TABLE project_git_lineage (
-                id INTEGER PRIMARY KEY,
-                git_common_dir TEXT NOT NULL UNIQUE,
-                project_uid BLOB NOT NULL REFERENCES project_registry (project_uid),
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            );
-            CREATE INDEX idx_project_git_lineage_project ON project_git_lineage (project_uid);
-        ",
-    },
-    Migration {
-        version: 3,
-        name: "add_registry_active_missing_last_seen",
-        sql: "
-            ALTER TABLE project_registry ADD COLUMN state TEXT NOT NULL DEFAULT 'ACTIVE';
-            ALTER TABLE project_registry ADD COLUMN last_seen_at TEXT;
-            ALTER TABLE workspace_registry ADD COLUMN state TEXT NOT NULL DEFAULT 'ACTIVE';
-            ALTER TABLE workspace_registry ADD COLUMN last_seen_at TEXT;
-        ",
-    },
-];
+use crate::{
+    db::{self, DbOpenError},
+    schema,
+};
 
 /// Whether the registry believes this identity's locator is currently
 /// reachable/valid (#13 task 6 §2, #15 task 11). I1 has no background
@@ -285,7 +235,7 @@ pub struct GlobalRegistry {
 impl GlobalRegistry {
     /// Open (creating and migrating if needed) the registry at `path`.
     pub fn open(path: &Path) -> Result<Self, RegistryError> {
-        let opened = db::open(path, DbKind::Global, GLOBAL_MIGRATIONS)?;
+        let opened = schema::global::open(path)?;
         Ok(Self {
             connection: opened.connection,
         })

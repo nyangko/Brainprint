@@ -10,6 +10,7 @@
 //! tasks (6-11); building typed accessors for empty tables now would be
 //! scope creep ahead of the logic that would actually use them.
 
+pub mod global;
 pub mod index;
 pub mod project;
 pub mod workspace;

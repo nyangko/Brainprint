@@ -5,10 +5,22 @@
 //! `db_meta`/`schema_migration` are provided by the shared runner
 //! ([`crate::db`]) and are not redefined here.
 //!
-//! `blueprint_application.blueprint_uid` references a global Blueprint by
-//! stable ID value only (no cross-DB FK; global Blueprint content is never
-//! duplicated into project.db). `knowledge_search_fts` is explicitly
-//! optional/derived per #13 task 6 §17 and is not created in I1.
+//! `blueprint_application.blueprint_uid` references a Blueprint by stable
+//! ID value only; `blueprint_owner_kind` (v3, #20 D2) says which store owns
+//! the definition -- GLOBAL (global.db, never duplicated here, no cross-DB
+//! FK) or PROJECT (this file's own `blueprint`). Pre-v3 rows were written
+//! under the global-reference-only contract and migrate as GLOBAL.
+//!
+//! v3 also adds `policy_link` (#20 D3) and fixes `project_state`'s
+//! canonical identity: `UNIQUE (state_key, scope_kind, scope_key)` treats
+//! two NULL `scope_key`s as distinct, so a unique expression index over
+//! `ifnull(scope_key, '')` enforces one row per key and scope. Typed
+//! scopes never carry an empty key, so `''` cannot collide with a real
+//! one. `project_state.uid` gives each entry the stable identity a
+//! `work_note` promotion target references across DBs (#20 D4).
+//!
+//! `knowledge_search_fts` is explicitly optional/derived per #13 task 6 §17
+//! and is not created.
 
 use std::path::Path;
 
@@ -99,6 +111,51 @@ pub const PROJECT_MIGRATIONS: &[Migration] = &[
         name: "add_project_identity_binding",
         sql: "ALTER TABLE db_meta ADD COLUMN project_uid BLOB;",
     },
+    Migration {
+        version: 3,
+        name: "add_project_intelligence_lineage_blueprint_state_identity",
+        sql: "
+        CREATE TABLE policy_link (
+            policy_id INTEGER NOT NULL REFERENCES policy (id),
+            related_policy_id INTEGER NOT NULL REFERENCES policy (id),
+            link_kind TEXT NOT NULL,
+            PRIMARY KEY (policy_id, related_policy_id, link_kind)
+        );
+        CREATE INDEX idx_policy_link_related ON policy_link (related_policy_id);
+        CREATE INDEX idx_decision_link_related ON decision_link (related_decision_id);
+
+        CREATE TABLE blueprint (
+            id INTEGER PRIMARY KEY,
+            uid BLOB NOT NULL UNIQUE,
+            scope_kind TEXT NOT NULL,
+            scope_key TEXT,
+            blueprint_key TEXT,
+            title TEXT NOT NULL,
+            intent TEXT NOT NULL,
+            definition_json TEXT NOT NULL,
+            status TEXT NOT NULL,
+            version TEXT,
+            source_kind TEXT NOT NULL,
+            source_locator TEXT,
+            source_revision TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX idx_blueprint_scope_status ON blueprint (scope_kind, scope_key, status);
+
+        ALTER TABLE blueprint_application
+            ADD COLUMN blueprint_owner_kind TEXT NOT NULL DEFAULT 'GLOBAL';
+        ALTER TABLE blueprint_application ADD COLUMN source_revision TEXT;
+        CREATE INDEX idx_blueprint_application_scope_status
+            ON blueprint_application (scope_kind, scope_key, status);
+
+        ALTER TABLE project_state ADD COLUMN uid BLOB;
+        UPDATE project_state SET uid = randomblob(16) WHERE uid IS NULL;
+        CREATE UNIQUE INDEX idx_project_state_uid ON project_state (uid);
+        CREATE UNIQUE INDEX idx_project_state_identity
+            ON project_state (scope_kind, ifnull(scope_key, ''), state_key);
+    ",
+    },
 ];
 
 /// Open (creating and migrating if needed) a `project.db` at `path`.
@@ -163,7 +220,7 @@ mod tests {
     fn fresh_project_db_migrates_successfully() {
         let dir = TestDir::create("fresh");
         let opened = open(&dir.db_path()).expect("fresh project.db should migrate");
-        assert_eq!(opened.schema_version, 2);
+        assert_eq!(opened.schema_version, 3);
     }
 
     #[test]
@@ -278,7 +335,7 @@ mod tests {
         }
 
         let reopened = open(&dir.db_path()).expect("reopen should be a no-op migration-wise");
-        assert_eq!(reopened.schema_version, 2);
+        assert_eq!(reopened.schema_version, 3);
 
         let ledger_count: u32 = reopened
             .connection
@@ -286,7 +343,7 @@ mod tests {
                 row.get(0)
             })
             .expect("ledger should be queryable");
-        assert_eq!(ledger_count, 2, "migration must not reapply on reopen");
+        assert_eq!(ledger_count, 3, "migration must not reapply on reopen");
 
         let title: String = reopened
             .connection

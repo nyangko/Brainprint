@@ -104,6 +104,33 @@ define_stable_id!(
      way. It groups existing `SymbolId` declarations; it never replaces them."
 );
 
+define_stable_id!(
+    PolicyId,
+    "Stable identity for one project Policy or global user Policy."
+);
+define_stable_id!(DecisionId, "Stable identity for one project Decision.");
+define_stable_id!(
+    BlueprintId,
+    "Stable identity for one Blueprint definition, global or project-local."
+);
+define_stable_id!(
+    BlueprintApplicationId,
+    "Stable identity for one Blueprint application inside a Project."
+);
+define_stable_id!(
+    ProjectStateId,
+    "Stable identity for one project- or workspace-scoped Project State entry."
+);
+define_stable_id!(
+    UserPreferenceId,
+    "Stable identity for one global user Preference."
+);
+define_stable_id!(WorkItemId, "Stable identity for one Workspace WorkItem.");
+define_stable_id!(
+    WorkNoteId,
+    "Stable identity for one WorkItem-owned observation, proposal, or open question."
+);
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -10,6 +10,13 @@
 //! not exist yet (or may be rebuilt) independently of workspace.db's
 //! lifecycle (#13 task 6 §18-19). `workspace_search_fts` is
 //! optional/derived and not created in I1.
+//!
+//! v3 (#20 D4/D5) adds `work_note` (task-local observation / proposal /
+//! open question; `promoted_item_uid` is a value reference into project.db,
+//! never a FK) and `workspace_project_state` (workspace-local Project
+//! State, same typed-value semantics and null-safe identity index as
+//! project.db `project_state`). Policy/Decision payload is never stored
+//! here.
 
 use std::path::Path;
 
@@ -97,6 +104,47 @@ pub const WORKSPACE_MIGRATIONS: &[Migration] = &[
         name: "add_workspace_identity_binding",
         sql: "ALTER TABLE db_meta ADD COLUMN project_uid BLOB; \
               ALTER TABLE db_meta ADD COLUMN workspace_uid BLOB;",
+    },
+    Migration {
+        version: 3,
+        name: "add_work_note_and_workspace_project_state",
+        sql: "
+        CREATE TABLE work_note (
+            id INTEGER PRIMARY KEY,
+            uid BLOB NOT NULL UNIQUE,
+            work_item_id INTEGER NOT NULL REFERENCES work_item (id),
+            kind TEXT NOT NULL,
+            note_text TEXT NOT NULL,
+            status TEXT NOT NULL,
+            source_kind TEXT NOT NULL,
+            source_ref TEXT,
+            source_revision TEXT,
+            promoted_item_kind TEXT,
+            promoted_item_uid BLOB,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            CHECK ((promoted_item_kind IS NULL) = (promoted_item_uid IS NULL)),
+            CHECK ((status = 'PROMOTED') = (promoted_item_uid IS NOT NULL))
+        );
+        CREATE INDEX idx_work_note_item_kind_status ON work_note (work_item_id, kind, status);
+
+        CREATE TABLE workspace_project_state (
+            id INTEGER PRIMARY KEY,
+            uid BLOB NOT NULL UNIQUE,
+            state_key TEXT NOT NULL,
+            scope_kind TEXT NOT NULL,
+            scope_key TEXT,
+            value_type TEXT NOT NULL,
+            value_json TEXT NOT NULL,
+            status TEXT NOT NULL,
+            source_kind TEXT NOT NULL,
+            source_locator TEXT,
+            observed_revision TEXT,
+            updated_at TEXT NOT NULL
+        );
+        CREATE UNIQUE INDEX idx_workspace_project_state_identity
+            ON workspace_project_state (scope_kind, ifnull(scope_key, ''), state_key);
+    ",
     },
 ];
 

@@ -21,6 +21,7 @@ pub mod impact;
 pub mod imports;
 pub mod init;
 pub mod inspect;
+pub mod knowledge;
 pub mod logical_symbol;
 pub mod lsp;
 pub mod merge;
