@@ -13,8 +13,8 @@
 use std::{collections::BTreeSet, fmt};
 
 use brainprint_core::{
-    BlueprintApplicationId, BlueprintId, DecisionId, PolicyId, ProjectStateId, ResourceId,
-    UserPreferenceId, WorkItemId, WorkNoteId, WorkspaceId,
+    BlueprintApplicationId, BlueprintId, DecisionId, IndexIncarnationId, PolicyId, ProjectStateId,
+    ResourceId, UserPreferenceId, WorkItemId, WorkNoteId, WorkspaceId,
 };
 use serde::{Deserialize, Serialize};
 
@@ -797,6 +797,10 @@ impl DirtyObservation {
 pub struct WorkingState {
     pub work_item: WorkItemId,
     pub baseline_workspace_revision: String,
+    /// The index.db incarnation the baseline generation was observed in.
+    /// Every lifecycle baseline has one; `None` only on pre-correction
+    /// rows, whose reference is therefore unverifiable (historical).
+    pub baseline_index_incarnation: Option<IndexIncarnationId>,
     /// Value reference into index.db; no FK (#13 task 7 §21).
     pub baseline_generation_no: i64,
     pub baseline_head: Option<String>,
@@ -864,6 +868,9 @@ pub struct WorkResult {
     pub change_set_fingerprint: Option<String>,
     pub verification_summary: Option<String>,
     pub result_workspace_revision: String,
+    /// Set together with `result_generation_no` on every new result;
+    /// a legacy row may hold a number without one (historical).
+    pub result_index_incarnation: Option<IndexIncarnationId>,
     pub result_generation_no: Option<i64>,
     /// Dirty state observed when the result was recorded.
     pub remaining_dirty: DirtyObservation,

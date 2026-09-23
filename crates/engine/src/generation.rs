@@ -26,6 +26,7 @@
 
 use std::{error::Error, fmt, path::Path};
 
+use brainprint_core::IndexIncarnationId;
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::{
@@ -117,6 +118,11 @@ pub enum GenerationError {
         generation_id: i64,
         state: GenerationState,
     },
+    /// `db_meta.index_incarnation_uid` is NULL or not a 16-byte BLOB. The
+    /// v10 migration writes it; an ordinary read never invents one.
+    InvalidIndexIncarnation {
+        reason: String,
+    },
 }
 
 impl fmt::Display for GenerationError {
@@ -157,6 +163,9 @@ impl fmt::Display for GenerationError {
                 "workspace_clock's stable_generation_id points at generation \
                  {generation_id}, which is {state}, not STABLE"
             ),
+            Self::InvalidIndexIncarnation { reason } => {
+                write!(formatter, "invalid index incarnation: {reason}")
+            }
         }
     }
 }
@@ -171,7 +180,8 @@ impl Error for GenerationError {
             | Self::NotBuilding { .. }
             | Self::ObsoleteBasisRevision { .. }
             | Self::UnknownGenerationState { .. }
-            | Self::StableInvariantViolated { .. } => None,
+            | Self::StableInvariantViolated { .. }
+            | Self::InvalidIndexIncarnation { .. } => None,
         }
     }
 }
@@ -281,6 +291,25 @@ impl GenerationStore {
             [],
             |row| row.get(0),
         )?)
+    }
+
+    /// This physical index.db's incarnation (#20 task 3 correction): the
+    /// same across reopen, different for a newly created or rebuilt file.
+    pub fn index_incarnation_id(&self) -> Result<IndexIncarnationId, GenerationError> {
+        let stored: rusqlite::types::Value = self.connection.query_row(
+            "SELECT index_incarnation_uid FROM db_meta WHERE id = 0",
+            [],
+            |row| row.get(0),
+        )?;
+        let invalid = |reason: String| GenerationError::InvalidIndexIncarnation { reason };
+        match stored {
+            rusqlite::types::Value::Blob(bytes) => bytes
+                .try_into()
+                .map(IndexIncarnationId::from_bytes)
+                .map_err(|bytes: Vec<u8>| invalid(format!("{} bytes, expected 16", bytes.len()))),
+            rusqlite::types::Value::Null => Err(invalid("not initialized".to_owned())),
+            other => Err(invalid(format!("not a BLOB: {:?}", other.data_type()))),
+        }
     }
 
     /// Explicitly abort a `BUILDING` generation. Rejects anything not

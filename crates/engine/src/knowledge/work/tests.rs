@@ -8,13 +8,13 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use brainprint_core::{ResourceId, WorkItemId, WorkspaceId};
+use brainprint_core::{IndexIncarnationId, ResourceId, WorkItemId, WorkspaceId};
 use rusqlite::{Connection, params};
 
 use super::*;
 use crate::{
     db::{self, DbKind},
-    generation::GenerationStore,
+    generation::{GenerationError, GenerationStore},
     init::init_workspace,
     knowledge::{
         DirtyState, KnowledgeScope, NewPolicy, NewWorkItem, PriorityClass, ProjectKnowledgeStore,
@@ -83,6 +83,10 @@ impl Fixture {
 
     fn index(&self) -> GenerationStore {
         GenerationStore::open(&self.paths.index_db).expect("index.db")
+    }
+
+    fn incarnation(&self) -> IndexIncarnationId {
+        self.index().index_incarnation_id().expect("incarnation")
     }
 
     /// Move the Workspace clock to `revision` (bootstrapping it if needed).
@@ -332,6 +336,7 @@ fn first_activation_stores_the_exact_observed_baseline() {
     assert_eq!(
         snapshot.baseline_generation,
         Some(GenerationReference {
+            index_incarnation: Some(fixture.incarnation()),
             generation_no: generation,
             workspace_revision: "B".to_owned(),
             state: GenerationReferenceState::PresentMatching,
@@ -580,7 +585,7 @@ fn legacy_rows_migrate_to_conservative_dirty_states() {
             .expect("result");
     }
 
-    let store = WorkspaceKnowledgeStore::open(&path).expect("migrates to v4");
+    let store = WorkspaceKnowledgeStore::open(&path).expect("migrates to current");
     let state = |uid| store.get_working_state(uid).expect("get").expect("state");
     assert_eq!(state(fingerprinted).baseline_dirty, dirty("legacy-fp"));
     assert_eq!(
@@ -605,7 +610,7 @@ fn legacy_rows_migrate_to_conservative_dirty_states() {
             |row| row.get(0),
         )
         .expect("version");
-    assert_eq!(version, 4);
+    assert_eq!(version, 5);
 }
 
 // =============================== pre-existing dirty (cases 18-20)
@@ -1276,7 +1281,9 @@ fn generation_references_detect_missing_and_reused_numbers() {
         )
         .expect("partial");
     let before = runtime.snapshot(uid, None).expect("snapshot");
+    let old_incarnation = fixture.incarnation();
     let present = GenerationReference {
+        index_incarnation: Some(old_incarnation),
         generation_no: 1,
         workspace_revision: "A".to_owned(),
         state: GenerationReferenceState::PresentMatching,
@@ -1289,6 +1296,7 @@ fn generation_references_detect_missing_and_reused_numbers() {
     fixture.rebuild_index();
     let runtime = fixture.runtime();
     let historical = GenerationReference {
+        index_incarnation: Some(old_incarnation),
         generation_no: 1,
         workspace_revision: "A".to_owned(),
         state: GenerationReferenceState::HistoricalMissingOrReused,
@@ -1319,7 +1327,9 @@ fn generation_references_detect_missing_and_reused_numbers() {
         "never rebound to the new generation 1"
     );
 
-    // A BUILDING row with the stored number+basis is not a match either.
+    // A BUILDING row with the stored incarnation, number and basis is not
+    // a match either: the index below is given the *old* incarnation on
+    // purpose so that only the BUILDING state differs.
     let rebuilt = TestDir::create("reuse-building");
     let building_index = rebuilt.path().join("index.db");
     {
@@ -1329,8 +1339,11 @@ fn generation_references_detect_missing_and_reused_numbers() {
         Connection::open(&building_index)
             .expect("raw")
             .execute(
-                "UPDATE db_meta SET workspace_uid = ?1 WHERE id = 0",
-                params![fixture.id.to_bytes().to_vec()],
+                "UPDATE db_meta SET workspace_uid = ?1, index_incarnation_uid = ?2 WHERE id = 0",
+                params![
+                    fixture.id.to_bytes().to_vec(),
+                    old_incarnation.to_bytes().to_vec()
+                ],
             )
             .expect("bind for the test");
     }
@@ -1366,6 +1379,7 @@ fn a_result_while_indexing_catches_up_records_no_generation() {
     let stored = done.result.expect("result");
     assert_eq!(stored.result_workspace_revision, "B");
     assert_eq!(stored.result_generation_no, None);
+    assert_eq!(stored.result_index_incarnation, None);
     assert_eq!(done.result_generation, None);
 }
 
@@ -1387,6 +1401,370 @@ fn snapshot_resources_are_bounded_not_truncated() {
             what: "Work Resources"
         })
     ));
+}
+
+// ======================== index incarnation (task 3 correction)
+
+#[test]
+fn same_number_and_same_revision_after_rebuild_stays_historical() {
+    // The central correction case: the rebuilt index reproduces generation 1
+    // at the very same revision A, and the old reference still must not
+    // match it.
+    let fixture = Fixture::new("same-revision-rebuild");
+    assert_eq!(fixture.publish("A"), 1);
+    let first = fixture.incarnation();
+    let runtime = fixture.runtime();
+    let uid = started(&runtime, "g");
+    runtime
+        .record_partial(
+            uid,
+            &result("checkpoint", Some("abc"), DirtyObservation::Clean),
+        )
+        .expect("partial");
+    let before = runtime.snapshot(uid, None).expect("snapshot");
+    let reference = |state| GenerationReference {
+        index_incarnation: Some(first),
+        generation_no: 1,
+        workspace_revision: "A".to_owned(),
+        state,
+    };
+    assert_eq!(
+        before.baseline_generation,
+        Some(reference(GenerationReferenceState::PresentMatching))
+    );
+    assert_eq!(
+        before.result_generation,
+        Some(reference(GenerationReferenceState::PresentMatching))
+    );
+    let stored = before.result.clone().expect("result");
+    assert_eq!(stored.result_index_incarnation, Some(first));
+    drop(runtime);
+
+    fixture.rebuild_index();
+    let second = fixture.incarnation();
+    assert_ne!(first, second, "a rebuilt index.db is a new incarnation");
+    assert_eq!(fixture.publish("A"), 1, "same number, same revision");
+
+    let runtime = fixture.runtime();
+    let after = runtime.snapshot(uid, None).expect("snapshot");
+    assert_eq!(
+        after.baseline_generation,
+        Some(reference(
+            GenerationReferenceState::HistoricalMissingOrReused
+        ))
+    );
+    assert_eq!(
+        after.result_generation,
+        Some(reference(
+            GenerationReferenceState::HistoricalMissingOrReused
+        ))
+    );
+    assert_eq!(after.working_state, before.working_state, "never rewritten");
+    assert_eq!(after.result, before.result);
+
+    // A new WorkItem in the rebuilt index binds to the new incarnation.
+    let fresh = started(&runtime, "after rebuild");
+    let fresh = runtime.snapshot(fresh, None).expect("snapshot");
+    assert_eq!(
+        fresh.baseline_generation,
+        Some(GenerationReference {
+            index_incarnation: Some(second),
+            generation_no: 1,
+            workspace_revision: "A".to_owned(),
+            state: GenerationReferenceState::PresentMatching,
+        })
+    );
+}
+
+#[test]
+fn reopening_the_same_index_keeps_its_incarnation() {
+    // A restart is not a rebuild.
+    let fixture = Fixture::new("reopen");
+    fixture.publish("A");
+    let first = fixture.incarnation();
+    assert_eq!(fixture.incarnation(), first, "second open, same file");
+    init_workspace(fixture.root.path(), &fixture.global).expect("repeated init reopens");
+    assert_eq!(fixture.incarnation(), first);
+
+    let runtime = fixture.runtime();
+    let uid = started(&runtime, "g");
+    drop(runtime);
+    let runtime = fixture.runtime();
+    assert_eq!(
+        runtime
+            .snapshot(uid, None)
+            .expect("snapshot")
+            .baseline_generation
+            .expect("reference")
+            .state,
+        GenerationReferenceState::PresentMatching
+    );
+}
+
+#[test]
+fn independently_created_index_dbs_differ_for_one_workspace() {
+    let fixture = Fixture::new("two-indexes");
+    let other_dir = TestDir::create("two-indexes-other");
+    let other = other_dir.path().join("index.db");
+    drop(GenerationStore::open(&other).expect("second index"));
+    Connection::open(&other)
+        .expect("raw")
+        .execute(
+            "UPDATE db_meta SET workspace_uid = ?1 WHERE id = 0",
+            params![fixture.id.to_bytes().to_vec()],
+        )
+        .expect("bind to the same Workspace");
+    let first = fixture.index();
+    let second = GenerationStore::open(&other).expect("second index");
+    assert_eq!(
+        first.bound_workspace_uid().expect("bound"),
+        second.bound_workspace_uid().expect("bound"),
+        "same WorkspaceID"
+    );
+    assert_ne!(
+        first.index_incarnation_id().expect("first"),
+        second.index_incarnation_id().expect("second"),
+        "WorkspaceID is not the index incarnation"
+    );
+    WorkRuntime::open(fixture.id, &fixture.paths.workspace_db, &other)
+        .expect("both are legitimately bound to this Workspace");
+}
+
+#[test]
+fn index_v9_migrates_to_one_persistent_incarnation() {
+    let dir = TestDir::create("index-v9");
+    let path = dir.path().join("index.db");
+    {
+        let v9 = db::open(&path, DbKind::Index, &schema::index::INDEX_MIGRATIONS[..9])
+            .expect("v9 index.db");
+        assert_eq!(v9.schema_version, 9);
+    }
+    let migrated = GenerationStore::open(&path).expect("migrates to v10");
+    let incarnation = migrated.index_incarnation_id().expect("initialized");
+    drop(migrated);
+    let reopened = schema::index::open(&path).expect("reopen");
+    assert_eq!(reopened.schema_version, 10);
+    let stored: Vec<u8> = reopened
+        .connection
+        .query_row(
+            "SELECT index_incarnation_uid FROM db_meta WHERE id = 0",
+            [],
+            |row| row.get(0),
+        )
+        .expect("stored");
+    assert_eq!(stored, incarnation.to_bytes().to_vec());
+    assert_eq!(
+        GenerationStore::from_connection(reopened.connection)
+            .index_incarnation_id()
+            .expect("read"),
+        incarnation
+    );
+}
+
+#[test]
+fn incarnation_reads_never_invent_a_value() {
+    let dir = TestDir::create("incarnation-invalid");
+    let path = dir.path().join("index.db");
+    drop(GenerationStore::open(&path).expect("index"));
+    let raw = Connection::open(&path).expect("raw");
+    for bad in [
+        rusqlite::types::Value::Blob(vec![7; 15]),
+        rusqlite::types::Value::Text("0123456789abcdef".to_owned()),
+    ] {
+        assert!(
+            raw.execute(
+                "UPDATE db_meta SET index_incarnation_uid = ?1 WHERE id = 0",
+                params![bad]
+            )
+            .is_err(),
+            "CHECK rejects {bad:?}"
+        );
+    }
+    raw.execute(
+        "UPDATE db_meta SET index_incarnation_uid = NULL WHERE id = 0",
+        [],
+    )
+    .expect("clear");
+    let store = GenerationStore::open(&path).expect("reopen is not a migration");
+    assert!(matches!(
+        store.index_incarnation_id(),
+        Err(GenerationError::InvalidIndexIncarnation { .. })
+    ));
+    assert!(
+        matches!(
+            store.index_incarnation_id(),
+            Err(GenerationError::InvalidIndexIncarnation { .. })
+        ),
+        "a read does not fill it in"
+    );
+}
+
+#[test]
+fn workspace_v4_references_have_no_incarnation_and_stay_historical() {
+    // Migration: pre-v5 rows get NULL, never the current index's value.
+    let dir = TestDir::create("workspace-v4");
+    let path = dir.path().join("workspace.db");
+    let legacy = WorkItemId::generate();
+    {
+        let v4 = db::open(
+            &path,
+            DbKind::Workspace,
+            &schema::workspace::WORKSPACE_MIGRATIONS[..4],
+        )
+        .expect("v4 workspace.db");
+        insert_legacy_references(&v4.connection, legacy);
+    }
+    let store = WorkspaceKnowledgeStore::open(&path).expect("migrates to v5");
+    let state = store
+        .get_working_state(legacy)
+        .expect("get")
+        .expect("state");
+    assert_eq!(
+        (
+            state.baseline_index_incarnation,
+            state.baseline_generation_no
+        ),
+        (None, 1)
+    );
+    let result = store.get_work_result(legacy).expect("get").expect("result");
+    assert_eq!(
+        (result.result_index_incarnation, result.result_generation_no),
+        (None, Some(1))
+    );
+    drop(store);
+
+    // Behaviour: the same legacy shape in a bound Workspace whose current
+    // index really has STABLE generation 1 at revision A.
+    let fixture = Fixture::new("legacy-historical");
+    assert_eq!(fixture.publish("A"), 1);
+    let connection = Connection::open(&fixture.paths.workspace_db).expect("raw");
+    insert_legacy_references(&connection, legacy);
+    let snapshot = fixture.runtime().snapshot(legacy, None).expect("snapshot");
+    let historical = Some(GenerationReference {
+        index_incarnation: None,
+        generation_no: 1,
+        workspace_revision: "A".to_owned(),
+        state: GenerationReferenceState::HistoricalMissingOrReused,
+    });
+    assert_eq!(snapshot.baseline_generation, historical);
+    assert_eq!(snapshot.result_generation, historical);
+    assert_eq!(
+        snapshot
+            .working_state
+            .expect("state")
+            .baseline_index_incarnation,
+        None,
+        "not backfilled on read"
+    );
+}
+
+/// An ACTIVE WorkItem with a baseline and a result at generation 1 @ A,
+/// written without any incarnation -- the pre-correction row shape.
+fn insert_legacy_references(connection: &Connection, uid: WorkItemId) {
+    let uid = uid.to_bytes().to_vec();
+    connection
+        .execute(
+            "INSERT INTO work_item (uid, source_kind, goal, status, created_at) \
+             VALUES (?1, 'ISSUE', 'legacy', 'ACTIVE', '0')",
+            params![uid],
+        )
+        .expect("item");
+    connection
+        .execute(
+            "INSERT INTO working_state (work_item_id, baseline_workspace_revision, \
+             baseline_generation_no, last_observed_workspace_revision, updated_at) \
+             SELECT id, 'A', 1, 'A', '0' FROM work_item WHERE uid = ?1",
+            params![uid],
+        )
+        .expect("state");
+    connection
+        .execute(
+            "INSERT INTO work_result (work_item_id, result_status, result_summary, \
+             result_workspace_revision, result_generation_no, created_at) \
+             SELECT id, 'PARTIAL', 'legacy', 'A', 1, '0' FROM work_item WHERE uid = ?1",
+            params![uid],
+        )
+        .expect("result");
+}
+
+#[test]
+fn new_generation_references_always_carry_their_incarnation() {
+    let fixture = Fixture::new("write-invariant");
+    fixture.publish("A");
+    let runtime = fixture.runtime();
+    let uid = runtime.create(&item("g")).expect("create").uid;
+    let store = WorkspaceKnowledgeStore::open(&fixture.paths.workspace_db).expect("store");
+    let unverifiable = WorkingState {
+        work_item: uid,
+        baseline_workspace_revision: "A".to_owned(),
+        baseline_index_incarnation: None,
+        baseline_generation_no: 1,
+        baseline_head: None,
+        baseline_dirty: DirtyObservation::Unknown,
+        current_step: None,
+        progress_summary: None,
+        remaining_summary: None,
+        blocker_summary: None,
+        owner_agent: None,
+        last_observed_workspace_revision: "A".to_owned(),
+        updated_at: String::new(),
+    };
+    assert!(store.insert_working_state(&unverifiable).is_err());
+    let unpaired = |incarnation, generation_no| WorkResult {
+        work_item: uid,
+        result_status: WorkResultStatus::Partial,
+        result_summary: "p".to_owned(),
+        commit_id: None,
+        change_set_fingerprint: None,
+        verification_summary: None,
+        result_workspace_revision: "A".to_owned(),
+        result_index_incarnation: incarnation,
+        result_generation_no: generation_no,
+        remaining_dirty: DirtyObservation::Unknown,
+        created_at: String::new(),
+    };
+    assert!(store.record_work_result(&unpaired(None, Some(1))).is_err());
+    assert!(
+        store
+            .record_work_result(&unpaired(Some(IndexIncarnationId::generate()), None))
+            .is_err()
+    );
+
+    runtime.start(uid, &start_unknown()).expect("start");
+    let state = runtime
+        .snapshot(uid, None)
+        .expect("s")
+        .working_state
+        .expect("state");
+    assert_eq!(
+        state.baseline_index_incarnation,
+        Some(fixture.incarnation())
+    );
+
+    // Schema-level backstop for the same pairing and the 16-byte shape.
+    let raw = Connection::open(&fixture.paths.workspace_db).expect("raw");
+    for (incarnation, generation_no) in [
+        (rusqlite::types::Value::Blob(vec![1; 16]), None),
+        (rusqlite::types::Value::Blob(vec![1; 15]), Some(1_i64)),
+    ] {
+        assert!(
+            raw.execute(
+                "INSERT INTO work_result (work_item_id, result_status, result_summary, \
+                 result_workspace_revision, result_generation_no, result_index_incarnation_uid, \
+                 created_at) SELECT id, 'PARTIAL', 'x', 'A', ?2, ?1, '0' FROM work_item \
+                 WHERE uid = ?3",
+                params![incarnation, generation_no, uid.to_bytes().to_vec()],
+            )
+            .is_err()
+        );
+    }
+    assert!(
+        raw.execute(
+            "UPDATE working_state SET baseline_index_incarnation_uid = ?1",
+            params![vec![1_u8; 15]],
+        )
+        .is_err()
+    );
 }
 
 // ============================================ boundaries (49, 50)
@@ -1435,7 +1813,13 @@ fn task3_access_paths_use_their_intended_indexes() {
     let fixture = Fixture::new("eqp");
     let workspace = Connection::open(&fixture.paths.workspace_db).expect("workspace");
     let index = Connection::open(&fixture.paths.index_db).expect("index");
-    let cases: [(&str, &Connection, &str, &[&str]); 3] = [
+    let cases: [(&str, &Connection, &str, &[&str]); 4] = [
+        (
+            "C1 index incarnation",
+            &index,
+            "SELECT index_incarnation_uid FROM db_meta WHERE id = ?1 LIMIT ?2",
+            &["SEARCH db_meta USING INTEGER PRIMARY KEY (rowid=?)"],
+        ),
         (
             "T6 overlap",
             &workspace,

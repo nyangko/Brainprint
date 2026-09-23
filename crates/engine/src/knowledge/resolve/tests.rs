@@ -1388,6 +1388,7 @@ fn snapshot(item: WorkItemId, step: &str) -> WorkingState {
         baseline_generation_no: 1,
         baseline_head: None,
         baseline_dirty: DirtyObservation::Unknown,
+        baseline_index_incarnation: Some(brainprint_core::IndexIncarnationId::generate()),
         current_step: Some(step.to_owned()),
         progress_summary: None,
         remaining_summary: None,

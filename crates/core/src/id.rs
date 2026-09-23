@@ -127,6 +127,11 @@ define_stable_id!(
 );
 define_stable_id!(WorkItemId, "Stable identity for one Workspace WorkItem.");
 define_stable_id!(
+    IndexIncarnationId,
+    "Stable identity for one physical index.db incarnation: kept across reopen and \
+     migration, new whenever index.db is created or rebuilt."
+);
+define_stable_id!(
     WorkNoteId,
     "Stable identity for one WorkItem-owned observation, proposal, or open question."
 );

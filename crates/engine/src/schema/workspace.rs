@@ -22,6 +22,9 @@
 //! state `UNKNOWN | CLEAN | DIRTY` to the Working State baseline and the
 //! Work Result, with a CHECK that exactly DIRTY carries a fingerprint, and
 //! the `(resource_uid, role)` index behind the WorkItem overlap query.
+//!
+//! v5 (#20 task 3 correction) adds the index.db incarnation to the
+//! baseline and result generation references; pre-v5 rows keep NULL.
 
 use std::path::Path;
 
@@ -179,6 +182,25 @@ pub const WORKSPACE_MIGRATIONS: &[Migration] = &[
                    AND (remaining_dirty_state = 'DIRTY') = (remaining_dirty_fingerprint IS NOT NULL));
 
         CREATE INDEX idx_work_resource_resource_role ON work_resource (resource_uid, role);
+    ",
+    },
+    Migration {
+        version: 5,
+        name: "add_generation_reference_index_incarnation",
+        // #20 task 3 correction: a generation reference names the index.db
+        // incarnation it was observed in. Existing rows cannot know theirs
+        // and stay NULL -- read as historical, never backfilled with the
+        // current index.db's value.
+        sql: "
+        ALTER TABLE working_state ADD COLUMN baseline_index_incarnation_uid BLOB
+            CHECK (baseline_index_incarnation_uid IS NULL
+                   OR (typeof(baseline_index_incarnation_uid) = 'blob'
+                       AND length(baseline_index_incarnation_uid) = 16));
+        ALTER TABLE work_result ADD COLUMN result_index_incarnation_uid BLOB
+            CHECK (result_index_incarnation_uid IS NULL
+                   OR (typeof(result_index_incarnation_uid) = 'blob'
+                       AND length(result_index_incarnation_uid) = 16
+                       AND result_generation_no IS NOT NULL));
     ",
     },
 ];

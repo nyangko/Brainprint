@@ -6,7 +6,7 @@ pub mod protocol;
 
 pub use build::{BuildInfo, PACKAGE_VERSION, PRODUCT_NAME, PROTOCOL_VERSION};
 pub use id::{
-    BlueprintApplicationId, BlueprintId, DecisionId, LogicalSymbolId, ParseStableIdError, PolicyId,
-    ProjectId, ProjectStateId, ResourceId, SymbolId, UserPreferenceId, WorkItemId, WorkNoteId,
-    WorkspaceId,
+    BlueprintApplicationId, BlueprintId, DecisionId, IndexIncarnationId, LogicalSymbolId,
+    ParseStableIdError, PolicyId, ProjectId, ProjectStateId, ResourceId, SymbolId,
+    UserPreferenceId, WorkItemId, WorkNoteId, WorkspaceId,
 };

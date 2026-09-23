@@ -142,6 +142,7 @@ fn working_state(work_item: WorkItemId, step: &str) -> WorkingState {
         baseline_generation_no: 3,
         baseline_head: Some("550dbe3".to_owned()),
         baseline_dirty: DirtyObservation::Unknown,
+        baseline_index_incarnation: Some(brainprint_core::IndexIncarnationId::generate()),
         current_step: Some(step.to_owned()),
         progress_summary: Some("schema done".to_owned()),
         remaining_summary: Some("tests".to_owned()),
@@ -1082,6 +1083,7 @@ fn work_result_and_handoff_typed_reads() {
             change_set_fingerprint: None,
             verification_summary: Some("fmt ok".to_owned()),
             result_workspace_revision: "r9".to_owned(),
+            result_index_incarnation: Some(brainprint_core::IndexIncarnationId::generate()),
             result_generation_no: Some(9),
             remaining_dirty: DirtyObservation::Unknown,
             created_at: String::new(),
@@ -1615,7 +1617,7 @@ fn migrations_are_idempotent_on_reopen() {
     for (name, kind, expected) in [
         ("global.db", DbKind::Global, 4u32),
         ("project.db", DbKind::Project, 3),
-        ("workspace.db", DbKind::Workspace, 4),
+        ("workspace.db", DbKind::Workspace, 5),
     ] {
         let path = dir.db(name);
         for _ in 0..3 {

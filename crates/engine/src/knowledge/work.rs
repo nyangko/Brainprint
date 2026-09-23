@@ -18,7 +18,7 @@
 
 use std::{error::Error, fmt, path::Path};
 
-use brainprint_core::{ResourceId, WorkItemId, WorkspaceId};
+use brainprint_core::{IndexIncarnationId, ResourceId, WorkItemId, WorkspaceId};
 
 use super::{
     DirtyObservation, KnowledgeError, NewWorkItem, WorkHandoff, WorkItem, WorkItemStatus,
@@ -185,15 +185,21 @@ pub struct ResultObservation {
 /// generation in the current index.db.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GenerationReferenceState {
-    /// A STABLE row with this number and this basis revision exists.
+    /// The stored index incarnation is the current index.db's, and it has
+    /// a STABLE row with this number and this basis revision.
     PresentMatching,
-    /// No such row, or the number now belongs to a different basis (an
-    /// index rebuild reused it), or it is not STABLE. Never rebound.
+    /// Anything else: another index.db incarnation (a rebuild, even one
+    /// that reused the same number and revision), no incarnation stored
+    /// (pre-correction row), no such row, a different basis, or not
+    /// STABLE. Never rebound to the current generation.
     HistoricalMissingOrReused,
 }
 
+/// A stored generation value reference: which index.db incarnation, which
+/// generation number, observed at which Workspace revision.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GenerationReference {
+    pub index_incarnation: Option<IndexIncarnationId>,
     pub generation_no: i64,
     pub workspace_revision: String,
     pub state: GenerationReferenceState,
@@ -237,17 +243,19 @@ pub struct WorkOverlap {
 
 /// The Workspace clock as read from index.db.
 struct Observed {
+    incarnation: IndexIncarnationId,
     revision: String,
     stable: Option<GenerationRecord>,
 }
 
 impl Observed {
-    /// The stable generation, if it was built for exactly this revision.
-    fn matching_generation(&self) -> Option<i64> {
+    /// The stable generation, if it was built for exactly this revision,
+    /// named within this index.db incarnation.
+    fn matching_generation(&self) -> Option<(IndexIncarnationId, i64)> {
         self.stable
             .as_ref()
             .filter(|stable| stable.basis_workspace_revision == self.revision)
-            .map(|stable| stable.generation_no)
+            .map(|stable| (self.incarnation, stable.generation_no))
     }
 }
 
@@ -324,8 +332,9 @@ impl WorkRuntime {
             .into());
         }
         let observed = self.observe()?;
-        let generation_no = match (&observed.stable, observed.matching_generation()) {
-            (_, Some(generation_no)) => generation_no,
+        let (incarnation, generation_no) = match (&observed.stable, observed.matching_generation())
+        {
+            (_, Some(reference)) => reference,
             (None, None) => return Err(WorkError::WorkspaceNotReady(NotReady::NoStableGeneration)),
             (Some(stable), None) => {
                 return Err(WorkError::WorkspaceNotReady(NotReady::StableBehind {
@@ -344,6 +353,7 @@ impl WorkRuntime {
         self.store.insert_working_state(&WorkingState {
             work_item,
             baseline_workspace_revision: observed.revision.clone(),
+            baseline_index_incarnation: Some(incarnation),
             baseline_generation_no: generation_no,
             baseline_head: observation.head.clone(),
             baseline_dirty: observation.dirty.clone(),
@@ -529,10 +539,13 @@ impl WorkRuntime {
         }
         let result = self.store.get_work_result(work_item)?;
         let latest_handoff = self.store.list_work_handoffs(work_item, 1)?.pop();
+        let current = self.index.index_incarnation_id()?;
         let baseline_generation = working_state
             .as_ref()
             .map(|state| {
                 self.reference(
+                    current,
+                    state.baseline_index_incarnation,
                     state.baseline_generation_no,
                     &state.baseline_workspace_revision,
                 )
@@ -541,9 +554,14 @@ impl WorkRuntime {
         let result_generation = result
             .as_ref()
             .and_then(|result| {
-                result
-                    .result_generation_no
-                    .map(|number| self.reference(number, &result.result_workspace_revision))
+                result.result_generation_no.map(|number| {
+                    self.reference(
+                        current,
+                        result.result_index_incarnation,
+                        number,
+                        &result.result_workspace_revision,
+                    )
+                })
             })
             .transpose()?;
         let last_update = working_state
@@ -607,22 +625,33 @@ impl WorkRuntime {
             .current_workspace_revision()?
             .ok_or(WorkError::WorkspaceNotReady(NotReady::ClockNotBootstrapped))?;
         let stable = self.index.current_stable()?;
-        Ok(Observed { revision, stable })
+        Ok(Observed {
+            incarnation: self.index.index_incarnation_id()?,
+            revision,
+            stable,
+        })
     }
 
+    /// Compare a stored reference with index.db. The incarnation is checked
+    /// first: a number from another (or an unknown) incarnation is never
+    /// looked up in this one.
     fn reference(
         &self,
+        current: IndexIncarnationId,
+        index_incarnation: Option<IndexIncarnationId>,
         generation_no: i64,
         workspace_revision: &str,
     ) -> Result<GenerationReference, WorkError> {
-        let matching = self
-            .index
-            .get_generation_by_no(generation_no)?
-            .is_some_and(|row| {
-                row.state == GenerationState::Stable
-                    && row.basis_workspace_revision == workspace_revision
-            });
+        let matching = index_incarnation == Some(current)
+            && self
+                .index
+                .get_generation_by_no(generation_no)?
+                .is_some_and(|row| {
+                    row.state == GenerationState::Stable
+                        && row.basis_workspace_revision == workspace_revision
+                });
         Ok(GenerationReference {
+            index_incarnation,
             generation_no,
             workspace_revision: workspace_revision.to_owned(),
             state: if matching {
@@ -779,6 +808,7 @@ fn result_row(
     observation: &ResultObservation,
     observed: &Observed,
 ) -> WorkResult {
+    let generation = observed.matching_generation();
     WorkResult {
         work_item,
         result_status,
@@ -787,7 +817,8 @@ fn result_row(
         change_set_fingerprint: observation.change_set_fingerprint.clone(),
         verification_summary: observation.verification_summary.clone(),
         result_workspace_revision: observed.revision.clone(),
-        result_generation_no: observed.matching_generation(),
+        result_index_incarnation: generation.map(|(incarnation, _)| incarnation),
+        result_generation_no: generation.map(|(_, number)| number),
         remaining_dirty: observation.remaining_dirty.clone(),
         created_at: String::new(),
     }

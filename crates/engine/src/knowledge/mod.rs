@@ -32,8 +32,8 @@ mod workspace;
 use std::{error::Error, fmt, path::PathBuf};
 
 use brainprint_core::{
-    BlueprintApplicationId, BlueprintId, DecisionId, PolicyId, ProjectId, ProjectStateId,
-    ResourceId, UserPreferenceId, WorkItemId, WorkNoteId, WorkspaceId,
+    BlueprintApplicationId, BlueprintId, DecisionId, IndexIncarnationId, PolicyId, ProjectId,
+    ProjectStateId, ResourceId, UserPreferenceId, WorkItemId, WorkNoteId, WorkspaceId,
 };
 use rusqlite::{Connection, OptionalExtension, Params, Row, params};
 
@@ -211,7 +211,8 @@ impl_uid!(
     WorkNoteId,
     ResourceId,
     ProjectId,
-    WorkspaceId
+    WorkspaceId,
+    IndexIncarnationId
 );
 
 pub(crate) fn blob<T: Uid>(id: T) -> Vec<u8> {

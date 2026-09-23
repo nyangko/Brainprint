@@ -557,6 +557,22 @@ pub const INDEX_MIGRATIONS: &[Migration] = &[
               CREATE UNIQUE INDEX idx_graph_entity_logical \
               ON graph_entity (logical_symbol_id) WHERE logical_symbol_id IS NOT NULL;",
     },
+    Migration {
+        version: 10,
+        name: "index_incarnation_identity",
+        // #20 task 3 correction. Generation numbers restart when index.db is
+        // rebuilt, so a workspace.db reference to "generation N at revision
+        // R" needs to know which physical index.db it came from. The row
+        // exists before any migration runs (the shared runner inserts it),
+        // so this backfills exactly once, for a fresh or an upgraded file;
+        // reopening never regenerates it.
+        sql: "ALTER TABLE db_meta ADD COLUMN index_incarnation_uid BLOB \
+                  CHECK (index_incarnation_uid IS NULL \
+                         OR (typeof(index_incarnation_uid) = 'blob' \
+                             AND length(index_incarnation_uid) = 16)); \
+              UPDATE db_meta SET index_incarnation_uid = randomblob(16) \
+              WHERE id = 0 AND index_incarnation_uid IS NULL;",
+    },
 ];
 
 /// Open (creating and migrating if needed) an `index.db` at `path`.
@@ -643,7 +659,7 @@ mod tests {
     fn fresh_rebuildable_index_db_can_be_created() {
         let dir = TestDir::create("fresh");
         let opened = open(&dir.db_path()).expect("fresh index.db should migrate");
-        assert_eq!(opened.schema_version, 9);
+        assert_eq!(opened.schema_version, 10);
     }
 
     #[test]
@@ -870,14 +886,14 @@ mod tests {
         open(&dir.db_path()).expect("first open should migrate");
         let reopened = open(&dir.db_path()).expect("reopen should be a no-op");
 
-        assert_eq!(reopened.schema_version, 9);
+        assert_eq!(reopened.schema_version, 10);
         let ledger_count: u32 = reopened
             .connection
             .query_row("SELECT COUNT(*) FROM schema_migration", [], |row| {
                 row.get(0)
             })
             .expect("ledger should be queryable");
-        assert_eq!(ledger_count, 9, "migration must not reapply on reopen");
+        assert_eq!(ledger_count, 10, "migration must not reapply on reopen");
     }
 
     #[test]

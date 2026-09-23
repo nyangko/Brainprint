@@ -45,7 +45,8 @@ fn decode_work_item(row: &Row<'_>) -> Result<WorkItem, KnowledgeError> {
 const WORKING_STATE_COLUMNS: &str = "w.uid, s.baseline_workspace_revision, \
     s.baseline_generation_no, s.baseline_head, s.baseline_dirty_state, \
     s.baseline_dirty_fingerprint, s.current_step, s.progress_summary, s.remaining_summary, \
-    s.blocker_summary, s.owner_agent, s.last_observed_workspace_revision, s.updated_at";
+    s.blocker_summary, s.owner_agent, s.last_observed_workspace_revision, s.updated_at, \
+    s.baseline_index_incarnation_uid";
 
 fn dirty_columns(row: &Row<'_>, state: usize) -> Result<DirtyObservation, KnowledgeError> {
     DirtyObservation::from_parts(
@@ -54,10 +55,21 @@ fn dirty_columns(row: &Row<'_>, state: usize) -> Result<DirtyObservation, Knowle
     )
 }
 
+fn optional_uid_column<T: super::Uid>(
+    row: &Row<'_>,
+    index: usize,
+    table: &'static str,
+) -> Result<Option<T>, KnowledgeError> {
+    row.get::<_, Option<Vec<u8>>>(index)?
+        .map(|bytes| uid_from_blob(&bytes, table))
+        .transpose()
+}
+
 fn decode_working_state(row: &Row<'_>) -> Result<WorkingState, KnowledgeError> {
     Ok(WorkingState {
         work_item: uid_column(row, 0, "work_item")?,
         baseline_workspace_revision: row.get(1)?,
+        baseline_index_incarnation: optional_uid_column(row, 13, "working_state")?,
         baseline_generation_no: row.get(2)?,
         baseline_head: row.get(3)?,
         baseline_dirty: dirty_columns(row, 4)?,
@@ -87,7 +99,8 @@ fn decode_work_resource(row: &Row<'_>) -> Result<WorkResource, KnowledgeError> {
 
 const WORK_RESULT_COLUMNS: &str = "w.uid, r.result_status, r.result_summary, r.commit_id, \
     r.change_set_fingerprint, r.verification_summary, r.result_workspace_revision, \
-    r.result_generation_no, r.remaining_dirty_state, r.remaining_dirty_fingerprint, r.created_at";
+    r.result_generation_no, r.remaining_dirty_state, r.remaining_dirty_fingerprint, r.created_at, \
+    r.result_index_incarnation_uid";
 
 fn decode_work_result(row: &Row<'_>) -> Result<WorkResult, KnowledgeError> {
     Ok(WorkResult {
@@ -98,6 +111,7 @@ fn decode_work_result(row: &Row<'_>) -> Result<WorkResult, KnowledgeError> {
         change_set_fingerprint: row.get(4)?,
         verification_summary: row.get(5)?,
         result_workspace_revision: row.get(6)?,
+        result_index_incarnation: optional_uid_column(row, 11, "work_result")?,
         result_generation_no: row.get(7)?,
         remaining_dirty: dirty_columns(row, 8)?,
         created_at: row.get(10)?,
@@ -363,10 +377,12 @@ impl WorkspaceKnowledgeStore {
             "INSERT INTO working_state (work_item_id, baseline_workspace_revision, \
                baseline_generation_no, baseline_head, baseline_dirty_state, \
                baseline_dirty_fingerprint, current_step, progress_summary, remaining_summary, \
-               blocker_summary, owner_agent, last_observed_workspace_revision, updated_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13) \
+               blocker_summary, owner_agent, last_observed_workspace_revision, updated_at, \
+               baseline_index_incarnation_uid) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14) \
              ON CONFLICT (work_item_id) DO UPDATE SET \
                baseline_workspace_revision = excluded.baseline_workspace_revision, \
+               baseline_index_incarnation_uid = excluded.baseline_index_incarnation_uid, \
                baseline_generation_no = excluded.baseline_generation_no, \
                baseline_head = excluded.baseline_head, \
                baseline_dirty_state = excluded.baseline_dirty_state, \
@@ -391,6 +407,7 @@ impl WorkspaceKnowledgeStore {
                 state.owner_agent,
                 state.last_observed_workspace_revision,
                 db::now_millis_text(),
+                state.baseline_index_incarnation.map(blob),
             ],
         )?;
         self.get_working_state(state.work_item)?
@@ -406,13 +423,20 @@ impl WorkspaceKnowledgeStore {
     /// `state.updated_at` is ignored.
     pub(crate) fn insert_working_state(&self, state: &WorkingState) -> Result<(), KnowledgeError> {
         state.baseline_dirty.validate()?;
+        let Some(incarnation) = state.baseline_index_incarnation else {
+            return Err(KnowledgeError::Inconsistent {
+                table: "working_state",
+                reason: "a new baseline needs the index incarnation it was observed in".to_owned(),
+            });
+        };
         let work_item_id = self.work_item_row_id(state.work_item)?;
         self.connection.execute(
             "INSERT INTO working_state (work_item_id, baseline_workspace_revision, \
                baseline_generation_no, baseline_head, baseline_dirty_state, \
                baseline_dirty_fingerprint, current_step, progress_summary, remaining_summary, \
-               blocker_summary, owner_agent, last_observed_workspace_revision, updated_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+               blocker_summary, owner_agent, last_observed_workspace_revision, updated_at, \
+               baseline_index_incarnation_uid) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
             params![
                 work_item_id,
                 state.baseline_workspace_revision,
@@ -427,6 +451,7 @@ impl WorkspaceKnowledgeStore {
                 state.owner_agent,
                 state.last_observed_workspace_revision,
                 db::now_millis_text(),
+                blob(incarnation),
             ],
         )?;
         Ok(())
@@ -553,13 +578,20 @@ impl WorkspaceKnowledgeStore {
         result: &WorkResult,
     ) -> Result<WorkResult, KnowledgeError> {
         result.remaining_dirty.validate()?;
+        if result.result_generation_no.is_some() != result.result_index_incarnation.is_some() {
+            return Err(KnowledgeError::Inconsistent {
+                table: "work_result",
+                reason: "a result generation and its index incarnation are written together"
+                    .to_owned(),
+            });
+        }
         let work_item_id = self.work_item_row_id(result.work_item)?;
         self.connection.execute(
             "INSERT INTO work_result (work_item_id, result_status, result_summary, commit_id, \
                change_set_fingerprint, verification_summary, result_workspace_revision, \
                result_generation_no, remaining_dirty_state, remaining_dirty_fingerprint, \
-               created_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11) \
+               created_at, result_index_incarnation_uid) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12) \
              ON CONFLICT (work_item_id) DO UPDATE SET \
                result_status = excluded.result_status, result_summary = excluded.result_summary, \
                commit_id = excluded.commit_id, \
@@ -567,6 +599,7 @@ impl WorkspaceKnowledgeStore {
                verification_summary = excluded.verification_summary, \
                result_workspace_revision = excluded.result_workspace_revision, \
                result_generation_no = excluded.result_generation_no, \
+               result_index_incarnation_uid = excluded.result_index_incarnation_uid, \
                remaining_dirty_state = excluded.remaining_dirty_state, \
                remaining_dirty_fingerprint = excluded.remaining_dirty_fingerprint, \
                created_at = excluded.created_at",
@@ -582,6 +615,7 @@ impl WorkspaceKnowledgeStore {
                 result.remaining_dirty.state().as_str(),
                 result.remaining_dirty.fingerprint(),
                 db::now_millis_text(),
+                result.result_index_incarnation.map(blob),
             ],
         )?;
         self.get_work_result(result.work_item)?
