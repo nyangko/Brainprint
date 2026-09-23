@@ -24,7 +24,7 @@
 
 use std::{collections::BTreeSet, error::Error, fmt};
 
-use brainprint_core::{ResourceId, SymbolId, WorkItemId, WorkspaceId};
+use brainprint_core::{BlueprintApplicationId, ResourceId, SymbolId, WorkItemId, WorkspaceId};
 
 use crate::{
     coverage::{AnswerState, CoverageReport},
@@ -231,6 +231,43 @@ impl ProjectionCorrelation {
     }
 }
 
+// -------------------------------------------------------- knowledge refs
+
+/// Exact knowledge subjects the caller names (#20 task 6 §3). Subject
+/// identities, not category switches: an empty set reads nothing of that
+/// category. Applicable Policy needs no reference. Sets, so supply order
+/// means nothing and duplicates collapse; text is kept verbatim.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProjectionKnowledgeRefs {
+    pub decision_topics: BTreeSet<String>,
+    pub preference_keys: BTreeSet<String>,
+    pub state_keys: BTreeSet<String>,
+    pub blueprint_applications: BTreeSet<BlueprintApplicationId>,
+}
+
+/// A text-keyed field of [`ProjectionKnowledgeRefs`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KnowledgeRefField {
+    DecisionTopic,
+    PreferenceKey,
+    StateKey,
+}
+
+impl ProjectionKnowledgeRefs {
+    fn check(&self) -> Result<(), ProjectionRequestError> {
+        for (field, set) in [
+            (KnowledgeRefField::DecisionTopic, &self.decision_topics),
+            (KnowledgeRefField::PreferenceKey, &self.preference_keys),
+            (KnowledgeRefField::StateKey, &self.state_keys),
+        ] {
+            if set.iter().any(String::is_empty) {
+                return Err(ProjectionRequestError::EmptyKnowledgeRef(field));
+            }
+        }
+        Ok(())
+    }
+}
+
 // --------------------------------------------------------------- request
 
 /// One projection request.
@@ -247,6 +284,7 @@ pub struct ProjectionRequest {
     pub scope_layers: Vec<Vec<KnowledgeScope>>,
     /// Request-local current instructions; never persisted or promoted.
     pub directives: Vec<RequestDirective>,
+    pub knowledge: ProjectionKnowledgeRefs,
     pub correlation: Option<ProjectionCorrelation>,
 }
 
@@ -260,6 +298,12 @@ impl ProjectionRequest {
             work_item: None,
             scope_layers: Vec::new(),
             directives: Vec::new(),
+            knowledge: ProjectionKnowledgeRefs {
+                decision_topics: BTreeSet::new(),
+                preference_keys: BTreeSet::new(),
+                state_keys: BTreeSet::new(),
+                blueprint_applications: BTreeSet::new(),
+            },
             correlation: None,
         }
     }
@@ -305,6 +349,7 @@ impl ProjectionRequest {
             .check_directives()
             .map_err(ProjectionRequestError::InvalidDirective)?;
 
+        self.knowledge.check()?;
         if let Some(correlation) = &self.correlation {
             correlation.check()?;
         }
@@ -331,6 +376,7 @@ pub enum ProjectionRequestError {
     /// duplicate id, two for one subject).
     InvalidDirective(ResolveError),
     EmptyCorrelationId(CorrelationField),
+    EmptyKnowledgeRef(KnowledgeRefField),
 }
 
 impl fmt::Display for ProjectionRequestError {
@@ -348,6 +394,7 @@ impl fmt::Display for ProjectionRequestError {
             Self::EmptyCorrelationId(field) => {
                 write!(formatter, "correlation {field:?} is empty")
             }
+            Self::EmptyKnowledgeRef(field) => write!(formatter, "knowledge ref {field:?} is empty"),
         }
     }
 }
@@ -522,6 +569,13 @@ impl EvidenceItem {
         }
     }
 }
+
+mod planner;
+
+pub use planner::{
+    PlannedSourceRange, PlannerError, PlannerStats, PreparedProjection, ProjectionGap,
+    ProjectionPlanner, SourceRequirement,
+};
 
 #[cfg(test)]
 mod tests;

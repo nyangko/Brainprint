@@ -1886,7 +1886,7 @@ fn resolver_starts_no_semantic_backend() {
         imports,
         [
             "use std::{",
-            "use brainprint_core::{WorkItemId, WorkspaceId};",
+            "use brainprint_core::{BlueprintApplicationId, WorkItemId, WorkspaceId};",
             "use super::{"
         ],
         "the resolver reads only the knowledge stores"

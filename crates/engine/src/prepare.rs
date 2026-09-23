@@ -692,7 +692,7 @@ impl ReadOutcome {
 ///
 /// A file that moved on, changed, or cannot be sliced is a state to
 /// report. A broken index is not.
-fn unavailable_from(error: ReadError) -> Result<SourceUnavailable, PrepareError> {
+pub(crate) fn unavailable_from(error: ReadError) -> Result<SourceUnavailable, PrepareError> {
     Ok(match error {
         ReadError::RevisionMismatch {
             ref expected,

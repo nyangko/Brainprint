@@ -34,7 +34,7 @@ use std::{
     fmt,
 };
 
-use brainprint_core::{WorkItemId, WorkspaceId};
+use brainprint_core::{BlueprintApplicationId, WorkItemId, WorkspaceId};
 
 use super::{
     Blueprint, BlueprintApplication, BlueprintApplicationStatus, BlueprintOwnerKind,
@@ -236,6 +236,9 @@ pub struct ResolveRequest {
     pub state_keys: Vec<String>,
     /// Read applicable Blueprint Applications and their definitions.
     pub include_blueprints: bool,
+    /// Read only these Applications (when `include_blueprints` is off):
+    /// each one that is ACTIVE and whose scope is in the context.
+    pub blueprint_applications: Vec<BlueprintApplicationId>,
     /// An explicitly supplied WorkItem; never guessed.
     pub work_item: Option<WorkItemId>,
 }
@@ -251,6 +254,7 @@ impl ResolveRequest {
             preference_keys: Vec::new(),
             state_keys: Vec::new(),
             include_blueprints: false,
+            blueprint_applications: Vec::new(),
             work_item: None,
         }
     }
@@ -649,6 +653,8 @@ pub fn resolve(
 
     if request.include_blueprints {
         resolve_blueprints(sources, context, &mut out)?;
+    } else if !request.blueprint_applications.is_empty() {
+        resolve_blueprint_applications(sources, request, &mut out)?;
     }
     resolve_state(sources, request, &mut out)?;
     if let Some(uid) = request.work_item {
@@ -1013,26 +1019,8 @@ fn resolve_blueprints(
                 limit,
             )
         })? {
-            let definition = match application.blueprint.owner {
-                BlueprintOwnerKind::Global => {
-                    sources.global.get_blueprint(application.blueprint.uid)
-                }
-                BlueprintOwnerKind::Project => {
-                    sources.project.get_blueprint(application.blueprint.uid)
-                }
-            }?;
-            let definition = match definition {
-                None => BlueprintDefinitionState::Missing,
-                Some(blueprint) if blueprint.status == BlueprintStatus::Retired => {
-                    BlueprintDefinitionState::Retired
-                }
-                Some(blueprint) => BlueprintDefinitionState::Available(Box::new(blueprint)),
-            };
             out.blueprint_evidence.push(at(
-                BlueprintEvidence {
-                    application,
-                    definition,
-                },
+                blueprint_evidence(sources, application)?,
                 Origin::Project,
                 layer,
                 ResolutionReason::BlueprintEvidence,
@@ -1042,6 +1030,56 @@ fn resolve_blueprints(
     Ok(())
 }
 
+/// Exactly the named Applications that are ACTIVE and applicable; the
+/// same definition lookup as the scope-wide read.
+fn resolve_blueprint_applications(
+    sources: &KnowledgeSources<'_>,
+    request: &ResolveRequest,
+    out: &mut ResolvedKnowledge,
+) -> Result<(), ResolveError> {
+    let ids: BTreeSet<BlueprintApplicationId> =
+        request.blueprint_applications.iter().copied().collect();
+    for id in ids {
+        // Task 1 access path B1 by uid.
+        let Some(application) = sources.project.get_blueprint_application(id)? else {
+            continue;
+        };
+        if application.status != BlueprintApplicationStatus::Active {
+            continue;
+        }
+        let Some(layer) = request.context.layer_of(&application.scope) else {
+            continue;
+        };
+        out.blueprint_evidence.push(at(
+            blueprint_evidence(sources, application)?,
+            Origin::Project,
+            layer,
+            ResolutionReason::BlueprintEvidence,
+        ));
+    }
+    Ok(())
+}
+
+fn blueprint_evidence(
+    sources: &KnowledgeSources<'_>,
+    application: BlueprintApplication,
+) -> Result<BlueprintEvidence, ResolveError> {
+    let definition = match application.blueprint.owner {
+        BlueprintOwnerKind::Global => sources.global.get_blueprint(application.blueprint.uid),
+        BlueprintOwnerKind::Project => sources.project.get_blueprint(application.blueprint.uid),
+    }?;
+    let definition = match definition {
+        None => BlueprintDefinitionState::Missing,
+        Some(blueprint) if blueprint.status == BlueprintStatus::Retired => {
+            BlueprintDefinitionState::Retired
+        }
+        Some(blueprint) => BlueprintDefinitionState::Available(Box::new(blueprint)),
+    };
+    Ok(BlueprintEvidence {
+        application,
+        definition,
+    })
+}
 fn resolve_state(
     sources: &KnowledgeSources<'_>,
     request: &ResolveRequest,

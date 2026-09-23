@@ -899,7 +899,10 @@ fn contract_has_no_confidence_capability_flags_budget_telemetry_or_ledger() {
         "continuation",
         "raw_available",
         "delivered",
-        "ledger",
+        // "ledger" alone would match inside "knowledgeref".
+        "_ledger",
+        "ledger_",
+        "ledger:",
         "task_prompt",
         "natural_language",
         "projectid",
@@ -936,4 +939,45 @@ fn schema_versions_are_unchanged() {
     assert_eq!(schema::project::PROJECT_MIGRATIONS.len(), 4);
     assert_eq!(schema::workspace::WORKSPACE_MIGRATIONS.len(), 5);
     assert_eq!(schema::index::INDEX_MIGRATIONS.len(), 10);
+}
+
+// ------------------------------------------------------- knowledge refs
+
+#[test]
+fn knowledge_refs_are_exact_subjects_and_empty_ones_are_rejected() {
+    let mut request = request(ProjectionIntent::Change(None));
+    request.knowledge.decision_topics = BTreeSet::from(["orm".to_owned(), "http".to_owned()]);
+    let context = request.validate().unwrap();
+    // Set semantics: supply order and duplicates change nothing.
+    let mut again = request.clone();
+    again.knowledge.decision_topics = ["http", "orm", "http"].map(str::to_owned).into();
+    assert_eq!(again, request);
+    assert_eq!(again.validate().unwrap(), context);
+
+    for (field, set) in [
+        (
+            KnowledgeRefField::DecisionTopic,
+            (|refs: &mut ProjectionKnowledgeRefs| {
+                refs.decision_topics.insert(String::new());
+            }) as fn(&mut ProjectionKnowledgeRefs),
+        ),
+        (KnowledgeRefField::PreferenceKey, |refs| {
+            refs.preference_keys.insert(String::new());
+        }),
+        (KnowledgeRefField::StateKey, |refs| {
+            refs.state_keys.insert(String::new());
+        }),
+    ] {
+        let mut request = request.clone();
+        set(&mut request.knowledge);
+        assert!(matches!(
+            request.validate(),
+            Err(ProjectionRequestError::EmptyKnowledgeRef(got)) if got == field
+        ));
+    }
+    // Text is kept verbatim, never trimmed into another subject.
+    let mut padded = request;
+    padded.knowledge.state_keys.insert(" phase".to_owned());
+    assert!(padded.validate().is_ok());
+    assert!(padded.knowledge.state_keys.contains(" phase"));
 }
