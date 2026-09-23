@@ -9,17 +9,21 @@ use crate::{generation::GenerationStore, parser::SourcePoint, projection::canoni
 
 // ---------------------------------------------------------------- helpers
 
-fn budget(items: Option<usize>, bytes: Option<usize>, tokens: Option<usize>) -> DeliveryBudget {
+pub(super) fn budget(
+    items: Option<usize>,
+    bytes: Option<usize>,
+    tokens: Option<usize>,
+) -> DeliveryBudget {
     DeliveryBudget::new(items, bytes, tokens).expect("budget")
 }
 
-fn items(cap: usize) -> DeliveryBudget {
+pub(super) fn items(cap: usize) -> DeliveryBudget {
     budget(Some(cap), None, None)
 }
 
 /// A test tokenizer with an exact, fixed cost per unit -- so it also
 /// knows a planned source's cost without its body.
-struct FixedTokens(usize);
+pub(super) struct FixedTokens(pub(super) usize);
 
 impl ExactTokenCounter for FixedTokens {
     fn exact_tokens(&self, _: DeliveryUnit<'_>) -> Option<usize> {
@@ -106,7 +110,7 @@ fn next(
 }
 
 /// Every page of one chain.
-fn chain(
+pub(super) fn chain(
     planner: &ProjectionPlanner,
     request: &ProjectionRequest,
     projection: &PreparedProjection,
@@ -129,7 +133,7 @@ fn chain(
     pages
 }
 
-fn flatten(pages: &[DeliveryPage]) -> Vec<EvidenceItem> {
+pub(super) fn flatten(pages: &[DeliveryPage]) -> Vec<EvidenceItem> {
     pages
         .iter()
         .flat_map(|page| page.evidence.iter().cloned())
@@ -137,7 +141,7 @@ fn flatten(pages: &[DeliveryPage]) -> Vec<EvidenceItem> {
 }
 
 /// The required bundle's exact cost, read from the explicit error.
-fn required_cost(
+pub(super) fn required_cost(
     planner: &ProjectionPlanner,
     request: &ProjectionRequest,
     projection: &PreparedProjection,
@@ -166,13 +170,13 @@ fn page_bytes(page: &DeliveryPage) -> usize {
         .sum()
 }
 
-fn is_optional_source(item: &EvidenceItem) -> bool {
+pub(super) fn is_optional_source(item: &EvidenceItem) -> bool {
     matches!(item, EvidenceItem::CurrentSource(range) if range.role == RangeRole::EvidenceSpan)
 }
 
 /// CHANGE(Rename) of `shared` with a Policy, a requested Decision and an
 /// explicit WorkItem: every optional tier has something in it.
-fn change_shared(fixture: &Fixture) -> ProjectionRequest {
+pub(super) fn change_shared(fixture: &Fixture) -> ProjectionRequest {
     let project = fixture.project();
     project
         .insert_policy(&policy("no default exports", "exports"))
@@ -578,7 +582,7 @@ fn delivery_order_does_not_depend_on_row_insertion_order() {
 
 // ----------------------------------------------------------------- source
 
-fn understand_shared(fixture: &Fixture) -> ProjectionRequest {
+pub(super) fn understand_shared(fixture: &Fixture) -> ProjectionRequest {
     fixture.request(
         ProjectionIntent::Understand,
         Some(ProjectionTarget::Endpoint(
@@ -1141,8 +1145,8 @@ fn evidence_truth_does_not_depend_on_the_budget() {
     }
 }
 
-#[test]
-fn a_broad_change_reads_only_what_its_budget_selected() {
+/// One hub declaration and 40 single-call caller files, published.
+pub(super) fn broad_fixture(label: &str) -> (Fixture, GraphEndpoint) {
     let hub = "export function hub(): number {\n  return 0\n}\n";
     let callers: Vec<(String, String)> = (0..40)
         .map(|index| {
@@ -1160,7 +1164,7 @@ fn a_broad_change_reads_only_what_its_budget_selected() {
             .iter()
             .map(|(rel, text)| (rel.as_str(), text.as_str())),
     );
-    let fixture = Fixture::with_files("broad-delivery", &files);
+    let fixture = Fixture::with_files(label, &files);
     let target = fixture.endpoint("src/hub.ts", "hub");
     let plan: Vec<FilePlan<'_>> = callers
         .iter()
@@ -1182,6 +1186,12 @@ fn a_broad_change_reads_only_what_its_budget_selected() {
         .collect();
     fixture.publish(&plan);
 
+    (fixture, target)
+}
+
+#[test]
+fn a_broad_change_reads_only_what_its_budget_selected() {
+    let (fixture, target) = broad_fixture("broad-delivery");
     let request = fixture.request(
         ProjectionIntent::Change(Some(ChangeKind::Structural(ImpactIntent::Rename))),
         Some(ProjectionTarget::Endpoint(target)),
@@ -1252,10 +1262,10 @@ fn delivery_code() -> String {
 fn delivery_has_no_ledger_schema_transport_or_backend() {
     let code = delivery_code();
     for forbidden in [
-        // task 8
+        // task 8: the engine only chooses a representation from a lookup
+        // (#21); the ledger and the stage accounting live in `economy.rs`.
         "raw_available",
         "ledger",
-        "reuse",
         // schema / persistence
         "rusqlite",
         "execute(",

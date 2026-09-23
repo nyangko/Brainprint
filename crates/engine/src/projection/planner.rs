@@ -38,6 +38,7 @@ use brainprint_core::{BlueprintApplicationId, ProjectId, ResourceId, WorkItemId,
 use super::{
     ChangeKind, CoverageEvidence, CoverageSubject, EvidenceItem, GenerationBasis, ProjectionIntent,
     ProjectionRequest, ProjectionRequestError, ProjectionTarget, TargetSelection,
+    canonical::{self, Canonical},
 };
 use crate::{
     coverage::{CoverageLimit, CoverageReport},
@@ -158,6 +159,9 @@ pub struct PreparedProjection {
     pub source_plan: Vec<PlannedSourceRange>,
     /// One hint per `evidence` item, same order.
     pub delivery: Vec<DeliveryHint>,
+    /// What the query surfaces actually returned before preparation
+    /// (#21): counted where they returned it, never by a second query.
+    pub raw: StageAmount,
 }
 
 /// What the planner actually did, counted as it happened. Observations,
@@ -433,6 +437,7 @@ impl ProjectionPlanner {
                     let ids = logical_symbol::declarations(self.index().connection(), *id)?;
                     for declaration in &ids {
                         let located = self.index().search_symbols(&symbol_query(*declaration))?;
+                        plan.raw.known(&located.candidates);
                         match located.exact() {
                             Some(candidate) => declarations.push(candidate.clone()),
                             None => plan.gap(ProjectionGap::TargetNotCurrent),
@@ -474,6 +479,7 @@ impl ProjectionPlanner {
         plan: &mut Plan,
         endpoint: bool,
     ) -> Result<Option<Selected>, PlannerError> {
+        plan.raw.known(&located.candidates);
         let exact = located.exact().cloned();
         plan.selection(
             target,
@@ -499,6 +505,7 @@ impl ProjectionPlanner {
         plan: &mut Plan,
         endpoint: bool,
     ) -> Result<Option<Selected>, PlannerError> {
+        plan.raw.known(&located.candidates);
         let exact = located.exact().cloned();
         plan.selection(
             target,
@@ -554,6 +561,8 @@ impl ProjectionPlanner {
                 Direction::Incoming => relations.incoming(anchor, &[])?,
             };
             self.count(|stats| stats.relation_queries += 1);
+            plan.raw.known(&answer.confirmed);
+            plan.raw.known(&answer.gaps);
             let report = answer.coverage.limits();
             let confirmed = answer.confirmed_count();
             plan.relations(answer.confirmed);
@@ -587,6 +596,11 @@ impl ProjectionPlanner {
             .run(intent, root, &Budget::default())?;
         self.count(|stats| stats.impact_traversals += 1);
         let tests = self.tests.from_impact(&impact)?;
+        plan.raw
+            .known(impact.edges.iter().map(|edge| &edge.relation));
+        plan.raw
+            .known(impact.gaps.iter().map(|attributed| &attributed.gap));
+        plan.raw.known(&tests.candidates);
 
         plan.items.push(EvidenceItem::Coverage(CoverageEvidence {
             subject: CoverageSubject::Impact {
@@ -660,6 +674,17 @@ impl ProjectionPlanner {
             &resolve_request,
         )?;
 
+        let raw = &mut plan.raw;
+        raw.known(&resolved.request_directives);
+        raw.known(&resolved.protected_constraints);
+        raw.known(&resolved.applied_policies);
+        raw.known(&resolved.active_decisions);
+        raw.known(&resolved.applied_preferences);
+        raw.known(&resolved.blueprint_evidence);
+        raw.known(&resolved.state_evidence);
+        raw.known(&resolved.shadowed);
+        raw.known(&resolved.conflicts);
+
         let applied: BTreeSet<BlueprintApplicationId> = resolved
             .blueprint_evidence
             .iter()
@@ -732,6 +757,16 @@ impl ProjectionPlanner {
         let snapshot = self.work.snapshot(work_item, None)?;
         let overlaps = self.work.overlaps(work_item)?;
         self.count(|stats| stats.work_snapshots += 1);
+        let raw = &mut plan.raw;
+        raw.known([&snapshot.item]);
+        raw.known(&snapshot.working_state);
+        raw.known(&snapshot.resources);
+        raw.known(&snapshot.result);
+        raw.known(&snapshot.latest_handoff);
+        raw.known(&snapshot.baseline_generation);
+        raw.known(&snapshot.result_generation);
+        raw.known([&snapshot.staleness]);
+        raw.known(&overlaps);
 
         let items = &mut plan.items;
         items.push(EvidenceItem::WorkItem(snapshot.item));
@@ -835,6 +870,43 @@ struct Plan {
     required: Vec<PlannedSourceRange>,
     /// Shallowest impact depth by relation identity.
     depths: BTreeMap<Vec<u8>, usize>,
+    raw: RawTally,
+}
+
+/// Raw query output as it was returned: every unit counted; bytes exact
+/// only while every unit's payload is already in memory.
+#[derive(Default)]
+struct RawTally {
+    items: usize,
+    bytes: usize,
+    bytes_unknown: bool,
+}
+
+impl RawTally {
+    fn known<'a, T: Canonical + 'a>(&mut self, values: impl IntoIterator<Item = &'a T>) {
+        for value in values {
+            self.items += 1;
+            self.bytes += canonical::size(value);
+        }
+    }
+
+    fn unread(&mut self, count: usize) {
+        self.items += count;
+        self.bytes_unknown |= count > 0;
+    }
+
+    fn amount(&self) -> StageAmount {
+        StageAmount {
+            items: Measure::Known(self.items),
+            bytes: if self.bytes_unknown {
+                Measure::Unknown
+            } else {
+                Measure::Known(self.bytes)
+            },
+            // No exact counter exists at planning time.
+            tokens: Measure::Unknown,
+        }
+    }
 }
 
 impl Plan {
@@ -845,6 +917,8 @@ impl Plan {
     }
 
     fn require_declarations(&mut self, selected: &Selected) {
+        // A range candidate's body is not in memory before it is read.
+        self.raw.unread(selected.declarations.len());
         for declaration in &selected.declarations {
             let symbol = &declaration.symbol;
             self.required.push(PlannedSourceRange {
@@ -960,6 +1034,7 @@ impl Plan {
                 }
             }
         }
+        self.raw.unread(optional.len());
         optional.sort_by_key(range_key);
         let required_keys: BTreeSet<_> = self.required.iter().map(range_key).collect();
         optional.dedup_by(|a, b| range_key(a) == range_key(b));
@@ -981,6 +1056,7 @@ impl Plan {
             gaps: self.gaps,
             source_plan,
             delivery,
+            raw: self.raw.amount(),
         }
     }
 }
@@ -1215,11 +1291,17 @@ fn order(items: Vec<EvidenceItem>) -> Vec<EvidenceItem> {
 }
 
 mod delivery;
+mod economy;
 
 pub use delivery::{
     ContinuationMismatch, ContinuationUnavailable, DeliveryBudget, DeliveryContinuation,
     DeliveryDimension, DeliveryError, DeliveryKey, DeliveryPage, DeliveryUnit, ExactTokenCounter,
     TokenUsage,
+};
+pub use economy::{
+    Acknowledged, ContextRetention, DeliveryLedger, DeliveryReceipt, DeliveryScope,
+    FallbackObservation, LedgerLimits, LedgerLimitsError, Measure, PendingDelivery,
+    ProjectionEconomy, ReuseIdentity, ReuseObservation, ReuseReference, StageAmount,
 };
 
 #[cfg(test)]

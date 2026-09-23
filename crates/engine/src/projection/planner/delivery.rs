@@ -22,7 +22,7 @@ use brainprint_core::{IndexIncarnationId, ProjectId, WorkspaceId};
 
 use super::{
     PlannedSourceRange, PlannerError, PreparedProjection, ProjectionGap, ProjectionPlanner,
-    Relevance, SourceRequirement, merge,
+    Relevance, ReuseReference, SourceRequirement, merge,
 };
 use crate::{
     generation::GenerationError,
@@ -142,6 +142,13 @@ pub trait ExactTokenCounter {
     fn exact_planned_source_tokens(&self, _range: &PlannedSourceRange) -> Option<usize> {
         None
     }
+
+    /// The exact token cost of a [`ReuseReference`] (task 8). Under a
+    /// token cap a reference is used only with this; otherwise the full
+    /// payload is delivered.
+    fn exact_reuse_tokens(&self, _reference: &ReuseReference) -> Option<usize> {
+        None
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -240,6 +247,10 @@ pub struct DeliveryPage {
     /// Required bundle (first page only), then optional units in
     /// delivery order.
     pub evidence: Vec<EvidenceItem>,
+    /// One per `evidence` item: `Some` when that item is delivered as a
+    /// reference to an acknowledged identical payload instead of in full
+    /// (task 8). The item itself stays the full canonical truth.
+    pub references: Vec<Option<ReuseReference>>,
     /// Every planner gap, on the first page only.
     pub gaps: Vec<ProjectionGap>,
     pub used_items: usize,
@@ -293,6 +304,9 @@ pub enum DeliveryError {
         unit_tokens: Option<usize>,
         violated: BTreeSet<DeliveryDimension>,
     },
+    /// FreshContext means earlier pages may be gone; a continuation
+    /// assumes they are retained.
+    FreshContextWithContinuation,
     Planner(PlannerError),
 }
 
@@ -345,6 +359,9 @@ impl fmt::Display for DeliveryError {
                 "selected source is unavailable and its corrective unit ({unit_bytes} bytes, \
                  tokens {unit_tokens:?}) exceeds the whole budget ({violated:?})"
             ),
+            Self::FreshContextWithContinuation => {
+                formatter.write_str("a fresh context cannot continue an earlier page chain")
+            }
             Self::Planner(source) => write!(formatter, "{source}"),
         }
     }
@@ -474,10 +491,16 @@ fn sequence(projection: &PreparedProjection) -> (Vec<&EvidenceItem>, Vec<Entry<'
 
 // ------------------------------------------------------------------ page
 
+/// For a materialized item, the reference to an acknowledged identical
+/// payload in the caller's retained context, if there is one.
+pub(super) type ReuseLookup<'a> = &'a dyn Fn(&EvidenceItem) -> Option<ReuseReference>;
+
 struct Builder<'a> {
     budget: &'a DeliveryBudget,
     counter: Option<&'a dyn ExactTokenCounter>,
+    reuse: Option<ReuseLookup<'a>>,
     evidence: Vec<EvidenceItem>,
+    references: Vec<Option<ReuseReference>>,
     used: Cost,
 }
 
@@ -498,14 +521,42 @@ impl Builder<'_> {
         })
     }
 
+    /// How `item` is delivered and what that costs: a reference when the
+    /// retained context holds the identical payload, the reference is
+    /// strictly smaller, and -- under a token cap -- its exact token cost
+    /// is known; otherwise the full payload.
+    fn represent(
+        &self,
+        item: &EvidenceItem,
+    ) -> Result<(Cost, Option<ReuseReference>), DeliveryError> {
+        if let Some(reference) = self.reuse.and_then(|lookup| lookup(item)) {
+            let bytes = canonical::size(&reference);
+            let tokens = self
+                .counter
+                .and_then(|counter| counter.exact_reuse_tokens(&reference));
+            if bytes < canonical::size(item)
+                && (self.budget.max_tokens.is_none() || tokens.is_some())
+            {
+                let cost = Cost {
+                    items: 1,
+                    bytes,
+                    tokens,
+                };
+                return Ok((cost, Some(reference)));
+            }
+        }
+        Ok((self.cost(DeliveryUnit::Evidence(item))?, None))
+    }
+
     /// Add `item` if it fits; otherwise the caps it would exceed, and
     /// whether it exceeds the whole budget on its own.
     fn offer(&mut self, item: EvidenceItem) -> Result<Option<Stop>, DeliveryError> {
-        let cost = self.cost(DeliveryUnit::Evidence(&item))?;
+        let (cost, reference) = self.represent(&item)?;
         let over = self.budget.over(self.used, cost);
         if over.is_empty() {
             self.used = self.used.plus(cost);
             self.evidence.push(item);
+            self.references.push(reference);
             return Ok(None);
         }
         Ok(Some(Stop {
@@ -543,6 +594,21 @@ impl ProjectionPlanner {
         continuation: Option<&DeliveryContinuation>,
         tokens: Option<&dyn ExactTokenCounter>,
     ) -> Result<DeliveryPage, DeliveryError> {
+        self.deliver_with(request, projection, budget, continuation, tokens, None)
+            .map(|(page, _)| page)
+    }
+
+    /// [`Self::deliver`] with an optional retained-context lookup (task 8),
+    /// also returning the merged optional source candidates it cut from.
+    pub(super) fn deliver_with(
+        &self,
+        request: &ProjectionRequest,
+        projection: &PreparedProjection,
+        budget: &DeliveryBudget,
+        continuation: Option<&DeliveryContinuation>,
+        tokens: Option<&dyn ExactTokenCounter>,
+        reuse: Option<ReuseLookup<'_>>,
+    ) -> Result<(DeliveryPage, Vec<PlannedSourceRange>), DeliveryError> {
         request.validate()?;
         if request.workspace != self.workspace_id {
             return Err(PlannerError::WorkspaceMismatch {
@@ -575,7 +641,9 @@ impl ProjectionPlanner {
         let mut page = Builder {
             budget,
             counter: tokens,
+            reuse,
             evidence: Vec::new(),
+            references: Vec::new(),
             used: Cost {
                 tokens: tokens.map(|_| 0),
                 ..Cost::ZERO
@@ -587,8 +655,11 @@ impl ProjectionPlanner {
                 for gap in &projection.gaps {
                     total = total.plus(page.cost(DeliveryUnit::Gap(gap))?);
                 }
+                let mut references = Vec::with_capacity(required_items.len());
                 for item in &required_items {
-                    total = total.plus(page.cost(DeliveryUnit::Evidence(item))?);
+                    let (cost, reference) = page.represent(item)?;
+                    total = total.plus(cost);
+                    references.push(reference);
                 }
                 let violated = budget.over(Cost::ZERO, total);
                 if !violated.is_empty() {
@@ -601,6 +672,7 @@ impl ProjectionPlanner {
                 }
                 page.used = total;
                 page.evidence.extend(required_items.into_iter().cloned());
+                page.references = references;
                 (0, projection.gaps.clone())
             }
             Some(continuation) => {
@@ -655,12 +727,20 @@ impl ProjectionPlanner {
             _ => (None, Some(ContinuationUnavailable::NoStableGeneration)),
         };
 
-        Ok(DeliveryPage {
+        let sources = optional
+            .iter()
+            .filter_map(|entry| match &entry.slot {
+                Slot::Source(range) => Some(range.clone()),
+                Slot::Evidence(_) => None,
+            })
+            .collect();
+        let page = DeliveryPage {
             workspace: projection.workspace,
             project: projection.project,
             intent: projection.intent,
             target: projection.target.clone(),
             evidence: page.evidence,
+            references: page.references,
             gaps,
             used_items: page.used.items,
             used_bytes: page.used.bytes,
@@ -673,7 +753,8 @@ impl ProjectionPlanner {
             omitted_units: optional.len() - end,
             continuation,
             continuation_unavailable,
-        })
+        };
+        Ok((page, sources))
     }
 
     fn basis(&self) -> Result<Basis, DeliveryError> {

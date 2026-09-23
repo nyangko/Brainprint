@@ -35,9 +35,9 @@ use crate::{
         GenerationReference, GenerationReferenceState, KnowledgeConflict, KnowledgeScope, Origin,
         Policy, PolicyStatus, PreferenceStatus, PriorityClass, ProjectState, ProjectStateStatus,
         ProtectionClass, Provenance, RequestDirective, ResolutionReason, Resolved, ScopeKind,
-        SourceKind, Staleness, TypedValue, UserPreference, WorkHandoff, WorkItem,
-        WorkItemSourceKind, WorkItemStatus, WorkOverlap, WorkResourceRole, WorkResult,
-        WorkResultStatus, WorkingState,
+        ShadowedItem, SourceKind, Staleness, TypedValue, UserPreference, WorkHandoff, WorkItem,
+        WorkItemSourceKind, WorkItemStatus, WorkOverlap, WorkResource, WorkResourceRole,
+        WorkResult, WorkResultStatus, WorkingState,
     },
     parser::{SourcePoint, SourceSpan},
     prepare::{PreparedRange, RangeRole, SourceUnavailable},
@@ -79,7 +79,7 @@ impl Canon {
         self.raw(&value.to_be_bytes());
     }
 
-    fn tag(&mut self, tag: u8) {
+    pub(crate) fn tag(&mut self, tag: u8) {
         self.raw(&[tag]);
     }
 
@@ -361,6 +361,9 @@ fields! {
         verification_summary, result_workspace_revision, result_index_incarnation,
         result_generation_no, remaining_dirty, created_at,
     }
+    WorkResource {
+        work_item, resource, role, locator_hint, first_observed_revision, last_observed_revision,
+    }
     WorkHandoff {
         work_item, handoff_summary, remaining_summary, blocker_summary, next_scope_hint,
         created_at,
@@ -469,6 +472,25 @@ impl Canonical for TypedValue {
             Self::Json(value) => {
                 out.tag(3);
                 value.encode(out);
+            }
+        }
+    }
+}
+
+impl Canonical for ShadowedItem {
+    fn encode(&self, out: &mut Canon) {
+        match self {
+            Self::Policy(policy) => {
+                out.tag(0);
+                policy.encode(out);
+            }
+            Self::Decision(decision) => {
+                out.tag(1);
+                decision.encode(out);
+            }
+            Self::Preference(preference) => {
+                out.tag(2);
+                preference.encode(out);
             }
         }
     }
