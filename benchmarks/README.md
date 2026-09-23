@@ -60,6 +60,25 @@ An unavailable measurement is `null`. A measured zero is `0`.
   Without the pinned Pyright install the semantic variants are skipped
   and the control still runs. See `i4-python-acceptance-report.md`.
 
+- `i4-final-*` — the I4 final measurement across every installed
+  backend family (`cargo run --release -p brainprint-engine --example
+  i4_final_benchmark`). One line per family per phase: `-cold`,
+  `-first-refresh`, `-save`, `-config`, `-warm`, plus `i4-final-react`
+  (which records that React starts no backend), `i4-final-csharp-trust`,
+  `i4-final-rust-environment` and `i4-final-fleet`. These use their own
+  per-language fixtures rather than `python-signature-impact`, so they
+  are **not** comparable with the lines above; the comparable
+  re-measurement is `brainprint-i4-python`. A family whose toolchain is
+  absent produces one `skipped=backend_not_installed` line rather than
+  disappearing. See `i4-final-acceptance-report.md`.
+
+Resource figures are measured from outside the process by
+`scripts/i4_final_acceptance/measure_rss.py`, which holds the whole
+fleet up and samples the harness's descendant tree. Its output
+(`reports/i4-final-rss.json`) records the scope it measured, each
+process's peak, the largest simultaneous total, and the difference
+between the two.
+
 Metrics the result schema has no column for — prepared source bytes,
 relation query count, traversal size, confirmed/gap counts, broad
 searches avoided — are recorded as `key=value` pairs in `notes`, which

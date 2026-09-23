@@ -1,6 +1,9 @@
 /target/
 .DS_Store
 /benchmarks/reports/*.jsonl
+# Generated resource samples, same rule as the JSONL runs: a local
+# observation is not a baseline (#19 task 15).
+/benchmarks/reports/*.json
 /scripts/python_semantic_spike/node_modules/
 /scripts/typescript_semantic_spike/node_modules/
 /scripts/svelte_semantic_spike/node_modules/
