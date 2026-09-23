@@ -1387,7 +1387,7 @@ fn snapshot(item: WorkItemId, step: &str) -> WorkingState {
         baseline_workspace_revision: "rev-1".to_owned(),
         baseline_generation_no: 1,
         baseline_head: None,
-        baseline_dirty_fingerprint: None,
+        baseline_dirty: DirtyObservation::Unknown,
         current_step: Some(step.to_owned()),
         progress_summary: None,
         remaining_summary: None,

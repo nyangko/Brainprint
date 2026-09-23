@@ -256,6 +256,33 @@ impl GenerationStore {
         query_generation(&self.connection, generation_id)
     }
 
+    /// Look up a generation by its `generation_no` value. A number alone
+    /// is not an identity across index rebuilds (numbers restart); callers
+    /// holding an old number compare `basis_workspace_revision` too.
+    pub fn get_generation_by_no(
+        &self,
+        generation_no: i64,
+    ) -> Result<Option<GenerationRecord>, GenerationError> {
+        let id: Option<i64> = self
+            .connection
+            .query_row(
+                "SELECT id FROM generation WHERE generation_no = ?1",
+                params![generation_no],
+                |row| row.get(0),
+            )
+            .optional()?;
+        id.map_or(Ok(None), |id| query_generation(&self.connection, id))
+    }
+
+    /// The `index.db` Workspace binding written by init, if any.
+    pub fn bound_workspace_uid(&self) -> Result<Option<Vec<u8>>, GenerationError> {
+        Ok(self.connection.query_row(
+            "SELECT workspace_uid FROM db_meta WHERE id = 0",
+            [],
+            |row| row.get(0),
+        )?)
+    }
+
     /// Explicitly abort a `BUILDING` generation. Rejects anything not
     /// currently `BUILDING` (#15 task 8: a completed result is never
     /// silently re-taken over).

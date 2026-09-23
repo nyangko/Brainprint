@@ -18,13 +18,15 @@
 //! Provided here: create, get by stable uid, bounded (`LIMIT`) lists by
 //! exact scope/status/key/topic, explicit status transitions, explicit
 //! lineage, current-state upsert. Precedence/applicability is the read-only
-//! resolver in [`resolve()`] (task 2). Not provided: WorkItem lifecycle
-//! planning (task 3), promotion (task 4), search/ranking of any kind.
+//! resolver in [`resolve()`] (task 2). The WorkItem lifecycle is
+//! [`WorkRuntime`] (task 3). Not provided: promotion (task 4),
+//! search/ranking of any kind.
 
 mod global;
 mod model;
 mod project;
 mod resolve;
+mod work;
 mod workspace;
 
 use std::{error::Error, fmt, path::PathBuf};
@@ -43,6 +45,11 @@ pub use resolve::{
     DirectiveTarget, EvidenceCategory, EvidenceRef, KnowledgeConflict, KnowledgeSources, Origin,
     RequestDirective, ResolutionReason, ResolveError, ResolveRequest, Resolved, ResolvedKnowledge,
     ShadowedItem, WorkItemEvidence, resolve,
+};
+pub use work::{
+    GenerationReference, GenerationReferenceState, NotReady, ResourceEvidence, ResourceObservation,
+    ResultObservation, Staleness, StartObservation, WorkError, WorkOverlap, WorkProgress,
+    WorkRuntime, WorkSnapshot,
 };
 pub use workspace::WorkspaceKnowledgeStore;
 

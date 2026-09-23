@@ -1,21 +1,23 @@
 //! workspace.db durable knowledge: WorkItem, Working State, Work
 //! Resource/Result/Handoff, Work Note, workspace-local Project State.
 //!
-//! Everything here belongs to one Workspace. Basic typed CRUD only --
-//! resume planning, handoff selection, overlap coordination, and dirty
-//! attribution are task 3; note promotion is task 4.
+//! Everything here belongs to one Workspace. Typed storage primitives
+//! only. The WorkItem lifecycle (baseline once, explicit transitions,
+//! atomic finalization) is [`super::WorkRuntime`] (task 3), which is why
+//! the WorkItem/Working State/Result/Handoff writers are crate-internal;
+//! note promotion is task 4.
 
 use std::path::Path;
 
 use brainprint_core::{WorkItemId, WorkNoteId, WorkspaceId};
-use rusqlite::{Connection, OptionalExtension, Row, params};
+use rusqlite::{Connection, OptionalExtension, Row, Transaction, params};
 
 use super::{
-    KnowledgeError, KnowledgeScope, NewWorkItem, NewWorkNote, ProjectStateUpdate, PromotedItem,
-    PromotedItemKind, Store, WorkHandoff, WorkItem, WorkItemSourceKind, WorkItemStatus, WorkNote,
-    WorkNoteKind, WorkNoteStatus, WorkResource, WorkResourceRole, WorkResult, WorkResultStatus,
-    WorkingState, WorkspaceProjectState, blob, provenance_columns, query_all, query_one,
-    uid_column, uid_from_blob,
+    DirtyObservation, DirtyState, KnowledgeError, KnowledgeScope, NewWorkItem, NewWorkNote,
+    ProjectStateUpdate, PromotedItem, PromotedItemKind, Store, WorkHandoff, WorkItem,
+    WorkItemSourceKind, WorkItemStatus, WorkNote, WorkNoteKind, WorkNoteStatus, WorkResource,
+    WorkResourceRole, WorkResult, WorkResultStatus, WorkingState, WorkspaceProjectState, blob,
+    provenance_columns, query_all, query_one, uid_column, uid_from_blob,
 };
 use crate::{db, schema};
 
@@ -41,9 +43,16 @@ fn decode_work_item(row: &Row<'_>) -> Result<WorkItem, KnowledgeError> {
 }
 
 const WORKING_STATE_COLUMNS: &str = "w.uid, s.baseline_workspace_revision, \
-    s.baseline_generation_no, s.baseline_head, s.baseline_dirty_fingerprint, s.current_step, \
-    s.progress_summary, s.remaining_summary, s.blocker_summary, s.owner_agent, \
-    s.last_observed_workspace_revision, s.updated_at";
+    s.baseline_generation_no, s.baseline_head, s.baseline_dirty_state, \
+    s.baseline_dirty_fingerprint, s.current_step, s.progress_summary, s.remaining_summary, \
+    s.blocker_summary, s.owner_agent, s.last_observed_workspace_revision, s.updated_at";
+
+fn dirty_columns(row: &Row<'_>, state: usize) -> Result<DirtyObservation, KnowledgeError> {
+    DirtyObservation::from_parts(
+        DirtyState::parse(&row.get::<_, String>(state)?)?,
+        row.get(state + 1)?,
+    )
+}
 
 fn decode_working_state(row: &Row<'_>) -> Result<WorkingState, KnowledgeError> {
     Ok(WorkingState {
@@ -51,14 +60,14 @@ fn decode_working_state(row: &Row<'_>) -> Result<WorkingState, KnowledgeError> {
         baseline_workspace_revision: row.get(1)?,
         baseline_generation_no: row.get(2)?,
         baseline_head: row.get(3)?,
-        baseline_dirty_fingerprint: row.get(4)?,
-        current_step: row.get(5)?,
-        progress_summary: row.get(6)?,
-        remaining_summary: row.get(7)?,
-        blocker_summary: row.get(8)?,
-        owner_agent: row.get(9)?,
-        last_observed_workspace_revision: row.get(10)?,
-        updated_at: row.get(11)?,
+        baseline_dirty: dirty_columns(row, 4)?,
+        current_step: row.get(6)?,
+        progress_summary: row.get(7)?,
+        remaining_summary: row.get(8)?,
+        blocker_summary: row.get(9)?,
+        owner_agent: row.get(10)?,
+        last_observed_workspace_revision: row.get(11)?,
+        updated_at: row.get(12)?,
     })
 }
 
@@ -78,7 +87,7 @@ fn decode_work_resource(row: &Row<'_>) -> Result<WorkResource, KnowledgeError> {
 
 const WORK_RESULT_COLUMNS: &str = "w.uid, r.result_status, r.result_summary, r.commit_id, \
     r.change_set_fingerprint, r.verification_summary, r.result_workspace_revision, \
-    r.result_generation_no, r.created_at";
+    r.result_generation_no, r.remaining_dirty_state, r.remaining_dirty_fingerprint, r.created_at";
 
 fn decode_work_result(row: &Row<'_>) -> Result<WorkResult, KnowledgeError> {
     Ok(WorkResult {
@@ -90,7 +99,8 @@ fn decode_work_result(row: &Row<'_>) -> Result<WorkResult, KnowledgeError> {
         verification_summary: row.get(5)?,
         result_workspace_revision: row.get(6)?,
         result_generation_no: row.get(7)?,
-        created_at: row.get(8)?,
+        remaining_dirty: dirty_columns(row, 8)?,
+        created_at: row.get(10)?,
     })
 }
 
@@ -154,6 +164,27 @@ fn decode_work_note(row: &Row<'_>) -> Result<WorkNote, KnowledgeError> {
     })
 }
 
+/// T6 in the task 3 SQL access plan: driven by the requesting WorkItem's
+/// own edit-scope rows, then `idx_work_resource_resource_role`.
+pub(crate) const OVERLAP_SQL: &str = "SELECT o.uid, o.status, r.resource_uid, s.role, r.role \
+    FROM work_resource s \
+    JOIN work_resource r ON r.resource_uid = s.resource_uid AND r.work_item_id <> s.work_item_id \
+    JOIN work_item o ON o.id = r.work_item_id \
+    WHERE s.work_item_id = ?1 \
+      AND s.role IN ('TARGET', 'TOUCHED', 'OWNED') \
+      AND r.role IN ('TARGET', 'TOUCHED', 'OWNED') \
+      AND o.status IN ('ACTIVE', 'BLOCKED', 'PAUSED') \
+    ORDER BY r.resource_uid, o.id, s.role, r.role LIMIT ?2";
+
+/// One role pair of an edit-scope overlap.
+pub(crate) struct OverlapRow {
+    pub other: WorkItemId,
+    pub other_status: WorkItemStatus,
+    pub resource: brainprint_core::ResourceId,
+    pub this_role: WorkResourceRole,
+    pub other_role: WorkResourceRole,
+}
+
 impl WorkspaceKnowledgeStore {
     pub fn open(path: &Path) -> Result<Self, KnowledgeError> {
         Ok(Self::from_connection(
@@ -178,6 +209,12 @@ impl WorkspaceKnowledgeStore {
             .transpose()
     }
 
+    /// A workspace.db transaction the lifecycle runs several primitives
+    /// in; every primitive uses this same connection.
+    pub(crate) fn begin(&self) -> Result<Transaction<'_>, KnowledgeError> {
+        Ok(self.connection.unchecked_transaction()?)
+    }
+
     fn work_item_row_id(&self, uid: WorkItemId) -> Result<i64, KnowledgeError> {
         self.connection
             .query_row(
@@ -195,7 +232,7 @@ impl WorkspaceKnowledgeStore {
     // ---- WorkItem ----
 
     /// Create a WorkItem in OPEN status.
-    pub fn create_work_item(&self, new: &NewWorkItem) -> Result<WorkItem, KnowledgeError> {
+    pub(crate) fn create_work_item(&self, new: &NewWorkItem) -> Result<WorkItem, KnowledgeError> {
         let uid = WorkItemId::generate();
         self.connection.execute(
             "INSERT INTO work_item (uid, source_kind, source_ref, title, goal, status, created_at) \
@@ -237,9 +274,11 @@ impl WorkspaceKnowledgeStore {
         )
     }
 
-    /// Any non-terminal status may move to any other; COMPLETED and
-    /// ABANDONED are terminal and set `closed_at`.
-    pub fn set_work_item_status(
+    /// Task 1's unrestricted setter, kept for storage tests only: any
+    /// non-terminal status may move to any other. The lifecycle uses
+    /// [`Self::transition_work_item`].
+    #[cfg(test)]
+    pub(crate) fn set_work_item_status(
         &self,
         uid: WorkItemId,
         next: WorkItemStatus,
@@ -265,6 +304,43 @@ impl WorkspaceKnowledgeStore {
         self.require_work_item(uid)
     }
 
+    /// Compare-and-set status transition: moves `uid` to `next` only if its
+    /// current status is one of `from`, in one statement. A terminal
+    /// `next` sets `closed_at`.
+    pub(crate) fn transition_work_item(
+        &self,
+        uid: WorkItemId,
+        from: &[WorkItemStatus],
+        next: WorkItemStatus,
+    ) -> Result<WorkItem, KnowledgeError> {
+        let terminal = matches!(next, WorkItemStatus::Completed | WorkItemStatus::Abandoned);
+        let placeholders = vec!["?"; from.len()].join(", ");
+        let mut values: Vec<Box<dyn rusqlite::ToSql>> = vec![
+            Box::new(next.as_str()),
+            Box::new(terminal.then(db::now_millis_text)),
+            Box::new(blob(uid)),
+        ];
+        values.extend(
+            from.iter()
+                .map(|status| Box::new(status.as_str()) as Box<dyn rusqlite::ToSql>),
+        );
+        let changed = self.connection.execute(
+            &format!(
+                "UPDATE work_item SET status = ?, closed_at = ? \
+                 WHERE uid = ? AND status IN ({placeholders})"
+            ),
+            rusqlite::params_from_iter(values),
+        )?;
+        let current = self.require_work_item(uid)?;
+        if changed == 0 {
+            return Err(KnowledgeError::InvalidTransition {
+                what: "work_item",
+                reason: format!("{} -> {}", current.status.as_str(), next.as_str()),
+            });
+        }
+        Ok(current)
+    }
+
     fn require_work_item(&self, uid: WorkItemId) -> Result<WorkItem, KnowledgeError> {
         self.get_work_item(uid)?.ok_or(KnowledgeError::NotFound {
             what: "work_item",
@@ -274,23 +350,26 @@ impl WorkspaceKnowledgeStore {
 
     // ---- Working State (one current snapshot per WorkItem) ----
 
-    /// Replace the WorkItem's current snapshot. `state.work_item` names the
-    /// owner; `state.updated_at` is ignored and set to now.
-    pub fn upsert_working_state(
+    /// Task 1's whole-row replace, baseline included. Storage tests only:
+    /// the lifecycle writes the baseline once ([`Self::insert_working_state`])
+    /// and afterwards only the mutable part ([`Self::update_working_progress`]).
+    #[cfg(test)]
+    pub(crate) fn upsert_working_state(
         &self,
         state: &WorkingState,
     ) -> Result<WorkingState, KnowledgeError> {
         let work_item_id = self.work_item_row_id(state.work_item)?;
         self.connection.execute(
             "INSERT INTO working_state (work_item_id, baseline_workspace_revision, \
-               baseline_generation_no, baseline_head, baseline_dirty_fingerprint, current_step, \
-               progress_summary, remaining_summary, blocker_summary, owner_agent, \
-               last_observed_workspace_revision, updated_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12) \
+               baseline_generation_no, baseline_head, baseline_dirty_state, \
+               baseline_dirty_fingerprint, current_step, progress_summary, remaining_summary, \
+               blocker_summary, owner_agent, last_observed_workspace_revision, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13) \
              ON CONFLICT (work_item_id) DO UPDATE SET \
                baseline_workspace_revision = excluded.baseline_workspace_revision, \
                baseline_generation_no = excluded.baseline_generation_no, \
                baseline_head = excluded.baseline_head, \
+               baseline_dirty_state = excluded.baseline_dirty_state, \
                baseline_dirty_fingerprint = excluded.baseline_dirty_fingerprint, \
                current_step = excluded.current_step, \
                progress_summary = excluded.progress_summary, \
@@ -303,7 +382,8 @@ impl WorkspaceKnowledgeStore {
                 state.baseline_workspace_revision,
                 state.baseline_generation_no,
                 state.baseline_head,
-                state.baseline_dirty_fingerprint,
+                state.baseline_dirty.state().as_str(),
+                state.baseline_dirty.fingerprint(),
                 state.current_step,
                 state.progress_summary,
                 state.remaining_summary,
@@ -318,6 +398,70 @@ impl WorkspaceKnowledgeStore {
                 what: "working_state",
                 uid: state.work_item.to_string(),
             })
+    }
+
+    /// Write the WorkItem's first Working State: the baseline plus the
+    /// initial mutable part. Plain INSERT -- an existing snapshot (an
+    /// already fixed baseline) is a constraint error, never overwritten.
+    /// `state.updated_at` is ignored.
+    pub(crate) fn insert_working_state(&self, state: &WorkingState) -> Result<(), KnowledgeError> {
+        state.baseline_dirty.validate()?;
+        let work_item_id = self.work_item_row_id(state.work_item)?;
+        self.connection.execute(
+            "INSERT INTO working_state (work_item_id, baseline_workspace_revision, \
+               baseline_generation_no, baseline_head, baseline_dirty_state, \
+               baseline_dirty_fingerprint, current_step, progress_summary, remaining_summary, \
+               blocker_summary, owner_agent, last_observed_workspace_revision, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            params![
+                work_item_id,
+                state.baseline_workspace_revision,
+                state.baseline_generation_no,
+                state.baseline_head,
+                state.baseline_dirty.state().as_str(),
+                state.baseline_dirty.fingerprint(),
+                state.current_step,
+                state.progress_summary,
+                state.remaining_summary,
+                state.blocker_summary,
+                state.owner_agent,
+                state.last_observed_workspace_revision,
+                db::now_millis_text(),
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Replace only the mutable part of an existing snapshot; the
+    /// `baseline_*` columns are not in this statement at all.
+    pub(crate) fn update_working_progress(
+        &self,
+        state: &WorkingState,
+    ) -> Result<(), KnowledgeError> {
+        let work_item_id = self.work_item_row_id(state.work_item)?;
+        let changed = self.connection.execute(
+            "UPDATE working_state SET current_step = ?2, progress_summary = ?3, \
+               remaining_summary = ?4, blocker_summary = ?5, owner_agent = ?6, \
+               last_observed_workspace_revision = ?7, updated_at = ?8 \
+             WHERE work_item_id = ?1",
+            params![
+                work_item_id,
+                state.current_step,
+                state.progress_summary,
+                state.remaining_summary,
+                state.blocker_summary,
+                state.owner_agent,
+                state.last_observed_workspace_revision,
+                db::now_millis_text(),
+            ],
+        )?;
+        if changed == 0 {
+            return Err(KnowledgeError::NotFound {
+                what: "working_state",
+                uid: state.work_item.to_string(),
+            });
+        }
+        Ok(())
     }
 
     pub fn get_working_state(
@@ -341,7 +485,7 @@ impl WorkspaceKnowledgeStore {
     /// the same (resource, role) only advances `last_observed_revision`
     /// (and the locator hint). `resource` is a stable index.db ResourceID
     /// value; it need not exist in any index.db.
-    pub fn record_work_resource(
+    pub(crate) fn record_work_resource(
         &self,
         resource: &WorkResource,
     ) -> Result<WorkResource, KnowledgeError> {
@@ -404,13 +548,18 @@ impl WorkspaceKnowledgeStore {
 
     /// Record (or replace) the WorkItem's result. A `commit_id` never
     /// implies COMPLETED; the caller states `result_status` explicitly.
-    pub fn record_work_result(&self, result: &WorkResult) -> Result<WorkResult, KnowledgeError> {
+    pub(crate) fn record_work_result(
+        &self,
+        result: &WorkResult,
+    ) -> Result<WorkResult, KnowledgeError> {
+        result.remaining_dirty.validate()?;
         let work_item_id = self.work_item_row_id(result.work_item)?;
         self.connection.execute(
             "INSERT INTO work_result (work_item_id, result_status, result_summary, commit_id, \
                change_set_fingerprint, verification_summary, result_workspace_revision, \
-               result_generation_no, created_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) \
+               result_generation_no, remaining_dirty_state, remaining_dirty_fingerprint, \
+               created_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11) \
              ON CONFLICT (work_item_id) DO UPDATE SET \
                result_status = excluded.result_status, result_summary = excluded.result_summary, \
                commit_id = excluded.commit_id, \
@@ -418,6 +567,8 @@ impl WorkspaceKnowledgeStore {
                verification_summary = excluded.verification_summary, \
                result_workspace_revision = excluded.result_workspace_revision, \
                result_generation_no = excluded.result_generation_no, \
+               remaining_dirty_state = excluded.remaining_dirty_state, \
+               remaining_dirty_fingerprint = excluded.remaining_dirty_fingerprint, \
                created_at = excluded.created_at",
             params![
                 work_item_id,
@@ -428,6 +579,8 @@ impl WorkspaceKnowledgeStore {
                 result.verification_summary,
                 result.result_workspace_revision,
                 result.result_generation_no,
+                result.remaining_dirty.state().as_str(),
+                result.remaining_dirty.fingerprint(),
                 db::now_millis_text(),
             ],
         )?;
@@ -455,7 +608,7 @@ impl WorkspaceKnowledgeStore {
 
     // ---- Work Handoff ----
 
-    pub fn add_work_handoff(&self, handoff: &WorkHandoff) -> Result<(), KnowledgeError> {
+    pub(crate) fn add_work_handoff(&self, handoff: &WorkHandoff) -> Result<(), KnowledgeError> {
         let work_item_id = self.work_item_row_id(handoff.work_item)?;
         self.connection.execute(
             "INSERT INTO work_handoff (work_item_id, handoff_summary, remaining_summary, \
@@ -489,6 +642,32 @@ impl WorkspaceKnowledgeStore {
             params![work_item_id, limit],
             decode_work_handoff,
         )
+    }
+
+    /// Edit-scope overlap rows of `work_item` with other ACTIVE / BLOCKED /
+    /// PAUSED WorkItems: `(other uid, other status, resource, this role,
+    /// other role)`, one row per role pair, ordered by resource, other
+    /// WorkItem, roles. Only TARGET / TOUCHED / OWNED count on either side.
+    /// `limit` bounds the rows read.
+    pub(crate) fn work_overlap_rows(
+        &self,
+        work_item: WorkItemId,
+        limit: u32,
+    ) -> Result<Vec<OverlapRow>, KnowledgeError> {
+        let work_item_id = self.work_item_row_id(work_item)?;
+        let mut statement = self.connection.prepare_cached(OVERLAP_SQL)?;
+        let mut rows = statement.query(params![work_item_id, limit])?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next()? {
+            out.push(OverlapRow {
+                other: uid_column(row, 0, "work_item")?,
+                other_status: WorkItemStatus::parse(&row.get::<_, String>(1)?)?,
+                resource: uid_column(row, 2, "work_resource")?,
+                this_role: WorkResourceRole::parse(&row.get::<_, String>(3)?)?,
+                other_role: WorkResourceRole::parse(&row.get::<_, String>(4)?)?,
+            });
+        }
+        Ok(out)
     }
 
     // ---- Work Note ----

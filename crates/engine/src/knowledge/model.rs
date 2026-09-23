@@ -722,8 +722,77 @@ pub struct NewWorkItem {
     pub goal: String,
 }
 
+/// Stored dirty observation state (`baseline_dirty_state` /
+/// `remaining_dirty_state`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DirtyState {
+    Unknown,
+    Clean,
+    Dirty,
+}
+
+closed_vocabulary!(DirtyState {
+    Unknown => "UNKNOWN",
+    Clean => "CLEAN",
+    Dirty => "DIRTY",
+});
+
+/// Whether uncommitted changes were observed (#20 task 3 LOCKED §7-8).
+/// UNKNOWN means nobody looked; it is never read as CLEAN, and a missing
+/// fingerprint alone never means clean. Only DIRTY carries a fingerprint.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DirtyObservation {
+    Unknown,
+    Clean,
+    Dirty { fingerprint: String },
+}
+
+impl DirtyObservation {
+    /// Decode (or check) a state/fingerprint pair. UNKNOWN or CLEAN with a
+    /// fingerprint, and DIRTY without a non-empty one, are rejected.
+    pub fn from_parts(
+        state: DirtyState,
+        fingerprint: Option<String>,
+    ) -> Result<Self, KnowledgeError> {
+        match (state, fingerprint) {
+            (DirtyState::Unknown, None) => Ok(Self::Unknown),
+            (DirtyState::Clean, None) => Ok(Self::Clean),
+            (DirtyState::Dirty, Some(fingerprint)) if !fingerprint.is_empty() => {
+                Ok(Self::Dirty { fingerprint })
+            }
+            (state, fingerprint) => Err(KnowledgeError::Inconsistent {
+                table: "dirty observation",
+                reason: format!("{} with fingerprint {fingerprint:?}", state.as_str()),
+            }),
+        }
+    }
+
+    #[must_use]
+    pub const fn state(&self) -> DirtyState {
+        match self {
+            Self::Unknown => DirtyState::Unknown,
+            Self::Clean => DirtyState::Clean,
+            Self::Dirty { .. } => DirtyState::Dirty,
+        }
+    }
+
+    #[must_use]
+    pub fn fingerprint(&self) -> Option<&str> {
+        match self {
+            Self::Dirty { fingerprint } => Some(fingerprint),
+            Self::Unknown | Self::Clean => None,
+        }
+    }
+
+    /// Reject a DIRTY observation built with an empty fingerprint.
+    pub fn validate(&self) -> Result<(), KnowledgeError> {
+        Self::from_parts(self.state(), self.fingerprint().map(str::to_owned)).map(drop)
+    }
+}
+
 /// Current operational snapshot of one WorkItem -- a snapshot, never an
-/// event log (#13 task 7 §17). On write, `updated_at` is ignored.
+/// event log (#13 task 7 §17). The `baseline_*` fields are fixed by the
+/// first activation and never rewritten by the lifecycle (#20 task 3).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkingState {
     pub work_item: WorkItemId,
@@ -731,7 +800,7 @@ pub struct WorkingState {
     /// Value reference into index.db; no FK (#13 task 7 §21).
     pub baseline_generation_no: i64,
     pub baseline_head: Option<String>,
-    pub baseline_dirty_fingerprint: Option<String>,
+    pub baseline_dirty: DirtyObservation,
     pub current_step: Option<String>,
     pub progress_summary: Option<String>,
     pub remaining_summary: Option<String>,
@@ -796,6 +865,8 @@ pub struct WorkResult {
     pub verification_summary: Option<String>,
     pub result_workspace_revision: String,
     pub result_generation_no: Option<i64>,
+    /// Dirty state observed when the result was recorded.
+    pub remaining_dirty: DirtyObservation,
     pub created_at: String,
 }
 

@@ -17,6 +17,11 @@
 //! State, same typed-value semantics and null-safe identity index as
 //! project.db `project_state`). Policy/Decision payload is never stored
 //! here.
+//!
+//! v4 (#20 task 3, #13 I5 task 3 amendment) adds the dirty observation
+//! state `UNKNOWN | CLEAN | DIRTY` to the Working State baseline and the
+//! Work Result, with a CHECK that exactly DIRTY carries a fingerprint, and
+//! the `(resource_uid, role)` index behind the WorkItem overlap query.
 
 use std::path::Path;
 
@@ -144,6 +149,36 @@ pub const WORKSPACE_MIGRATIONS: &[Migration] = &[
         );
         CREATE UNIQUE INDEX idx_workspace_project_state_identity
             ON workspace_project_state (scope_kind, ifnull(scope_key, ''), state_key);
+    ",
+    },
+    Migration {
+        version: 4,
+        name: "add_dirty_observation_and_resource_lookup",
+        // Legacy fingerprints are parked while the checked column is
+        // added (ADD COLUMN validates its CHECK against existing rows),
+        // then restored as DIRTY. A legacy NULL fingerprint stays UNKNOWN,
+        // never CLEAN.
+        sql: "
+        CREATE TEMP TABLE legacy_baseline_dirty AS
+            SELECT id, baseline_dirty_fingerprint AS fingerprint FROM working_state
+            WHERE baseline_dirty_fingerprint IS NOT NULL;
+        UPDATE working_state SET baseline_dirty_fingerprint = NULL
+            WHERE baseline_dirty_fingerprint IS NOT NULL;
+        ALTER TABLE working_state ADD COLUMN baseline_dirty_state TEXT NOT NULL DEFAULT 'UNKNOWN'
+            CHECK (baseline_dirty_state IN ('UNKNOWN', 'CLEAN', 'DIRTY')
+                   AND (baseline_dirty_state = 'DIRTY') = (baseline_dirty_fingerprint IS NOT NULL));
+        UPDATE working_state SET baseline_dirty_state = 'DIRTY',
+            baseline_dirty_fingerprint =
+                (SELECT fingerprint FROM legacy_baseline_dirty l WHERE l.id = working_state.id)
+            WHERE id IN (SELECT id FROM legacy_baseline_dirty);
+        DROP TABLE legacy_baseline_dirty;
+
+        ALTER TABLE work_result ADD COLUMN remaining_dirty_fingerprint TEXT;
+        ALTER TABLE work_result ADD COLUMN remaining_dirty_state TEXT NOT NULL DEFAULT 'UNKNOWN'
+            CHECK (remaining_dirty_state IN ('UNKNOWN', 'CLEAN', 'DIRTY')
+                   AND (remaining_dirty_state = 'DIRTY') = (remaining_dirty_fingerprint IS NOT NULL));
+
+        CREATE INDEX idx_work_resource_resource_role ON work_resource (resource_uid, role);
     ",
     },
 ];
