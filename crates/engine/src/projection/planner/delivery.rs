@@ -207,6 +207,119 @@ pub struct DeliveryContinuation {
     pub(crate) next: DeliveryKey,
 }
 
+// --------------------------------------- #24 Task 11 wire bridge
+//
+// Read-only accessors plus a checked reconstruction constructor for the
+// Task 11 wire adapter (`brainprint-daemon`, outside this crate's
+// `pub(crate)` boundary). A visibility/transport bridge only: it adds no
+// behavior and changes no continuation semantics. A continuation rebuilt
+// through `from_wire_parts` is validated the same way any other one is --
+// by `check()`, the next time it is used to deliver a page.
+
+impl DeliveryKey {
+    #[must_use]
+    pub const fn tier(&self) -> u8 {
+        self.tier
+    }
+
+    #[must_use]
+    pub const fn depth(&self) -> usize {
+        self.depth
+    }
+
+    #[must_use]
+    pub const fn identity(&self) -> [u8; 32] {
+        self.identity
+    }
+
+    /// Reconstruct a key from its wire parts (#24 Task 11 §2).
+    #[must_use]
+    pub const fn from_wire_parts(tier: u8, depth: usize, identity: [u8; 32]) -> Self {
+        Self {
+            tier,
+            depth,
+            identity,
+        }
+    }
+}
+
+impl DeliveryContinuation {
+    #[must_use]
+    pub const fn workspace(&self) -> WorkspaceId {
+        self.workspace
+    }
+
+    #[must_use]
+    pub const fn index_incarnation(&self) -> IndexIncarnationId {
+        self.index_incarnation
+    }
+
+    #[must_use]
+    pub fn workspace_revision(&self) -> &str {
+        &self.workspace_revision
+    }
+
+    #[must_use]
+    pub const fn generation_no(&self) -> i64 {
+        self.generation_no
+    }
+
+    #[must_use]
+    pub fn generation_basis_revision(&self) -> &str {
+        &self.generation_basis_revision
+    }
+
+    #[must_use]
+    pub const fn request_fingerprint(&self) -> [u8; 32] {
+        self.request_fingerprint
+    }
+
+    #[must_use]
+    pub const fn projection_fingerprint(&self) -> [u8; 32] {
+        self.projection_fingerprint
+    }
+
+    #[must_use]
+    pub const fn budget(&self) -> DeliveryBudget {
+        self.budget
+    }
+
+    #[must_use]
+    pub const fn next(&self) -> &DeliveryKey {
+        &self.next
+    }
+
+    /// Reconstruct a continuation from its wire parts (#24 Task 11 §2).
+    /// Performs no validation beyond the type system -- the reconstructed
+    /// value is checked against current Workspace/index/generation truth
+    /// the next time it is used to deliver a page.
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_wire_parts(
+        workspace: WorkspaceId,
+        index_incarnation: IndexIncarnationId,
+        workspace_revision: String,
+        generation_no: i64,
+        generation_basis_revision: String,
+        request_fingerprint: [u8; 32],
+        projection_fingerprint: [u8; 32],
+        budget: DeliveryBudget,
+        next: DeliveryKey,
+    ) -> Self {
+        Self {
+            workspace,
+            index_incarnation,
+            workspace_revision,
+            generation_no,
+            generation_basis_revision,
+            request_fingerprint,
+            projection_fingerprint,
+            budget,
+            next,
+        }
+    }
+}
+
 /// Why a page with more available carries no continuation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContinuationUnavailable {

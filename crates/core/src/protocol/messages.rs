@@ -9,6 +9,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use super::query::{QueryAckRequest, QueryAckResponse, QueryRequest, QueryResponse};
+
 /// A client's opening message on a freshly connected IPC stream.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HandshakeRequest {
@@ -98,15 +100,27 @@ pub struct InitResponse {
 
 /// An envelope for every request a client may send after a successful
 /// handshake.
+// `Query` is large relative to the other variants (a full Task 10
+// request shape); one per RPC call, never in a hot loop, so boxing it
+// purely to shrink the enum's stack footprint would not be a measurable
+// win anywhere it is actually used.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Request {
     Handshake(HandshakeRequest),
     Status(StatusRequest),
     Install(InstallRequest),
     Init(InitRequest),
+    /// #24 Task 11: a Task 10 `CoreQuerySurface` operation.
+    Query(QueryRequest),
+    /// #24 Task 11: acknowledge a `Query` response's pending delivery.
+    QueryAck(QueryAckRequest),
 }
 
 /// An envelope for every response the daemon may send.
+// See `Request`'s `large_enum_variant` allow: one per RPC call, never a
+// hot loop.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Response {
     Handshake(HandshakeResponse),
@@ -117,6 +131,8 @@ pub enum Response {
     /// handshake completed, or `init` hit an identity/registry conflict).
     /// Never used to smuggle a fabricated success.
     Error(ErrorResponse),
+    Query(QueryResponse),
+    QueryAck(QueryAckResponse),
 }
 
 /// A coarse, stable classification a client can act on without parsing

@@ -8,8 +8,13 @@ pub const PACKAGE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Version of the local Brainprint client/daemon protocol.
 ///
-/// This is intentionally independent from the package version.
-pub const PROTOCOL_VERSION: u32 = 1;
+/// This is intentionally independent from the package version. Bumped to
+/// 2 by #24 Task 11: the `Request`/`Response` enums gained `Query`/
+/// `QueryAck` variants, which is wire-incompatible with a v1 peer.
+/// Compatibility stays strict and symmetric -- a v1 client and a v2
+/// daemon (or the reverse) reject each other explicitly rather than
+/// negotiating or guessing.
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// Minimal build identity that benchmark and runtime boundaries can record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

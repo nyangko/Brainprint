@@ -16,6 +16,11 @@ repository = "https://github.com/nyangko/Brainprint"
 [workspace.dependencies]
 brainprint-core = { path = "crates/core" }
 brainprint-engine = { path = "crates/engine" }
+# Task 11 CLI grammar: seven operation families, dozens of typed flags
+# with closed vocabularies and mutual-exclusion groups. The existing
+# hand-rolled match parser (three flat commands) does not scale to this;
+# clap's derive API is the standard tool for exactly this shape.
+clap = { version = "4", features = ["derive"] }
 rusqlite = { version = "0.40", features = ["bundled"] }
 serde = { version = "1.0", features = ["derive"] }
 notify = "8"

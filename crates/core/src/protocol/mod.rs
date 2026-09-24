@@ -17,6 +17,7 @@
 pub mod endpoint;
 pub mod framing;
 pub mod messages;
+pub mod query;
 pub mod transport;
 
 pub use endpoint::{EndpointPaths, EndpointResolutionError};

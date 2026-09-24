@@ -15,7 +15,14 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 /// an attacker/bug-controlled buffer size. Handshake/status payloads are a
 /// few hundred bytes; this leaves generous headroom without being
 /// unbounded.
-const MAX_MESSAGE_BYTES: u32 = 1024 * 1024;
+///
+/// #24 Task 11 §10: the bound applies symmetrically to both directions.
+/// A query result that would encode larger than this is never written --
+/// the daemon adapter preflights it and substitutes a typed
+/// `RESULT_TOO_LARGE` error response before calling [`write_message`], so
+/// this function's own check is a defensive backstop, not the primary
+/// mechanism.
+pub const MAX_MESSAGE_BYTES: u32 = 1024 * 1024;
 
 /// Serialize `message` as length-prefixed JSON and write it to `stream`.
 pub async fn write_message<S, T>(stream: &mut S, message: &T) -> io::Result<()>
@@ -26,6 +33,12 @@ where
     let body = serde_json::to_vec(message).map_err(to_io_error)?;
     let len = u32::try_from(body.len())
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "message too large to frame"))?;
+    if len > MAX_MESSAGE_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("message of {len} bytes exceeds the {MAX_MESSAGE_BYTES}-byte frame limit"),
+        ));
+    }
 
     stream.write_all(&len.to_be_bytes()).await?;
     stream.write_all(&body).await?;

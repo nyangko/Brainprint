@@ -1,51 +1,45 @@
-mod args;
 mod client;
+mod query;
 
-use args::{ArgError, Command};
-use brainprint_core::BuildInfo;
-
-const HELP: &str = "Brainprint CLI
-
-Usage:
-  brainprint --help
-  brainprint --version
-  brainprint install
-  brainprint init [path]
-  brainprint status
-";
+use clap::Parser as _;
+use query::Cli;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-
-    match args::parse(&args) {
-        Ok(Command::Help) => println!("{HELP}"),
-        Ok(Command::Version) => {
-            let build = BuildInfo::current();
-            println!("brainprint {}", build.version);
+    let exit_code = match Cli::try_parse() {
+        Ok(Cli::Install) => run(cmd_install()).await,
+        Ok(Cli::Status) => run(cmd_status()).await,
+        Ok(Cli::Init { path }) => run(cmd_init(path)).await,
+        Ok(
+            cli @ (Cli::Find { .. }
+            | Cli::Inspect(_)
+            | Cli::Relations(_)
+            | Cli::Impact(_)
+            | Cli::Context { .. }
+            | Cli::Knowledge { .. }
+            | Cli::Structure(_)),
+        ) => query::run_query_command(cli).await.into(),
+        Err(error) => {
+            // clap prints its own usage/help text to stdout/stderr as
+            // appropriate; --help/--version exit 0, a syntax error exits
+            // 2 (#24 §22).
+            let code = error.exit_code();
+            error.print().ok();
+            code
         }
-        Ok(Command::Install) => run(cmd_install()).await,
-        Ok(Command::Status) => run(cmd_status()).await,
-        Ok(Command::Init { path }) => run(cmd_init(path)).await,
-        Err(ArgError::Unknown(other)) => {
-            eprintln!("unknown argument: {other}\n\n{HELP}");
-            std::process::exit(2);
-        }
-        Err(ArgError::TooManyArguments) => {
-            eprintln!("too many arguments\n\n{HELP}");
-            std::process::exit(2);
-        }
-    }
+    };
+    std::process::exit(exit_code);
 }
 
-async fn run<F>(command: F)
+async fn run<F>(command: F) -> i32
 where
     F: std::future::Future<Output = Result<(), client::CliError>>,
 {
     if let Err(error) = command.await {
         eprintln!("brainprint: {error}");
-        std::process::exit(1);
+        return 1;
     }
+    0
 }
 
 async fn cmd_install() -> Result<(), client::CliError> {

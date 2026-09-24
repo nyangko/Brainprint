@@ -135,7 +135,10 @@ pub async fn init(
     }
 }
 
-async fn send(connection: &mut ClientConnection, request: Request) -> Result<Response, CliError> {
+pub(crate) async fn send(
+    connection: &mut ClientConnection,
+    request: Request,
+) -> Result<Response, CliError> {
     protocol::framing::write_message(connection, &request)
         .await
         .map_err(CliError::Io)?;

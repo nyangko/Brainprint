@@ -12,6 +12,7 @@
 
 pub mod client;
 pub mod handlers;
+pub mod query;
 pub mod runtime_paths;
 pub mod server;
 pub mod state;

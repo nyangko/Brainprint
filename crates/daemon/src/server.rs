@@ -9,7 +9,7 @@
 //! It never kills a process or deletes another user's artifact based on a
 //! PID file alone -- liveness is always decided by a live handshake.
 
-use std::{error::Error, fmt, io, path::Path, time::Duration};
+use std::{error::Error, fmt, io, path::Path, sync::Arc, time::Duration};
 
 use brainprint_core::{
     BuildInfo,
@@ -22,6 +22,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::{
     client, handlers,
+    query::DaemonQueryRuntime,
     runtime_paths::{self, RuntimeEndpoint},
     state::DaemonState,
 };
@@ -68,6 +69,7 @@ pub struct Server {
     endpoint: RuntimeEndpoint,
     state: DaemonState,
     global_paths: GlobalPaths,
+    query_runtime: Arc<DaemonQueryRuntime>,
 }
 
 impl Server {
@@ -107,6 +109,7 @@ impl Server {
             listener,
             endpoint,
             state: DaemonState::new(),
+            query_runtime: Arc::new(DaemonQueryRuntime::new(global_paths.global_db.clone())),
             global_paths: global_paths.clone(),
         })
     }
@@ -120,10 +123,11 @@ impl Server {
             let connection = self.listener.accept().await?;
             let state = self.state;
             let global_paths = self.global_paths.clone();
+            let query_runtime = Arc::clone(&self.query_runtime);
             tokio::spawn(async move {
                 // A single client's connection failing must never take
                 // down the daemon or any other client's connection.
-                let _ = handle_connection(connection, state, global_paths).await;
+                let _ = handle_connection(connection, state, global_paths, query_runtime).await;
             });
         }
     }
@@ -144,6 +148,7 @@ async fn handle_connection<S>(
     mut connection: S,
     state: DaemonState,
     global_paths: GlobalPaths,
+    query_runtime: Arc<DaemonQueryRuntime>,
 ) -> io::Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -219,6 +224,12 @@ where
                     Ok(init) => Response::Init(init),
                     Err(error) => Response::Error(error),
                 }
+            }
+            Request::Query(query_request) => {
+                crate::query::handle_query(&query_runtime, query_request).await
+            }
+            Request::QueryAck(ack_request) => {
+                crate::query::handle_query_ack(&query_runtime, ack_request).await
             }
         };
         protocol::framing::write_message(&mut connection, &response).await?;
