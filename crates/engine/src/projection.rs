@@ -327,34 +327,50 @@ impl ProjectionRequest {
         if text.is_some_and(str::is_empty) {
             return Err(ProjectionRequestError::EmptySelector);
         }
-
-        let mut context = ApplicabilityContext::base(Some(self.workspace));
-        for layer in &self.scope_layers {
-            context = context
-                .with_layer(layer.clone())
-                .map_err(ProjectionRequestError::InvalidScopeLayer)?;
-        }
-        if let Some(outside) = self
-            .directives
-            .iter()
-            .find(|directive| context.layer_of(&directive.scope).is_none())
-        {
-            return Err(ProjectionRequestError::DirectiveOutsideApplicability {
-                directive_id: outside.id.clone(),
-            });
-        }
-        let mut check = ResolveRequest::new(context);
-        check.directives.clone_from(&self.directives);
-        check
-            .check_directives()
-            .map_err(ProjectionRequestError::InvalidDirective)?;
-
-        self.knowledge.check()?;
-        if let Some(correlation) = &self.correlation {
-            correlation.check()?;
-        }
-        Ok(check.context)
+        validate_applicability(
+            self.workspace,
+            &self.scope_layers,
+            &self.directives,
+            &self.knowledge,
+            self.correlation.as_ref(),
+        )
     }
+}
+
+/// The intent-independent part of [`ProjectionRequest::validate`], shared
+/// with the task 10 rules query so both validate by exactly one rule set.
+pub(crate) fn validate_applicability(
+    workspace: WorkspaceId,
+    scope_layers: &[Vec<KnowledgeScope>],
+    directives: &[RequestDirective],
+    knowledge: &ProjectionKnowledgeRefs,
+    correlation: Option<&ProjectionCorrelation>,
+) -> Result<ApplicabilityContext, ProjectionRequestError> {
+    let mut context = ApplicabilityContext::base(Some(workspace));
+    for layer in scope_layers {
+        context = context
+            .with_layer(layer.clone())
+            .map_err(ProjectionRequestError::InvalidScopeLayer)?;
+    }
+    if let Some(outside) = directives
+        .iter()
+        .find(|directive| context.layer_of(&directive.scope).is_none())
+    {
+        return Err(ProjectionRequestError::DirectiveOutsideApplicability {
+            directive_id: outside.id.clone(),
+        });
+    }
+    let mut check = ResolveRequest::new(context);
+    check.directives = directives.to_vec();
+    check
+        .check_directives()
+        .map_err(ProjectionRequestError::InvalidDirective)?;
+
+    knowledge.check()?;
+    if let Some(correlation) = correlation {
+        correlation.check()?;
+    }
+    Ok(check.context)
 }
 
 /// A structurally invalid request.

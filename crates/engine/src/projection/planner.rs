@@ -37,7 +37,8 @@ use brainprint_core::{BlueprintApplicationId, ProjectId, ResourceId, WorkItemId,
 
 use super::{
     ChangeKind, CoverageEvidence, CoverageSubject, EvidenceItem, GenerationBasis, ProjectionIntent,
-    ProjectionRequest, ProjectionRequestError, ProjectionTarget, TargetSelection,
+    ProjectionKnowledgeRefs, ProjectionRequest, ProjectionRequestError, ProjectionTarget,
+    TargetSelection,
     canonical::{self, Canonical},
 };
 use crate::{
@@ -48,8 +49,8 @@ use crate::{
     inspect::{ReadError, SourceReader},
     knowledge::{
         ApplicabilityContext, GlobalKnowledgeStore, KnowledgeError, KnowledgeSources,
-        ProjectKnowledgeStore, ResolveError, ResolveRequest, Staleness, WorkError, WorkRuntime,
-        WorkspaceKnowledgeStore, resolve,
+        ProjectKnowledgeStore, RequestDirective, ResolveError, ResolveRequest, ResolvedKnowledge,
+        Staleness, WorkError, WorkRuntime, WorkspaceKnowledgeStore, resolve,
     },
     logical_symbol::{self, LogicalSymbolError},
     parser::SourceSpan,
@@ -656,23 +657,7 @@ impl ProjectionPlanner {
         plan: &mut Plan,
     ) -> Result<(), PlannerError> {
         let refs = &request.knowledge;
-        let resolve_request = ResolveRequest {
-            directives: request.directives.clone(),
-            decision_topics: refs.decision_topics.iter().cloned().collect(),
-            preference_keys: refs.preference_keys.iter().cloned().collect(),
-            state_keys: refs.state_keys.iter().cloned().collect(),
-            blueprint_applications: refs.blueprint_applications.iter().copied().collect(),
-            // Working State comes from the WorkRuntime snapshot instead.
-            ..ResolveRequest::new(context)
-        };
-        let resolved = resolve(
-            &KnowledgeSources {
-                global: &self.global,
-                project: &self.project,
-                workspace: Some(&self.workspace),
-            },
-            &resolve_request,
-        )?;
+        let resolved = self.resolve(&request.directives, refs, context)?;
 
         let raw = &mut plan.raw;
         raw.known(&resolved.request_directives);
@@ -685,71 +670,90 @@ impl ProjectionPlanner {
         raw.known(&resolved.shadowed);
         raw.known(&resolved.conflicts);
 
-        let applied: BTreeSet<BlueprintApplicationId> = resolved
-            .blueprint_evidence
-            .iter()
-            .map(|entry| entry.item.application.uid)
-            .collect();
-        for id in refs.blueprint_applications.difference(&applied) {
-            plan.gap(ProjectionGap::BlueprintApplicationNotApplied(*id));
+        for gap in not_applied(refs, &resolved) {
+            plan.gap(gap);
         }
 
         let before = plan.items.len();
-        let items = &mut plan.items;
-        items.extend(
-            resolved
-                .protected_constraints
-                .into_iter()
-                .map(EvidenceItem::Policy),
-        );
-        items.extend(
-            resolved
-                .applied_policies
-                .into_iter()
-                .map(EvidenceItem::Policy),
-        );
-        items.extend(
-            resolved
-                .request_directives
-                .into_iter()
-                .map(EvidenceItem::Directive),
-        );
-        items.extend(
-            resolved
-                .active_decisions
-                .into_iter()
-                .map(EvidenceItem::Decision),
-        );
-        items.extend(
-            resolved
-                .applied_preferences
-                .into_iter()
-                .map(EvidenceItem::Preference),
-        );
-        items.extend(
-            resolved
-                .state_evidence
-                .into_iter()
-                .map(EvidenceItem::ProjectState),
-        );
-        items.extend(
-            resolved
-                .blueprint_evidence
-                .into_iter()
-                .map(EvidenceItem::Blueprint),
-        );
-        items.extend(
-            resolved
-                .conflicts
-                .into_iter()
-                .map(EvidenceItem::KnowledgeConflict),
-        );
+        decompose_knowledge(resolved, &mut plan.items);
         let selected = (plan.items.len() - before) as u64;
         self.count(|stats| {
             stats.knowledge_resolves += 1;
             stats.knowledge_items += selected;
         });
         Ok(())
+    }
+
+    /// The task 2 resolver over this binding's stores, with the request
+    /// built exactly one way: applicable Policy by default, other
+    /// categories only for the named subjects.
+    fn resolve(
+        &self,
+        directives: &[RequestDirective],
+        refs: &ProjectionKnowledgeRefs,
+        context: ApplicabilityContext,
+    ) -> Result<ResolvedKnowledge, PlannerError> {
+        let resolve_request = ResolveRequest {
+            directives: directives.to_vec(),
+            decision_topics: refs.decision_topics.iter().cloned().collect(),
+            preference_keys: refs.preference_keys.iter().cloned().collect(),
+            state_keys: refs.state_keys.iter().cloned().collect(),
+            blueprint_applications: refs.blueprint_applications.iter().copied().collect(),
+            // Working State comes from the WorkRuntime snapshot instead.
+            ..ResolveRequest::new(context)
+        };
+        Ok(resolve(
+            &KnowledgeSources {
+                global: &self.global,
+                project: &self.project,
+                workspace: Some(&self.workspace),
+            },
+            &resolve_request,
+        )?)
+    }
+
+    /// Applicable rules without a target or WorkItem (#23 knowledge
+    /// Rules): the same resolver request and decomposition as a CHANGE /
+    /// RESUME plan, in the planner's category order, plus the planner's
+    /// not-applied Blueprint gaps. Nothing is cut.
+    pub(crate) fn rules(
+        &self,
+        directives: &[RequestDirective],
+        refs: &ProjectionKnowledgeRefs,
+        context: ApplicabilityContext,
+    ) -> Result<(Vec<EvidenceItem>, Vec<ProjectionGap>), PlannerError> {
+        let resolved = self.resolve(directives, refs, context)?;
+        let gaps = not_applied(refs, &resolved);
+        let mut items = Vec::new();
+        decompose_knowledge(resolved, &mut items);
+        let items = order(items);
+        self.count(|stats| {
+            stats.knowledge_resolves += 1;
+            stats.knowledge_items += items.len() as u64;
+        });
+        Ok((items, gaps))
+    }
+
+    // ---- task 10 read handles (same verified binding) -------------------
+
+    pub(crate) const fn query_index(&self) -> &QueryIndex {
+        self.index()
+    }
+
+    pub(crate) const fn relation_index(&self) -> &crate::relations::RelationIndex {
+        self.tests.traversal().relations()
+    }
+
+    pub(crate) const fn global_store(&self) -> &GlobalKnowledgeStore {
+        &self.global
+    }
+
+    pub(crate) const fn project_store(&self) -> &ProjectKnowledgeStore {
+        &self.project
+    }
+
+    pub(crate) const fn workspace_store(&self) -> &WorkspaceKnowledgeStore {
+        &self.workspace
     }
 
     /// The explicit WorkItem's snapshot, decomposed, and its edit overlaps.
@@ -853,6 +857,73 @@ impl ProjectionPlanner {
         }
         Ok(items)
     }
+}
+
+/// Named Blueprint Applications the resolver did not apply, in id order.
+fn not_applied(refs: &ProjectionKnowledgeRefs, resolved: &ResolvedKnowledge) -> Vec<ProjectionGap> {
+    let applied: BTreeSet<BlueprintApplicationId> = resolved
+        .blueprint_evidence
+        .iter()
+        .map(|entry| entry.item.application.uid)
+        .collect();
+    refs.blueprint_applications
+        .difference(&applied)
+        .map(|id| ProjectionGap::BlueprintApplicationNotApplied(*id))
+        .collect()
+}
+
+/// Resolver output as evidence, in the planner's category order before
+/// sorting: protected then applied Policy, directives, Decision,
+/// Preference, State, Blueprint, conflicts. Shadowed rows are dropped.
+fn decompose_knowledge(resolved: ResolvedKnowledge, items: &mut Vec<EvidenceItem>) {
+    items.extend(
+        resolved
+            .protected_constraints
+            .into_iter()
+            .map(EvidenceItem::Policy),
+    );
+    items.extend(
+        resolved
+            .applied_policies
+            .into_iter()
+            .map(EvidenceItem::Policy),
+    );
+    items.extend(
+        resolved
+            .request_directives
+            .into_iter()
+            .map(EvidenceItem::Directive),
+    );
+    items.extend(
+        resolved
+            .active_decisions
+            .into_iter()
+            .map(EvidenceItem::Decision),
+    );
+    items.extend(
+        resolved
+            .applied_preferences
+            .into_iter()
+            .map(EvidenceItem::Preference),
+    );
+    items.extend(
+        resolved
+            .state_evidence
+            .into_iter()
+            .map(EvidenceItem::ProjectState),
+    );
+    items.extend(
+        resolved
+            .blueprint_evidence
+            .into_iter()
+            .map(EvidenceItem::Blueprint),
+    );
+    items.extend(
+        resolved
+            .conflicts
+            .into_iter()
+            .map(EvidenceItem::KnowledgeConflict),
+    );
 }
 
 /// The exact target: its identity and its current local declarations.

@@ -32,6 +32,7 @@ pub mod prepare;
 pub mod projection;
 pub mod python_semantic;
 pub mod query;
+pub mod query_surface;
 pub mod reconcile;
 pub mod refresh;
 pub mod registry;
