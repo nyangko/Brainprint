@@ -4,18 +4,25 @@ members = [
     "crates/engine",
     "crates/daemon",
     "crates/cli",
+    "crates/mcp",
 ]
 resolver = "3"
 
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+# #25 Task 12 amendment: raised from 1.85 -> 1.88, the minimum the
+# official `rmcp` MCP SDK's 3.x line requires (rmcp 1.x cannot compile
+# on stable Rust at all -- verified). Not an unrelated modernization.
+rust-version = "1.88"
 repository = "https://github.com/nyangko/Brainprint"
 
 [workspace.dependencies]
 brainprint-core = { path = "crates/core" }
 brainprint-engine = { path = "crates/engine" }
+# #25 Task 12: official Model Context Protocol Rust SDK, pinned exactly
+# per the amended design decision. No git dependency.
+rmcp = { version = "=3.4.0", default-features = false }
 # Task 11 CLI grammar: seven operation families, dozens of typed flags
 # with closed vocabularies and mutual-exclusion groups. The existing
 # hand-rolled match parser (three flat commands) does not scale to this;

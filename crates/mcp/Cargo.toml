@@ -1,0 +1,32 @@
+[package]
+name = "brainprint-mcp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[lib]
+name = "brainprint_mcp"
+path = "src/lib.rs"
+
+[[bin]]
+name = "brainprint-mcp"
+path = "src/main.rs"
+
+[dependencies]
+brainprint-core.workspace = true
+rmcp = { workspace = true, features = ["server", "schemars", "macros", "transport-io"] }
+schemars = "1.0"
+serde = { workspace = true }
+serde_json.workspace = true
+tokio = { workspace = true, features = ["io-std", "io-util", "macros", "net", "rt-multi-thread"] }
+uuid = { workspace = true }
+
+[dev-dependencies]
+# #25 "MCP protocol tests": a real `rmcp` client, in-process over an
+# in-memory duplex pipe -- proves `initialize`/`tools/list`/`tools/call`
+# framing against the real SDK, not a hand-rolled stub.
+rmcp = { workspace = true, features = ["client"] }
+
+[lints]
+workspace = true

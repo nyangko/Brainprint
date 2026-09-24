@@ -25,6 +25,15 @@ uuid.workspace = true
 # as a real "backend requests" measurement (acceptance 23), not code
 # inspection. Test-only; no production dependency change.
 rusqlite.workspace = true
+# #25 Task 12: drives the real `BrainprintMcp` tool methods in-process
+# against a real daemon + populated Workspace fixture for semantic-parity/
+# economy/error acceptance. The forbidden direction is
+# brainprint-mcp -> brainprint-engine/brainprint-daemon; a daemon *test*
+# depending on brainprint-mcp is the opposite direction and does not
+# touch the shipped `brainprint-mcp` binary at all.
+brainprint-mcp = { path = "../mcp" }
+rmcp = { workspace = true, features = ["server"] }
+serde.workspace = true
 
 [lints]
 workspace = true

@@ -1142,189 +1142,182 @@ fn installed_families(base: &Path) -> Vec<Family> {
         Some((workspace, db_path, uid))
     };
 
-    if let Ok(install) = PyrightInstall::locate(&spike_root("python_semantic_spike"), "node") {
-        if let Some((workspace, _db, uid)) = prepare("python", "python-semantic-spike") {
-            let settings = PythonSettings::default();
+    if let Ok(install) = PyrightInstall::locate(&spike_root("python_semantic_spike"), "node")
+        && let Some((workspace, _db, uid)) = prepare("python", "python-semantic-spike")
+    {
+        let settings = PythonSettings::default();
+        let context = AnalysisContext {
+            workspace: WorkspaceId::from_bytes([uid; 16]),
+            backend: SemanticBackendKind::Python,
+            language: ResourceLanguage::Python,
+            project_root: ProjectRootIdentity::Key("fleet-python".to_owned()),
+            toolchain: brainprint_engine::python_semantic::toolchain_identity(
+                &install,
+                &brainprint_engine::python_semantic::lifecycle::environment_identity(
+                    &workspace, &settings,
+                ),
+            ),
+        };
+        families.push(Family {
+            label: "python",
+            binding: AnalysisContextBinding {
+                context: context.clone(),
+                project_root_rel: String::new(),
+                config_file_rel: Some("pyrightconfig.json".to_owned()),
+            },
+            context,
+            launcher: Arc::new(PythonLauncher::new(install, workspace, settings)),
+        });
+    }
+
+    if let Ok(install) = TypeScriptInstall::locate(&spike_root("typescript_semantic_spike"))
+        && let Some((workspace, db_path, uid)) = prepare("typescript", "typescript-semantic-spike")
+    {
+        let index = SemanticIndex::open(&db_path).expect("index.db");
+        if let Ok(environment) =
+            brainprint_engine::typescript_semantic::lifecycle::environment_identity(
+                index.connection(),
+                &workspace,
+                "",
+                &install.manifest_version,
+            )
+        {
             let context = AnalysisContext {
                 workspace: WorkspaceId::from_bytes([uid; 16]),
-                backend: SemanticBackendKind::Python,
-                language: ResourceLanguage::Python,
-                project_root: ProjectRootIdentity::Key("fleet-python".to_owned()),
-                toolchain: brainprint_engine::python_semantic::toolchain_identity(
+                backend: SemanticBackendKind::TypeScriptJavaScript,
+                language: ResourceLanguage::TypeScript,
+                project_root: ProjectRootIdentity::Key("fleet-typescript".to_owned()),
+                toolchain: brainprint_engine::typescript_semantic::toolchain_identity(
                     &install,
-                    &brainprint_engine::python_semantic::lifecycle::environment_identity(
-                        &workspace, &settings,
-                    ),
+                    &environment,
                 ),
             };
             families.push(Family {
-                label: "python",
+                label: "typescript",
                 binding: AnalysisContextBinding {
                     context: context.clone(),
-                    project_root_rel: String::new(),
-                    config_file_rel: Some("pyrightconfig.json".to_owned()),
+                    project_root_rel: workspace.to_string_lossy().into_owned(),
+                    config_file_rel: Some("tsconfig.json".to_owned()),
                 },
                 context,
-                launcher: Arc::new(PythonLauncher::new(install, workspace, settings)),
+                launcher: Arc::new(TypeScriptLauncher::new(install)),
             });
         }
     }
 
-    if let Ok(install) = TypeScriptInstall::locate(&spike_root("typescript_semantic_spike")) {
-        if let Some((workspace, db_path, uid)) = prepare("typescript", "typescript-semantic-spike")
-        {
-            let index = SemanticIndex::open(&db_path).expect("index.db");
-            if let Ok(environment) =
-                brainprint_engine::typescript_semantic::lifecycle::environment_identity(
-                    index.connection(),
-                    &workspace,
-                    "",
-                    &install.manifest_version,
-                )
-            {
-                let context = AnalysisContext {
-                    workspace: WorkspaceId::from_bytes([uid; 16]),
-                    backend: SemanticBackendKind::TypeScriptJavaScript,
-                    language: ResourceLanguage::TypeScript,
-                    project_root: ProjectRootIdentity::Key("fleet-typescript".to_owned()),
-                    toolchain: brainprint_engine::typescript_semantic::toolchain_identity(
-                        &install,
-                        &environment,
-                    ),
-                };
-                families.push(Family {
-                    label: "typescript",
-                    binding: AnalysisContextBinding {
-                        context: context.clone(),
-                        project_root_rel: workspace.to_string_lossy().into_owned(),
-                        config_file_rel: Some("tsconfig.json".to_owned()),
-                    },
-                    context,
-                    launcher: Arc::new(TypeScriptLauncher::new(install)),
-                });
-            }
-        }
-    }
-
-    if let Ok(install) = SvelteInstall::locate(&spike_root("svelte_semantic_spike")) {
-        if let Some((workspace, db_path, uid)) = prepare("svelte", "svelte-semantic-spike") {
-            let index = SemanticIndex::open(&db_path).expect("index.db");
-            if let Ok(environment) =
-                brainprint_engine::svelte_semantic::lifecycle::environment_identity(
-                    index.connection(),
-                    &workspace,
-                    "",
+    if let Ok(install) = SvelteInstall::locate(&spike_root("svelte_semantic_spike"))
+        && let Some((workspace, db_path, uid)) = prepare("svelte", "svelte-semantic-spike")
+    {
+        let index = SemanticIndex::open(&db_path).expect("index.db");
+        if let Ok(environment) = brainprint_engine::svelte_semantic::lifecycle::environment_identity(
+            index.connection(),
+            &workspace,
+            "",
+            &install,
+        ) {
+            let context = AnalysisContext {
+                workspace: WorkspaceId::from_bytes([uid; 16]),
+                backend: SemanticBackendKind::Svelte,
+                language: ResourceLanguage::Svelte,
+                project_root: ProjectRootIdentity::Key("fleet-svelte".to_owned()),
+                toolchain: brainprint_engine::svelte_semantic::toolchain_identity(
                     &install,
-                )
-            {
-                let context = AnalysisContext {
-                    workspace: WorkspaceId::from_bytes([uid; 16]),
-                    backend: SemanticBackendKind::Svelte,
-                    language: ResourceLanguage::Svelte,
-                    project_root: ProjectRootIdentity::Key("fleet-svelte".to_owned()),
-                    toolchain: brainprint_engine::svelte_semantic::toolchain_identity(
-                        &install,
-                        &environment,
-                    ),
-                };
-                families.push(Family {
-                    label: "svelte",
-                    binding: AnalysisContextBinding {
-                        context: context.clone(),
-                        project_root_rel: workspace.to_string_lossy().into_owned(),
-                        config_file_rel: None,
-                    },
-                    context,
-                    launcher: Arc::new(SvelteLauncher::new(
-                        install,
-                        env::var("BRAINPRINT_NODE").unwrap_or_else(|_| "node".to_owned()),
-                    )),
-                });
-            }
+                    &environment,
+                ),
+            };
+            families.push(Family {
+                label: "svelte",
+                binding: AnalysisContextBinding {
+                    context: context.clone(),
+                    project_root_rel: workspace.to_string_lossy().into_owned(),
+                    config_file_rel: None,
+                },
+                context,
+                launcher: Arc::new(SvelteLauncher::new(
+                    install,
+                    env::var("BRAINPRINT_NODE").unwrap_or_else(|_| "node".to_owned()),
+                )),
+            });
         }
     }
 
-    if let Ok(install) = CSharpInstall::locate(&spike_root("csharp_semantic_spike")) {
-        if let Some((workspace, db_path, uid)) = prepare("csharp", "csharp-semantic-spike") {
-            // Untrusted on purpose: this test is about topology, and
-            // loading a project is the one thing trust gates.
-            let trust = ProjectExecutionTrust::Untrusted;
-            let index = SemanticIndex::open(&db_path).expect("index.db");
-            let projects = brainprint_engine::csharp_semantic::lifecycle::discover_projects_under(
-                index.connection(),
-                trust,
-                Some(&workspace),
-            )
-            .expect("projects");
-            if let Ok(environment) =
-                brainprint_engine::csharp_semantic::lifecycle::environment_identity(
-                    &install, &projects,
-                )
-            {
-                let context = AnalysisContext {
-                    workspace: WorkspaceId::from_bytes([uid; 16]),
-                    backend: SemanticBackendKind::CSharp,
-                    language: ResourceLanguage::CSharp,
-                    project_root: ProjectRootIdentity::Key("fleet-csharp".to_owned()),
-                    toolchain: brainprint_engine::csharp_semantic::toolchain_identity(
-                        &install,
-                        &environment,
-                    ),
-                };
-                families.push(Family {
-                    label: "csharp",
-                    binding: AnalysisContextBinding {
-                        context: context.clone(),
-                        project_root_rel: workspace.to_string_lossy().into_owned(),
-                        config_file_rel: None,
-                    },
-                    context,
-                    launcher: Arc::new(CSharpLauncher::new(
-                        install,
-                        trust,
-                        base.join("csharp").join("server-logs"),
-                    )),
-                });
-            }
+    if let Ok(install) = CSharpInstall::locate(&spike_root("csharp_semantic_spike"))
+        && let Some((workspace, db_path, uid)) = prepare("csharp", "csharp-semantic-spike")
+    {
+        // Untrusted on purpose: this test is about topology, and
+        // loading a project is the one thing trust gates.
+        let trust = ProjectExecutionTrust::Untrusted;
+        let index = SemanticIndex::open(&db_path).expect("index.db");
+        let projects = brainprint_engine::csharp_semantic::lifecycle::discover_projects_under(
+            index.connection(),
+            trust,
+            Some(&workspace),
+        )
+        .expect("projects");
+        if let Ok(environment) =
+            brainprint_engine::csharp_semantic::lifecycle::environment_identity(&install, &projects)
+        {
+            let context = AnalysisContext {
+                workspace: WorkspaceId::from_bytes([uid; 16]),
+                backend: SemanticBackendKind::CSharp,
+                language: ResourceLanguage::CSharp,
+                project_root: ProjectRootIdentity::Key("fleet-csharp".to_owned()),
+                toolchain: brainprint_engine::csharp_semantic::toolchain_identity(
+                    &install,
+                    &environment,
+                ),
+            };
+            families.push(Family {
+                label: "csharp",
+                binding: AnalysisContextBinding {
+                    context: context.clone(),
+                    project_root_rel: workspace.to_string_lossy().into_owned(),
+                    config_file_rel: None,
+                },
+                context,
+                launcher: Arc::new(CSharpLauncher::new(
+                    install,
+                    trust,
+                    base.join("csharp").join("server-logs"),
+                )),
+            });
         }
     }
 
-    if let Some(install) = rust_install() {
-        if let Some((workspace, db_path, uid)) = prepare("rust", "rust-semantic-spike") {
-            let trust = ProjectExecutionTrust::Untrusted;
-            let index = SemanticIndex::open(&db_path).expect("index.db");
-            let packages = brainprint_engine::rust_semantic::lifecycle::discover_packages_under(
-                index.connection(),
-                trust,
-                Some(&workspace),
-            )
-            .expect("packages");
-            if let Ok(environment) =
-                brainprint_engine::rust_semantic::lifecycle::environment_identity(
-                    &install, &packages,
-                )
-            {
-                let context = AnalysisContext {
-                    workspace: WorkspaceId::from_bytes([uid; 16]),
-                    backend: SemanticBackendKind::Rust,
-                    language: ResourceLanguage::Rust,
-                    project_root: ProjectRootIdentity::Key("fleet-rust".to_owned()),
-                    toolchain: brainprint_engine::rust_semantic::toolchain_identity(
-                        &install,
-                        &environment,
-                    ),
-                };
-                families.push(Family {
-                    label: "rust",
-                    binding: AnalysisContextBinding {
-                        context: context.clone(),
-                        project_root_rel: workspace.to_string_lossy().into_owned(),
-                        config_file_rel: None,
-                    },
-                    context,
-                    launcher: Arc::new(RustLauncher::new(install, trust)),
-                });
-            }
+    if let Some(install) = rust_install()
+        && let Some((workspace, db_path, uid)) = prepare("rust", "rust-semantic-spike")
+    {
+        let trust = ProjectExecutionTrust::Untrusted;
+        let index = SemanticIndex::open(&db_path).expect("index.db");
+        let packages = brainprint_engine::rust_semantic::lifecycle::discover_packages_under(
+            index.connection(),
+            trust,
+            Some(&workspace),
+        )
+        .expect("packages");
+        if let Ok(environment) =
+            brainprint_engine::rust_semantic::lifecycle::environment_identity(&install, &packages)
+        {
+            let context = AnalysisContext {
+                workspace: WorkspaceId::from_bytes([uid; 16]),
+                backend: SemanticBackendKind::Rust,
+                language: ResourceLanguage::Rust,
+                project_root: ProjectRootIdentity::Key("fleet-rust".to_owned()),
+                toolchain: brainprint_engine::rust_semantic::toolchain_identity(
+                    &install,
+                    &environment,
+                ),
+            };
+            families.push(Family {
+                label: "rust",
+                binding: AnalysisContextBinding {
+                    context: context.clone(),
+                    project_root_rel: workspace.to_string_lossy().into_owned(),
+                    config_file_rel: None,
+                },
+                context,
+                launcher: Arc::new(RustLauncher::new(install, trust)),
+            });
         }
     }
 

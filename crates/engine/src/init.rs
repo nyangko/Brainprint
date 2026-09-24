@@ -319,25 +319,24 @@ pub fn init_workspace(
         };
     }
 
-    if is_git {
-        if let Some(common_dir) = git_common_dir(&workspace_root)? {
-            if let Some(project_id) = registry.find_project_by_git_lineage(&common_dir)? {
-                let identity = WorkspaceIdentity {
-                    format_version: IDENTITY_FORMAT_VERSION,
-                    project_id,
-                    workspace_id: WorkspaceId::generate(),
-                    created_at: db::now_millis_text(),
-                };
-                write_identity_file(&workspace_paths.identity_file, &identity)?;
-                return finish_secondary_worktree(
-                    identity,
-                    true,
-                    workspace_root,
-                    &workspace_paths,
-                    &registry,
-                );
-            }
-        }
+    if is_git
+        && let Some(common_dir) = git_common_dir(&workspace_root)?
+        && let Some(project_id) = registry.find_project_by_git_lineage(&common_dir)?
+    {
+        let identity = WorkspaceIdentity {
+            format_version: IDENTITY_FORMAT_VERSION,
+            project_id,
+            workspace_id: WorkspaceId::generate(),
+            created_at: db::now_millis_text(),
+        };
+        write_identity_file(&workspace_paths.identity_file, &identity)?;
+        return finish_secondary_worktree(
+            identity,
+            true,
+            workspace_root,
+            &workspace_paths,
+            &registry,
+        );
     }
 
     let identity = WorkspaceIdentity {
@@ -437,10 +436,8 @@ fn finish_project_home(
         true,
     )?;
 
-    if is_git {
-        if let Some(common_dir) = git_common_dir(&workspace_root)? {
-            registry.register_git_lineage(&common_dir, identity.project_id)?;
-        }
+    if is_git && let Some(common_dir) = git_common_dir(&workspace_root)? {
+        registry.register_git_lineage(&common_dir, identity.project_id)?;
     }
 
     Ok(InitOutcome {

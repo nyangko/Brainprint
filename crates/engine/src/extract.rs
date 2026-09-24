@@ -1235,10 +1235,10 @@ impl Walker<'_> {
                 }
                 let mut inner = child.walk();
                 for grandchild in child.named_children(&mut inner) {
-                    if grandchild.kind() == "variable_declarator" {
-                        if let Some(value) = grandchild.child_by_field_name("value") {
-                            return value.start_byte();
-                        }
+                    if grandchild.kind() == "variable_declarator"
+                        && let Some(value) = grandchild.child_by_field_name("value")
+                    {
+                        return value.start_byte();
                     }
                 }
             }

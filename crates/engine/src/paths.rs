@@ -91,10 +91,10 @@ impl GlobalPaths {
     /// [`Self::from_home`].
     #[must_use]
     pub fn runtime_root(&self) -> PathBuf {
-        if self.prefer_xdg_runtime_dir {
-            if let Some(xdg_runtime_dir) = non_empty_env("XDG_RUNTIME_DIR") {
-                return PathBuf::from(xdg_runtime_dir).join("brainprint");
-            }
+        if self.prefer_xdg_runtime_dir
+            && let Some(xdg_runtime_dir) = non_empty_env("XDG_RUNTIME_DIR")
+        {
+            return PathBuf::from(xdg_runtime_dir).join("brainprint");
         }
         self.fallback_runtime_dir.clone()
     }
