@@ -103,6 +103,7 @@ version = "0.1.0"
 dependencies = [
  "brainprint-core",
  "brainprint-engine",
+ "rusqlite",
  "serde_json",
  "tokio",
  "uuid",

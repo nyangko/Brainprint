@@ -9,6 +9,8 @@ mod convert_in;
 mod convert_out;
 mod handler;
 mod runtime;
+#[cfg(test)]
+mod verification;
 
 pub use handler::{handle_query, handle_query_ack};
 pub use runtime::DaemonQueryRuntime;

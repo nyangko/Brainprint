@@ -20,5 +20,11 @@ serde_json.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt-multi-thread", "signal", "time"] }
 uuid.workspace = true
 
+[dev-dependencies]
+# #24 Task 11 verification-completion pass: raw semantic_publication count
+# as a real "backend requests" measurement (acceptance 23), not code
+# inspection. Test-only; no production dependency change.
+rusqlite.workspace = true
+
 [lints]
 workspace = true
