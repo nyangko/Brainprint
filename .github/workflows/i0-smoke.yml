@@ -42,6 +42,19 @@ jobs:
       - name: Test
         run: cargo test --workspace --locked
 
+      - name: Issue 35 schema economy measurements
+        run: |
+          mkdir -p benchmarks/reports
+          cargo test -p brainprint-mcp --test schema_economy_candidates -- --nocapture \
+            2>&1 | tee benchmarks/reports/issue-35-schema-economy.txt
+
+      - name: Upload issue 35 schema economy artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: issue-35-schema-economy
+          path: benchmarks/reports/issue-35-schema-economy.txt
+          retention-days: 7
+
       - name: CLI and daemon smoke
         run: |
           ./target/debug/brainprint --version
