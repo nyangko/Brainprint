@@ -23,9 +23,7 @@ use brainprint_mcp::{
             WorkItemStatusParam,
         },
         find::FindMode,
-        relations::{
-            ChangeKindParam, RelationDirectionParam, RelationKindParam, RelationsMode,
-        },
+        relations::{ChangeKindParam, RelationDirectionParam, RelationKindParam, RelationsMode},
     },
 };
 use rmcp::{ServiceExt, model::PaginatedRequestParams};
