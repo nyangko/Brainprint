@@ -77,11 +77,7 @@ impl Server {
     /// from stale runtime artifacts left by a crashed previous instance),
     /// and prepare to serve.
     pub async fn bind(global_paths: &GlobalPaths) -> Result<Self, StartError> {
-        Self::bind_runtime(
-            global_paths,
-            DaemonQueryRuntime::new(global_paths.global_db.clone()),
-        )
-        .await
+        Self::bind_runtime(global_paths, DaemonQueryRuntime::new(global_paths)).await
     }
 
     /// Test seam (#38 acceptance): bind with a substitute per-Workspace
@@ -93,7 +89,7 @@ impl Server {
     ) -> Result<Self, StartError> {
         Self::bind_runtime(
             global_paths,
-            DaemonQueryRuntime::with_watch_factory(global_paths.global_db.clone(), watch_factory),
+            DaemonQueryRuntime::with_watch_factory(global_paths, watch_factory),
         )
         .await
     }

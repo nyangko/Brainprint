@@ -22,14 +22,66 @@ pub const CONFIG_FORMAT_VERSION: u32 = 1;
 #[serde(deny_unknown_fields)]
 pub struct GlobalConfig {
     pub format_version: u32,
+    /// Where the user installed each semantic backend (#39). Absent
+    /// means UNAVAILABLE; nothing is ever downloaded or searched for.
+    #[serde(default, skip_serializing_if = "SemanticBackendLocators::is_empty")]
+    pub semantic_backends: SemanticBackendLocators,
 }
 
 impl Default for GlobalConfig {
     fn default() -> Self {
         Self {
             format_version: CONFIG_FORMAT_VERSION,
+            semantic_backends: SemanticBackendLocators::default(),
         }
     }
+}
+
+/// Explicit semantic backend install locators, one optional entry per
+/// backend family (#39 "Backend locator contract"). A Workspace entry
+/// overrides the global entry of the same family.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SemanticBackendLocators {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub python: Option<NodeBackendLocator>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub typescript: Option<InstallRootLocator>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub svelte: Option<NodeBackendLocator>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub csharp: Option<InstallRootLocator>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rust: Option<ExecutableLocator>,
+}
+
+impl SemanticBackendLocators {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+/// An install root for a backend the existing launcher runs under Node.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NodeBackendLocator {
+    pub install_root: PathBuf,
+    /// Omitted: the launcher's existing default executable name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InstallRootLocator {
+    pub install_root: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExecutableLocator {
+    pub executable: PathBuf,
 }
 
 /// Minimal workspace-local configuration.
@@ -43,6 +95,9 @@ pub struct WorkspaceConfig {
     /// the default exclusion list uses.
     #[serde(default)]
     pub extra_excluded_directory_names: Vec<String>,
+    /// Per-Workspace backend locator overrides (#39).
+    #[serde(default, skip_serializing_if = "SemanticBackendLocators::is_empty")]
+    pub semantic_backends: SemanticBackendLocators,
 }
 
 impl Default for WorkspaceConfig {
@@ -50,6 +105,7 @@ impl Default for WorkspaceConfig {
         Self {
             format_version: CONFIG_FORMAT_VERSION,
             extra_excluded_directory_names: Vec::new(),
+            semantic_backends: SemanticBackendLocators::default(),
         }
     }
 }
@@ -407,5 +463,43 @@ mod tests {
         let error = load_workspace_config(&paths).expect_err("missing config must be reported");
 
         assert!(matches!(error, ConfigError::Io { .. }));
+    }
+
+    #[test]
+    fn backend_locators_are_optional_and_strict() {
+        let home = TestDir::create("backend-locators");
+        let paths = GlobalPaths::from_home(home.path());
+
+        // The bootstrapped default is byte-for-byte what it was before #39.
+        bootstrap_global_config(&paths).expect("bootstrap");
+        assert_eq!(
+            fs::read_to_string(&paths.config_file).expect("config"),
+            "format_version = 1\n"
+        );
+
+        fs::write(
+            &paths.config_file,
+            "format_version = 1\n\n[semantic_backends.python]\ninstall_root = \"/opt/pyright\"\nnode = \"/opt/node\"\n\n[semantic_backends.rust]\nexecutable = \"/opt/ra\"\n",
+        )
+        .expect("write");
+        let config = load_global_config(&paths).expect("locators load");
+        let python = config.semantic_backends.python.expect("python locator");
+        assert_eq!(python.install_root, PathBuf::from("/opt/pyright"));
+        assert_eq!(python.node.as_deref(), Some("/opt/node"));
+        assert_eq!(
+            config.semantic_backends.rust.expect("rust").executable,
+            PathBuf::from("/opt/ra")
+        );
+        assert!(config.semantic_backends.typescript.is_none());
+
+        fs::write(
+            &paths.config_file,
+            "format_version = 1\n\n[semantic_backends.python]\ninstall_root = \"/x\"\nsurprise = 1\n",
+        )
+        .expect("write");
+        assert!(matches!(
+            load_global_config(&paths),
+            Err(ConfigError::Decode { .. })
+        ));
     }
 }

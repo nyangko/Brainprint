@@ -138,6 +138,21 @@ impl WorkspaceLifecycle {
     }
 
     #[must_use]
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    #[must_use]
+    pub const fn config(&self) -> &WorkspaceConfig {
+        &self.config
+    }
+
+    #[must_use]
+    pub fn index_db(&self) -> &Path {
+        &self.index_db
+    }
+
+    #[must_use]
     pub fn stats(&self) -> LifecycleStats {
         self.stats.clone()
     }
@@ -332,6 +347,7 @@ impl WorkspaceLifecycle {
                     // Nothing pending yet not current (e.g. a recovery
                     // failure left it DIRTY): fall through to reconcile.
                 } else {
+                    super::semantic::withdraw_all(&self.index_db)?;
                     let refresh = TargetedRefresh::open(&self.index_db)
                         .map_err(|error| format!("index.db: {error}"))?;
                     match refresh
@@ -349,6 +365,7 @@ impl WorkspaceLifecycle {
                 }
             }
 
+            super::semantic::withdraw_all(&self.index_db)?;
             let reconcile =
                 Reconcile::open(&self.index_db).map_err(|error| format!("index.db: {error}"))?;
             let report = reconcile

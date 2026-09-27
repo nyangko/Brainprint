@@ -1010,8 +1010,10 @@ async fn a21_a23_no_semantic_start_and_schema_versions_unchanged() {
     assert_eq!(version(data.join("index.db")), 10);
     daemon.stop().await;
 
-    // The daemon's production lifecycle constructs no semantic runtime or
-    // launcher (the separate I4 product-activation question is Task 14's).
+    // The structural lifecycle constructs no semantic runtime or launcher.
+    // Lazy semantic activation lives only in `query/semantic.rs` (#39),
+    // whose fresh-init/structural start count is measured factually by
+    // `p0_39_semantic_runtime_acceptance`.
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     for file in [
         "query/lifecycle.rs",
@@ -1020,12 +1022,7 @@ async fn a21_a23_no_semantic_start_and_schema_versions_unchanged() {
         "handlers.rs",
     ] {
         let text = fs::read_to_string(src.join(file)).expect("src");
-        for forbidden in [
-            "SemanticRuntimeSupervisor",
-            "semantic::",
-            "_semantic::",
-            "Launcher",
-        ] {
+        for forbidden in ["SemanticRuntimeSupervisor", "_semantic::", "Launcher"] {
             assert!(
                 !text.contains(forbidden),
                 "{file} must not start semantic backends ({forbidden})"

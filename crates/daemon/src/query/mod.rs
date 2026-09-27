@@ -10,6 +10,7 @@ mod convert_out;
 mod handler;
 pub mod lifecycle;
 mod runtime;
+pub mod semantic;
 #[cfg(test)]
 mod verification;
 

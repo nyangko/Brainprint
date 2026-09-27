@@ -15,7 +15,7 @@
 
 use std::{
     collections::{HashMap, HashSet, VecDeque},
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::{Mutex, mpsc::RecvTimeoutError},
     time::Duration,
 };
@@ -25,14 +25,16 @@ use brainprint_core::{
     protocol::query::{CorrelationWire, QueryErrorWire, QueryOperationWire, QueryResultWire},
 };
 use brainprint_engine::{
+    paths::GlobalPaths,
     projection::planner::{DeliveryLedger, DeliveryReceipt, LedgerLimits},
-    query_surface::CoreQuerySurface,
+    query_surface::{ContextPurpose, CoreQuerySurface},
 };
 use tokio::sync::oneshot;
 
 use super::{
     convert_in, convert_out,
     lifecycle::{LifecycleStats, WatchFactory, WorkspaceLifecycle, notify_watch_factory},
+    semantic::{SemanticStats, WorkspaceSemantic},
 };
 
 /// How often an idle worker journals buffered watcher events: the
@@ -80,6 +82,9 @@ enum Job {
     Stats {
         reply: oneshot::Sender<Option<LifecycleStats>>,
     },
+    SemanticStats {
+        reply: oneshot::Sender<Option<SemanticStats>>,
+    },
 }
 
 #[derive(Clone)]
@@ -90,6 +95,7 @@ struct WorkerHandle {
 /// The daemon's whole query runtime: a short-lived lock around worker
 /// lookup/creation, never held during a query (#24 §14).
 pub struct DaemonQueryRuntime {
+    global_paths: GlobalPaths,
     global_db: PathBuf,
     watch_factory: WatchFactory,
     workers: Mutex<HashMap<WorkspaceId, WorkerHandle>>,
@@ -106,16 +112,17 @@ impl std::fmt::Debug for DaemonQueryRuntime {
 
 impl DaemonQueryRuntime {
     #[must_use]
-    pub fn new(global_db: PathBuf) -> Self {
-        Self::with_watch_factory(global_db, notify_watch_factory())
+    pub fn new(global_paths: &GlobalPaths) -> Self {
+        Self::with_watch_factory(global_paths, notify_watch_factory())
     }
 
     /// Test seam: substitute the per-Workspace watch source (e.g. an
     /// unavailable or lossy watcher). Production uses [`Self::new`].
     #[must_use]
-    pub fn with_watch_factory(global_db: PathBuf, watch_factory: WatchFactory) -> Self {
+    pub fn with_watch_factory(global_paths: &GlobalPaths, watch_factory: WatchFactory) -> Self {
         Self {
-            global_db,
+            global_paths: global_paths.clone(),
+            global_db: global_paths.global_db.clone(),
             watch_factory,
             workers: Mutex::new(HashMap::new()),
         }
@@ -155,9 +162,9 @@ impl DaemonQueryRuntime {
             return handle.clone();
         }
         let (tx, rx) = std::sync::mpsc::channel();
-        let global_db = self.global_db.clone();
+        let global_paths = self.global_paths.clone();
         let factory = self.watch_factory.clone();
-        std::thread::spawn(move || worker_loop(&global_db, workspace, factory, &rx));
+        std::thread::spawn(move || worker_loop(&global_paths, workspace, factory, &rx));
         let handle = WorkerHandle { jobs: tx };
         workers.insert(workspace, handle.clone());
         handle
@@ -207,6 +214,18 @@ impl DaemonQueryRuntime {
         };
         let (reply, receiver) = oneshot::channel();
         handle.jobs.send(Job::Stats { reply }).ok()?;
+        receiver.await.ok().flatten()
+    }
+
+    /// The Workspace's factual semantic runtime counters (#39), if its
+    /// runtime exists and bound.
+    pub async fn semantic_stats(&self, workspace: WorkspaceId) -> Option<SemanticStats> {
+        let handle = {
+            let workers = self.workers.lock().expect("worker map mutex poisoned");
+            workers.get(&workspace)?.clone()
+        };
+        let (reply, receiver) = oneshot::channel();
+        handle.jobs.send(Job::SemanticStats { reply }).ok()?;
         receiver.await.ok().flatten()
     }
 
@@ -305,12 +324,13 @@ const fn requires_current(operation: &QueryOperationWire) -> bool {
 /// (daemon lifetime; no P0 eviction, #24 §14). Between jobs it journals
 /// buffered watcher events (#38).
 fn worker_loop(
-    global_db: &Path,
+    global_paths: &GlobalPaths,
     workspace: WorkspaceId,
     factory: WatchFactory,
     jobs: &std::sync::mpsc::Receiver<Job>,
 ) {
-    let (mut surface, mut lifecycle) = bind(global_db, workspace, &factory);
+    let global_db = global_paths.global_db.as_path();
+    let (mut surface, mut lifecycle, mut semantic) = bind(global_paths, workspace, &factory);
     let mut ledger = new_ledger();
     let mut pending = PendingAcks::new();
 
@@ -320,6 +340,9 @@ fn worker_loop(
             Err(RecvTimeoutError::Timeout) => {
                 if let Ok(lifecycle) = &mut lifecycle {
                     lifecycle.tick();
+                }
+                if let Some(semantic) = &mut semantic {
+                    semantic.tick();
                 }
                 continue;
             }
@@ -344,6 +367,7 @@ fn worker_loop(
                 let outcome = match &surface {
                     Ok(surface) => run_query(
                         surface,
+                        semantic.as_mut(),
                         &mut ledger,
                         &mut pending,
                         workspace,
@@ -366,7 +390,8 @@ fn worker_loop(
                 });
                 if stale {
                     drop(lifecycle);
-                    (surface, lifecycle) = bind(global_db, workspace, &factory);
+                    drop(semantic);
+                    (surface, lifecycle, semantic) = bind(global_paths, workspace, &factory);
                     ledger = new_ledger();
                     pending = PendingAcks::new();
                 }
@@ -382,6 +407,9 @@ fn worker_loop(
             Job::Stats { reply } => {
                 let _ = reply.send(lifecycle.as_ref().ok().map(WorkspaceLifecycle::stats));
             }
+            Job::SemanticStats { reply } => {
+                let _ = reply.send(semantic.as_ref().map(WorkspaceSemantic::stats));
+            }
         }
     }
 }
@@ -389,21 +417,34 @@ fn worker_loop(
 /// Open the Workspace's query surface and, only if its DB binding
 /// validated, its lifecycle. The lifecycle writes index.db; a failed bind
 /// (e.g. a binding mismatch) is reported by every query and never
-/// "repaired" by a reconcile into foreign data files.
+/// "repaired" by a reconcile into foreign data files. The semantic
+/// runtime (#39) is registered beside a bound lifecycle; registering
+/// starts nothing.
 fn bind(
-    global_db: &Path,
+    global_paths: &GlobalPaths,
     workspace: WorkspaceId,
     factory: &WatchFactory,
 ) -> (
     Result<CoreQuerySurface, brainprint_engine::query_surface::CoreError>,
     Result<WorkspaceLifecycle, String>,
+    Option<WorkspaceSemantic>,
 ) {
+    let global_db = global_paths.global_db.as_path();
     let surface = CoreQuerySurface::open(global_db, workspace);
     let lifecycle = match &surface {
         Ok(_) => WorkspaceLifecycle::load(global_db, workspace, factory.clone()),
         Err(_) => Err("workspace binding could not be validated".to_owned()),
     };
-    (surface, lifecycle)
+    let semantic = lifecycle.as_ref().ok().map(|lifecycle| {
+        WorkspaceSemantic::load(
+            global_paths,
+            lifecycle.config(),
+            workspace,
+            lifecycle.root(),
+            lifecycle.index_db(),
+        )
+    });
+    (surface, lifecycle, semantic)
 }
 
 fn new_ledger() -> DeliveryLedger {
@@ -451,6 +492,7 @@ fn clone_core_error(
 #[allow(clippy::too_many_arguments)]
 fn run_query(
     surface: &CoreQuerySurface,
+    semantic: Option<&mut WorkspaceSemantic>,
     ledger: &mut DeliveryLedger,
     pending: &mut PendingAcks,
     workspace: WorkspaceId,
@@ -460,6 +502,25 @@ fn run_query(
     let tag = operation_tag(&operation_wire);
     let mut deliveries = Vec::new();
     let converted = convert_in::operation(operation_wire, workspace, correlation, &mut deliveries)?;
+
+    // #39 lazy semantic demand: only the operations whose answer carries
+    // direct relation/impact evidence for one selected target. Find,
+    // knowledge and structure never reach a backend.
+    if let Some(semantic) = semantic {
+        let target = match &converted {
+            convert_in::ConvertedOperation::Inspect(request) => Some(&request.target),
+            convert_in::ConvertedOperation::Relations(request) => Some(&request.target),
+            convert_in::ConvertedOperation::Impact(request) => Some(&request.target),
+            convert_in::ConvertedOperation::Context(request) => match &request.purpose {
+                ContextPurpose::Change { target, .. } => Some(target),
+                ContextPurpose::Resume { .. } => None,
+            },
+            _ => None,
+        };
+        if let Some(target) = target {
+            semantic.enrich(surface, target);
+        }
+    }
 
     let (result_wire, receipt): (QueryResultWire, Option<DeliveryReceipt>) = match converted {
         convert_in::ConvertedOperation::Find(request) => {
