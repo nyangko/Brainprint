@@ -216,6 +216,20 @@ async fn issue_35_schema_economy_candidates_are_measured_without_picking_a_winne
     // not silently give the split candidate free description bytes.
     let split = split_contracts();
 
+    // The dispatcher still validates the selected operation through its typed
+    // request shape after lazy contract lookup. This does not replace the
+    // operation's deeper runtime semantic validation (for example target
+    // exactly-one rules), which remains part of the real adapter.
+    validate_dispatch(
+        DispatcherOperation::FindText,
+        serde_json::json!({ "pattern": "needle" }),
+    )
+    .expect("typed dispatcher request should validate");
+    assert!(
+        validate_dispatch(DispatcherOperation::FindText, serde_json::json!({})).is_err(),
+        "missing required operation fields must not silently validate"
+    );
+
     // ------------------------------------- D: dispatcher + lazy typed contract
     // Unlike the first fixture, this performs a real rmcp resources/read
     // round-trip against a test-only resource server. Whether a real host puts
@@ -362,17 +376,25 @@ struct OpaqueDeliveryParams {
 #[derive(Debug, Deserialize, JsonSchema)]
 struct ReducedFind {
     mode: FindMode,
+    /// `mode: target` selector. Ignored for `files`/`text`.
     #[serde(flatten)]
     target: TargetParam,
+    // `mode: files` fields.
     directory: Option<String>,
     #[serde(default)]
     recursive: bool,
+    /// `files`: a Resource path prefix filter. `text`: a search scope
+    /// prefix. Same field, same meaning, whichever mode reads it.
     path_prefix: Option<String>,
     role: Option<ResourceRoleParam>,
     language: Option<ResourceLanguageParam>,
     kind: Option<ResourceKindParam>,
+    /// `files`: defaults to 100. Ignored for other modes.
     limit: Option<usize>,
+    // `mode: text` fields.
     pattern: Option<String>,
+    /// `pattern` is a regular expression rather than a literal string
+    /// when `true`.
     #[serde(default)]
     regex: bool,
     #[serde(default)]
@@ -383,6 +405,7 @@ struct ReducedFind {
     search_budget_profile: SearchBudgetProfileParam,
     #[serde(flatten)]
     workspace: WorkspaceSelectorParam,
+    /// `mode: target` delivery budget. Ignored for `files`/`text`.
     #[serde(flatten)]
     delivery: OpaqueDeliveryParams,
 }
@@ -404,11 +427,14 @@ struct ReducedRelations {
     target: TargetParam,
     #[serde(default)]
     direction: RelationDirectionParam,
+    /// Empty means every kind. `mode: direct` only.
     #[serde(default)]
     kinds: Vec<RelationKindParam>,
+    /// `mode: impact` only, required for that mode.
     change: Option<ChangeKindParam>,
     #[serde(flatten)]
     workspace: WorkspaceSelectorParam,
+    /// `mode: impact` delivery budget. Ignored for `direct`.
     #[serde(flatten)]
     delivery: OpaqueDeliveryParams,
 }
@@ -418,11 +444,19 @@ struct ReducedContext {
     mode: ContextMode,
     #[serde(flatten)]
     target: TargetParam,
+    /// `mode: change` only. Omit for a plain edit with no declared
+    /// change form.
     change: Option<ChangeKindParam>,
+    /// Canonical UUID string. `mode: resume`/`handoffs`: required.
+    /// `mode: change`: optional.
     work_item: Option<String>,
+    /// `mode: work_items`: required.
     statuses: Option<Vec<WorkItemStatusParam>>,
+    /// `mode: work_items`: defaults to 50. `mode: handoffs`: defaults to 20.
     limit: Option<usize>,
+    /// `mode: lineage`: required.
     lineage_of: Option<LineageOfParam>,
+    /// `mode: lineage`: required canonical Policy/Decision UUID.
     id: Option<String>,
     #[serde(default)]
     grouping: GroupingParam,
@@ -437,6 +471,7 @@ struct ReducedContext {
     member_sample_limit: Option<usize>,
     #[serde(flatten)]
     workspace: WorkspaceSelectorParam,
+    /// `mode: change`/`resume` delivery budget. Ignored otherwise.
     #[serde(flatten)]
     delivery: OpaqueDeliveryParams,
 }
@@ -731,12 +766,45 @@ enum DispatcherOperation {
     Status,
 }
 
-fn contract_uri(name: &str) -> String {
-    format!("brainprint://contracts/{name}")
+fn contract_operation(name: &str) -> &str {
+    name.strip_prefix("brainprint.").unwrap_or(name)
 }
 
-fn contract_by_name(name: &str) -> Option<ContractMeasure> {
-    split_contracts().into_iter().find(|item| item.name == name)
+fn contract_uri(name: &str) -> String {
+    format!("brainprint://contracts/{}", contract_operation(name))
+}
+
+fn contract_by_operation(operation: &str) -> Option<ContractMeasure> {
+    split_contracts()
+        .into_iter()
+        .find(|item| contract_operation(&item.name) == operation)
+}
+
+fn validate_dispatch(
+    operation: DispatcherOperation,
+    request: serde_json::Value,
+) -> Result<(), serde_json::Error> {
+    macro_rules! validate {
+        ($ty:ty) => {
+            serde_json::from_value::<$ty>(request).map(|_| ())
+        };
+    }
+    match operation {
+        DispatcherOperation::FindTarget => validate!(FindTarget),
+        DispatcherOperation::FindFiles => validate!(FindFiles),
+        DispatcherOperation::FindText => validate!(FindText),
+        DispatcherOperation::Inspect => validate!(Inspect),
+        DispatcherOperation::RelationsDirect => validate!(RelationsDirect),
+        DispatcherOperation::Impact => validate!(Impact),
+        DispatcherOperation::ContextChange => validate!(ContextChange),
+        DispatcherOperation::ContextResume => validate!(ContextResume),
+        DispatcherOperation::Rules => validate!(Rules),
+        DispatcherOperation::WorkItems => validate!(WorkItems),
+        DispatcherOperation::Lineage => validate!(Lineage),
+        DispatcherOperation::Handoffs => validate!(Handoffs),
+        DispatcherOperation::Structure => validate!(Structure),
+        DispatcherOperation::Status => validate!(Status),
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -763,7 +831,7 @@ impl ServerHandler for LazyContractServer {
                 Some(serde_json::json!({ "uri": request.uri })),
             ));
         };
-        let Some(contract) = contract_by_name(name) else {
+        let Some(contract) = contract_by_operation(name) else {
             return Err(ErrorData::resource_not_found(
                 "unknown contract resource",
                 Some(serde_json::json!({ "uri": request.uri })),
