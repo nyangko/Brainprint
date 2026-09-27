@@ -1407,6 +1407,7 @@ export function lone(): number {
         let fixture = Fixture::create("partial");
         fixture.baseline();
         let run = fixture.declaration("src/app.ts", "App.run");
+        #[cfg(unix)]
         let before = fixture.outgoing(&run, RelationKind::Calls);
         assert!(!before.is_empty());
 
