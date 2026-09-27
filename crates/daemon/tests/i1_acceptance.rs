@@ -417,6 +417,9 @@ fn directory_move_repairs_locator_and_preserves_identity() {
     );
     let moved_out = stdout_of(&moved_init);
     assert!(moved_out.starts_with("already initialized:"));
+    // #38: the Workspace runtime re-binds to the repaired locator; it never
+    // resurrects the vanished old location by opening its index.db.
+    assert!(!original.path().exists(), "the old locator must stay gone");
     assert_eq!(field(&moved_out, "project:"), project_id);
     assert_eq!(field(&moved_out, "workspace:"), workspace_id);
 
@@ -555,20 +558,19 @@ fn generation_orphan_building_reconciled_stable_preserved_across_restart() {
 
     let workspace_paths = WorkspacePaths::from_root(canonical(workspace.path()));
 
+    // #38: init itself now publishes the initial STABLE baseline (at the
+    // locked initial revision "0"), so the STABLE generation this test
+    // must see preserved is init's own; the orphan is begun against the
+    // Workspace's actual current basis.
     let (stable_id, orphan_id) = {
-        let mut store =
+        let store =
             GenerationStore::open(&workspace_paths.index_db).expect("index.db should reopen");
-        store
-            .bootstrap_clock("rev-1")
-            .expect("bootstrap should succeed");
         let stable = store
-            .begin_generation("rev-1")
-            .expect("begin should succeed");
-        store
-            .publish_stable(stable.id)
-            .expect("publish should succeed");
+            .current_stable()
+            .expect("current lookup should succeed")
+            .expect("init publishes a STABLE baseline");
         let orphan = store
-            .begin_generation("rev-1")
+            .begin_generation(&stable.basis_workspace_revision)
             .expect("begin should succeed");
         // Left BUILDING here -- simulates a crash before publish/abort.
         (stable.id, orphan.id)

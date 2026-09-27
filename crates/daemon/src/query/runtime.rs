@@ -1,8 +1,13 @@
-//! Per-Workspace query runtime (#24 §14, §15).
+//! Per-Workspace query runtime (#24 §14, §15) -- and, since #38, the one
+//! product runtime of each active Workspace.
 //!
 //! One dedicated blocking thread per active Workspace, owning its
-//! `CoreQuerySurface`, `DeliveryLedger`, pending-acknowledgement receipts
-//! and recent ack tombstones. The global map is locked only to look up or
+//! `CoreQuerySurface`, `DeliveryLedger`, pending-acknowledgement receipts,
+//! recent ack tombstones, and its structural lifecycle
+//! ([`super::lifecycle`]: watcher, event ingest, targeted refresh,
+//! reconcile). Every client of a Workspace reaches the same thread, so
+//! there is one watcher and one refresh/reconcile path per Workspace, and
+//! publications are serialized with that Workspace's queries. The global map is locked only to look up or
 //! create a worker -- never while a query runs -- so different Workspaces
 //! execute concurrently and one Workspace's Task 8 ledger mutations are
 //! naturally serialized by owning a single thread, without a global query
@@ -11,7 +16,8 @@
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{Mutex, mpsc::RecvTimeoutError},
+    time::Duration,
 };
 
 use brainprint_core::{
@@ -24,7 +30,15 @@ use brainprint_engine::{
 };
 use tokio::sync::oneshot;
 
-use super::{convert_in, convert_out};
+use super::{
+    convert_in, convert_out,
+    lifecycle::{LifecycleStats, WatchFactory, WorkspaceLifecycle, notify_watch_factory},
+};
+
+/// How often an idle worker journals buffered watcher events: the
+/// engine's existing coalescing default (a tuning value, not a contract).
+const WATCH_TICK: Duration =
+    Duration::from_millis(brainprint_engine::watch::DEFAULT_COALESCE_WINDOW_MS);
 
 /// #24 §15: bounded FIFO state, separate from the Task 8 ledger itself.
 const PENDING_ACK_BOUND: usize = 256;
@@ -59,6 +73,13 @@ enum Job {
         ack_token: String,
         reply: oneshot::Sender<AckOutcome>,
     },
+    /// #38 init: bring the Workspace to structural READY.
+    Activate {
+        reply: oneshot::Sender<Result<(), String>>,
+    },
+    Stats {
+        reply: oneshot::Sender<Option<LifecycleStats>>,
+    },
 }
 
 #[derive(Clone)]
@@ -70,6 +91,7 @@ struct WorkerHandle {
 /// lookup/creation, never held during a query (#24 §14).
 pub struct DaemonQueryRuntime {
     global_db: PathBuf,
+    watch_factory: WatchFactory,
     workers: Mutex<HashMap<WorkspaceId, WorkerHandle>>,
 }
 
@@ -85,10 +107,27 @@ impl std::fmt::Debug for DaemonQueryRuntime {
 impl DaemonQueryRuntime {
     #[must_use]
     pub fn new(global_db: PathBuf) -> Self {
+        Self::with_watch_factory(global_db, notify_watch_factory())
+    }
+
+    /// Test seam: substitute the per-Workspace watch source (e.g. an
+    /// unavailable or lossy watcher). Production uses [`Self::new`].
+    #[must_use]
+    pub fn with_watch_factory(global_db: PathBuf, watch_factory: WatchFactory) -> Self {
         Self {
             global_db,
+            watch_factory,
             workers: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// How many Workspace runtimes this daemon owns.
+    #[must_use]
+    pub fn workspace_runtime_count(&self) -> usize {
+        self.workers
+            .lock()
+            .expect("worker map mutex poisoned")
+            .len()
     }
 
     /// The one Workspace registered at `locator`, resolved on a blocking
@@ -117,7 +156,8 @@ impl DaemonQueryRuntime {
         }
         let (tx, rx) = std::sync::mpsc::channel();
         let global_db = self.global_db.clone();
-        std::thread::spawn(move || worker_loop(&global_db, workspace, &rx));
+        let factory = self.watch_factory.clone();
+        std::thread::spawn(move || worker_loop(&global_db, workspace, factory, &rx));
         let handle = WorkerHandle { jobs: tx };
         workers.insert(workspace, handle.clone());
         handle
@@ -144,6 +184,30 @@ impl DaemonQueryRuntime {
             return Err(worker_gone());
         }
         receiver.await.unwrap_or_else(|_| Err(worker_gone()))
+    }
+
+    /// #38: run the Workspace's activation (watcher, baseline or
+    /// reconcile, settle) on its worker and wait for structural READY.
+    pub async fn activate(&self, workspace: WorkspaceId) -> Result<(), String> {
+        let handle = self.handle_for(workspace);
+        let (reply, receiver) = oneshot::channel();
+        if handle.jobs.send(Job::Activate { reply }).is_err() {
+            return Err("workspace worker is gone".to_owned());
+        }
+        receiver
+            .await
+            .unwrap_or_else(|_| Err("workspace worker is gone".to_owned()))
+    }
+
+    /// The Workspace runtime's factual lifecycle counters, if it exists.
+    pub async fn lifecycle_stats(&self, workspace: WorkspaceId) -> Option<LifecycleStats> {
+        let handle = {
+            let workers = self.workers.lock().expect("worker map mutex poisoned");
+            workers.get(&workspace)?.clone()
+        };
+        let (reply, receiver) = oneshot::channel();
+        handle.jobs.send(Job::Stats { reply }).ok()?;
+        receiver.await.ok().flatten()
     }
 
     /// Acknowledge a pending receipt on `workspace`'s worker.
@@ -229,23 +293,54 @@ fn operation_tag(operation: &QueryOperationWire) -> &'static str {
     }
 }
 
+/// Whether an operation's answer depends on source/index currentness
+/// (#38 §9). Knowledge (Policy/Decision/WorkItem/... facts) does not, and
+/// is never held behind a code-index reconcile.
+const fn requires_current(operation: &QueryOperationWire) -> bool {
+    !matches!(operation, QueryOperationWire::Knowledge(_))
+}
+
 /// One Workspace's dedicated blocking worker thread: opens
 /// `CoreQuerySurface` once, then serves jobs until the channel closes
-/// (daemon lifetime; no P0 eviction, #24 §14).
-fn worker_loop(global_db: &Path, workspace: WorkspaceId, jobs: &std::sync::mpsc::Receiver<Job>) {
-    let surface = CoreQuerySurface::open(global_db, workspace);
-    let mut ledger = DeliveryLedger::new(
-        LedgerLimits::new(16, 1024).expect("16/1024 are non-zero ledger limits"),
-    );
+/// (daemon lifetime; no P0 eviction, #24 §14). Between jobs it journals
+/// buffered watcher events (#38).
+fn worker_loop(
+    global_db: &Path,
+    workspace: WorkspaceId,
+    factory: WatchFactory,
+    jobs: &std::sync::mpsc::Receiver<Job>,
+) {
+    let (mut surface, mut lifecycle) = bind(global_db, workspace, &factory);
+    let mut ledger = new_ledger();
     let mut pending = PendingAcks::new();
 
-    while let Ok(job) = jobs.recv() {
+    loop {
+        let job = match jobs.recv_timeout(WATCH_TICK) {
+            Ok(job) => job,
+            Err(RecvTimeoutError::Timeout) => {
+                if let Ok(lifecycle) = &mut lifecycle {
+                    lifecycle.tick();
+                }
+                continue;
+            }
+            Err(RecvTimeoutError::Disconnected) => break,
+        };
         match job {
             Job::Query {
                 operation,
                 correlation,
                 reply,
             } => {
+                if requires_current(&operation)
+                    && let Ok(lifecycle) = &mut lifecycle
+                    && let Err(error) = lifecycle.ensure_current()
+                {
+                    // Not fatal to the query: recovery failure leaves the
+                    // index DIRTY, and the query reports NOT_CURRENT.
+                    eprintln!(
+                        "brainprintd: workspace {workspace} freshness recovery failed: {error}"
+                    );
+                }
                 let outcome = match &surface {
                     Ok(surface) => run_query(
                         surface,
@@ -263,8 +358,56 @@ fn worker_loop(global_db: &Path, workspace: WorkspaceId, jobs: &std::sync::mpsc:
                 let outcome = pending.ack(&ack_token, &mut ledger);
                 let _ = reply.send(outcome);
             }
+            Job::Activate { reply } => {
+                // `init` may have repaired the locator (directory move):
+                // re-bind exactly as a fresh daemon process would.
+                let stale = lifecycle.as_ref().map_or(true, |current| {
+                    current.locator_changed(global_db, workspace)
+                });
+                if stale {
+                    drop(lifecycle);
+                    (surface, lifecycle) = bind(global_db, workspace, &factory);
+                    ledger = new_ledger();
+                    pending = PendingAcks::new();
+                }
+                let outcome = match (&surface, &mut lifecycle) {
+                    (Err(error), _) => {
+                        Err(convert_out::core_error(clone_core_error(error)).message)
+                    }
+                    (Ok(_), Ok(lifecycle)) => lifecycle.activate(),
+                    (Ok(_), Err(error)) => Err(error.clone()),
+                };
+                let _ = reply.send(outcome);
+            }
+            Job::Stats { reply } => {
+                let _ = reply.send(lifecycle.as_ref().ok().map(WorkspaceLifecycle::stats));
+            }
         }
     }
+}
+
+/// Open the Workspace's query surface and, only if its DB binding
+/// validated, its lifecycle. The lifecycle writes index.db; a failed bind
+/// (e.g. a binding mismatch) is reported by every query and never
+/// "repaired" by a reconcile into foreign data files.
+fn bind(
+    global_db: &Path,
+    workspace: WorkspaceId,
+    factory: &WatchFactory,
+) -> (
+    Result<CoreQuerySurface, brainprint_engine::query_surface::CoreError>,
+    Result<WorkspaceLifecycle, String>,
+) {
+    let surface = CoreQuerySurface::open(global_db, workspace);
+    let lifecycle = match &surface {
+        Ok(_) => WorkspaceLifecycle::load(global_db, workspace, factory.clone()),
+        Err(_) => Err("workspace binding could not be validated".to_owned()),
+    };
+    (surface, lifecycle)
+}
+
+fn new_ledger() -> DeliveryLedger {
+    DeliveryLedger::new(LedgerLimits::new(16, 1024).expect("16/1024 are non-zero ledger limits"))
 }
 
 /// `CoreError` is not `Clone`; every worker-startup failure path needs its

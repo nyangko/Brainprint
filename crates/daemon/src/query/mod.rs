@@ -8,6 +8,7 @@
 mod convert_in;
 mod convert_out;
 mod handler;
+pub mod lifecycle;
 mod runtime;
 #[cfg(test)]
 mod verification;

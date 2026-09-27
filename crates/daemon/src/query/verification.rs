@@ -1170,7 +1170,7 @@ async fn ambiguous_locator_is_explicit_never_first_match() {
 async fn binding_mismatch_is_explicit_not_silently_repaired() {
     let home = TestHome::create("binding-home");
     let global_paths = home.global_paths();
-    let (_server, endpoint) = start_server(&global_paths).await;
+    let (server, endpoint) = start_server(&global_paths).await;
 
     let workspace_a = TestHome::create("binding-a");
     let workspace_b = TestHome::create("binding-b");
@@ -1180,15 +1180,24 @@ async fn binding_mismatch_is_explicit_not_silently_repaired() {
     let id_b = init_workspace(&mut connection, workspace_b.path()).await;
     assert_ne!(id_a, id_b);
 
+    // #38: Init now activates the Workspace runtime, so A's worker is
+    // already bound. Stop the daemon so the query below is a genuinely
+    // fresh bind (#24 §14) against the swapped files.
+    drop(connection);
+    server.abort();
+    let _ = server.await;
+    tokio::time::sleep(Duration::from_millis(400)).await;
+
     let paths_a = WorkspacePaths::from_root(workspace_a.path());
     let paths_b = WorkspacePaths::from_root(workspace_b.path());
     // Corrupt A's binding by swapping in B's data files, *before* any
-    // query ever opens A's worker (the worker's CoreQuerySurface is
-    // opened once and reused -- swapping after the fact would prove
-    // nothing about a fresh bind, #24 §14).
+    // worker binds A in this daemon process.
     fs::copy(&paths_b.workspace_db, &paths_a.workspace_db).expect("swap workspace.db");
     fs::copy(&paths_b.index_db, &paths_a.index_db).expect("swap index.db");
+    let swapped_index = fs::read(&paths_a.index_db).expect("swapped index.db");
 
+    let (_server, endpoint) = start_server(&global_paths).await;
+    let mut connection = ready_connection(&endpoint).await;
     let response = query(
         &mut connection,
         id_a,
@@ -1202,6 +1211,11 @@ async fn binding_mismatch_is_explicit_not_silently_repaired() {
         panic!("a binding mismatch must never be silently repaired or auto-initialized")
     };
     assert_eq!(error.code, QueryErrorCodeWire::WorkspaceBindingMismatch);
+    assert_eq!(
+        fs::read(&paths_a.index_db).expect("index.db"),
+        swapped_index,
+        "the runtime never reconciles A's files into a foreign index.db"
+    );
 
     // The daemon itself must still be alive and servable.
     assert!(matches!(

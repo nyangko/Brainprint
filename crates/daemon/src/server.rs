@@ -22,7 +22,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::{
     client, handlers,
-    query::DaemonQueryRuntime,
+    query::{DaemonQueryRuntime, lifecycle::WatchFactory},
     runtime_paths::{self, RuntimeEndpoint},
     state::DaemonState,
 };
@@ -77,6 +77,37 @@ impl Server {
     /// from stale runtime artifacts left by a crashed previous instance),
     /// and prepare to serve.
     pub async fn bind(global_paths: &GlobalPaths) -> Result<Self, StartError> {
+        Self::bind_runtime(
+            global_paths,
+            DaemonQueryRuntime::new(global_paths.global_db.clone()),
+        )
+        .await
+    }
+
+    /// Test seam (#38 acceptance): bind with a substitute per-Workspace
+    /// watch source, e.g. an unavailable or lossy watcher. Production
+    /// always uses [`Self::bind`].
+    pub async fn bind_with_watch_factory(
+        global_paths: &GlobalPaths,
+        watch_factory: WatchFactory,
+    ) -> Result<Self, StartError> {
+        Self::bind_runtime(
+            global_paths,
+            DaemonQueryRuntime::with_watch_factory(global_paths.global_db.clone(), watch_factory),
+        )
+        .await
+    }
+
+    /// The daemon's shared Workspace runtimes (acceptance introspection).
+    #[must_use]
+    pub fn query_runtime(&self) -> Arc<DaemonQueryRuntime> {
+        Arc::clone(&self.query_runtime)
+    }
+
+    async fn bind_runtime(
+        global_paths: &GlobalPaths,
+        query_runtime: DaemonQueryRuntime,
+    ) -> Result<Self, StartError> {
         let endpoint = runtime_paths::resolve(global_paths);
         ensure_runtime_dir(&endpoint.runtime_root)?;
 
@@ -109,7 +140,7 @@ impl Server {
             listener,
             endpoint,
             state: DaemonState::new(),
-            query_runtime: Arc::new(DaemonQueryRuntime::new(global_paths.global_db.clone())),
+            query_runtime: Arc::new(query_runtime),
             global_paths: global_paths.clone(),
         })
     }
@@ -221,7 +252,15 @@ where
                 match run_blocking(move || handlers::handle_init(&global_paths, &init_request.path))
                     .await
                 {
-                    Ok(init) => Response::Init(init),
+                    // #38 §1: success means structural READY -- the
+                    // Workspace runtime is activated (watcher, baseline or
+                    // reconcile, current publication) before replying.
+                    Ok(init) => {
+                        match activate_initialized(&query_runtime, &init.workspace_id).await {
+                            Ok(()) => Response::Init(init),
+                            Err(error) => Response::Error(error),
+                        }
+                    }
                     Err(error) => Response::Error(error),
                 }
             }
@@ -234,6 +273,23 @@ where
         };
         protocol::framing::write_message(&mut connection, &response).await?;
     }
+}
+
+async fn activate_initialized(
+    query_runtime: &DaemonQueryRuntime,
+    workspace_id: &str,
+) -> Result<(), ErrorResponse> {
+    let workspace = workspace_id.parse().map_err(|_| ErrorResponse {
+        kind: ErrorKind::DaemonInternal,
+        message: "init returned an unparsable workspace id".to_owned(),
+    })?;
+    query_runtime.activate(workspace).await.map_err(|message| {
+        eprintln!("brainprintd: workspace {workspace_id} activation failed: {message}");
+        ErrorResponse {
+            kind: ErrorKind::DaemonInternal,
+            message: format!("workspace structural initialization failed: {message}"),
+        }
+    })
 }
 
 /// `handlers::handle_install`/`handle_init` call straight into synchronous

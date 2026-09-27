@@ -50,6 +50,15 @@ use serde_json::{Value, json};
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
+/// A continuous watch source that reports nothing (see `fixture`).
+struct InertWatch;
+
+impl brainprint_engine::watch::WatchSource for InertWatch {
+    fn drain(&mut self) -> Vec<brainprint_engine::watch::RawWatchEvent> {
+        Vec::new()
+    }
+}
+
 struct TestDir(PathBuf);
 
 impl TestDir {
@@ -85,7 +94,19 @@ struct Fixture {
 async fn fixture(label: &str) -> (Fixture, tokio::task::JoinHandle<()>) {
     let home = TestDir::create(&format!("{label}-home"));
     let global = GlobalPaths::from_home(&home.0);
-    let mut server = Server::bind(&global).await.expect("bind");
+    // #38: the daemon now runs a live Workspace watcher. This suite proves
+    // the adapter never reads source by making every source file
+    // unreadable (chmod 000); a live watcher would (correctly) see that
+    // permission change and stop claiming the index current, turning the
+    // exact-repeat cases into safe fallbacks. An inert watch source keeps
+    // this proof about the adapter; live-watcher behavior is #38's suite.
+    let inert: brainprint_daemon::query::lifecycle::WatchFactory =
+        std::sync::Arc::new(|_root: &std::path::Path| {
+            Ok(Box::new(InertWatch) as Box<dyn brainprint_engine::watch::WatchSource>)
+        });
+    let mut server = Server::bind_with_watch_factory(&global, inert)
+        .await
+        .expect("bind");
     let handle = tokio::spawn(async move {
         let _ = server.serve().await;
     });
