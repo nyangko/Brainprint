@@ -5,6 +5,7 @@ members = [
     "crates/daemon",
     "crates/cli",
     "crates/mcp",
+    "crates/agent",
 ]
 resolver = "3"
 

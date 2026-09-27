@@ -92,6 +92,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "brainprint-agent"
+version = "0.1.0"
+dependencies = [
+ "brainprint-core",
+ "clap",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "brainprint-cli"
 version = "0.1.0"
 dependencies = [
@@ -116,6 +127,7 @@ dependencies = [
 name = "brainprint-daemon"
 version = "0.1.0"
 dependencies = [
+ "brainprint-agent",
  "brainprint-core",
  "brainprint-engine",
  "brainprint-mcp",

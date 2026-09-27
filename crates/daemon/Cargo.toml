@@ -35,6 +35,11 @@ rusqlite.workspace = true
 brainprint-mcp = { path = "../mcp" }
 rmcp = { workspace = true, features = ["server"] }
 serde.workspace = true
+# #26 Task 13: the real end-to-end adoption acceptance drives the
+# brainprint-agent gateway/bridges against this daemon. Test-only and the
+# opposite of the forbidden direction (brainprint-agent never depends on
+# brainprint-daemon/-engine/-mcp).
+brainprint-agent = { path = "../agent" }
 
 [lints]
 workspace = true

@@ -1,23 +1,23 @@
 # Ai-Brainprint
 
-## 코드 탐색: CodeGraph 우선
+## 프로젝트 이해: Brainprint 우선
 
-이 저장소는 `.codegraph/`로 인덱싱되어 있다. 코드를 찾거나 이해해야 하면
-**grep / find / 파일 통독보다 CodeGraph를 먼저** 쓴다.
+현재/완전한 프로젝트 사실은 **Brainprint를 먼저** 쓴다 (`integrations/brainprint/SKILL.md`).
 
-- `mcp__codegraph__codegraph_explore` (MCP 툴, 우선) — 질문이나 심볼/파일 이름을 넣으면
-  해당 심볼의 줄번호 달린 원본 소스 + 호출 경로 + blast radius를 한 번에 준다. Read 대체 가능.
-- `codegraph explore "<심볼 또는 질문>"` — 셸 폴백.
+- `brainprint.find` — 위치 / 파일 목록 / 텍스트
+- `brainprint.inspect` — 정확한 현재 소스 / 이해
+- `brainprint.relations` — 의존 / 영향
+- `brainprint.context` — 변경 / 재개 / 규칙 / 이력 / 구조 / 상태
 
-읽기 전에 한 번 호출한다. 수정할 때도 마찬가지 — 영향 범위를 보고 편집한다.
-전체 파일을 정말 통독해야 할 때만 Read로 내려간다.
+Brainprint가 current/complete로 이미 돌려준 사실은 다시 탐색하지 않는다.
 
-## 셸 명령: rtk 경유
+Native 탐색(Read/Grep/Glob/셸)은 Brainprint가 partial / stale / unsupported /
+ambiguous / truncated를 보고했을 때, 또는 원본 검증이 명시적으로 필요할 때 쓴다.
+CodeGraph 등 사용자가 따로 설치한 도구도 그때의 외부 fallback일 뿐이며,
+Brainprint가 대신 호출하지 않는다.
 
-`rtk`(Rust Token Killer)가 설치되어 있다. 개발 명령은 rtk로 감싸서 실행한다
-(hook이 자동 재작성하지만, 직접 쓸 때도 `rtk cargo test`, `rtk git status` 형태를 쓴다).
+## 셸 명령 출력: rtk 경유
 
-- `rtk gain` — 절감량 확인
-- `rtk proxy <cmd>` — 필터 없이 원본 출력이 필요할 때만
-
-출력이 긴 명령(cargo build/test/clippy, git diff/log, ls -R)일수록 rtk를 쓴다.
+`rtk`(Rust Token Killer)가 설치되어 있다. 출력이 긴 개발 명령(cargo build/test/clippy,
+git diff/log)은 `rtk cargo test`, `rtk git status` 형태로 실행한다.
+`rtk proxy <cmd>` — 필터 없는 원본 출력이 필요할 때만. 프로젝트 이해 경로가 아니다.

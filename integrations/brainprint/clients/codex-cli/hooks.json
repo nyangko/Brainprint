@@ -1,0 +1,56 @@
+{
+  "hooks": {
+    "PostCompact": [
+      {
+        "hooks": [
+          {
+            "command": "brainprint-agent bridge --client codex-cli --event PostCompact --mode prefer",
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "command": "brainprint-agent bridge --client codex-cli --event PostToolUse --mode prefer",
+            "type": "command"
+          }
+        ],
+        "matcher": "*"
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "command": "brainprint-agent bridge --client codex-cli --event PreToolUse --mode prefer",
+            "type": "command"
+          }
+        ],
+        "matcher": "*"
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "command": "brainprint-agent bridge --client codex-cli --event SessionStart --mode prefer",
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "command": "brainprint-agent bridge --client codex-cli --event SubagentStart --mode prefer",
+            "type": "command"
+          }
+        ]
+      }
+    ]
+  }
+}

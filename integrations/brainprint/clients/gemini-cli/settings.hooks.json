@@ -1,0 +1,53 @@
+{
+  "hooks": {
+    "AfterTool": [
+      {
+        "hooks": [
+          {
+            "command": "brainprint-agent bridge --client gemini-cli --event AfterTool --mode prefer",
+            "name": "brainprint-aftertool",
+            "type": "command"
+          }
+        ],
+        "matcher": ".*"
+      }
+    ],
+    "BeforeTool": [
+      {
+        "hooks": [
+          {
+            "command": "brainprint-agent bridge --client gemini-cli --event BeforeTool --mode prefer",
+            "name": "brainprint-beforetool",
+            "type": "command"
+          }
+        ],
+        "matcher": ".*"
+      }
+    ],
+    "PreCompress": [
+      {
+        "hooks": [
+          {
+            "command": "brainprint-agent bridge --client gemini-cli --event PreCompress --mode prefer",
+            "name": "brainprint-precompress",
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "command": "brainprint-agent bridge --client gemini-cli --event SessionStart --mode prefer",
+            "name": "brainprint-sessionstart",
+            "type": "command"
+          }
+        ]
+      }
+    ]
+  },
+  "hooksConfig": {
+    "enabled": true
+  }
+}
