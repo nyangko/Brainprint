@@ -16,6 +16,7 @@ edition = "2024"
 # on stable Rust at all -- verified). Not an unrelated modernization.
 rust-version = "1.88"
 repository = "https://github.com/nyangko/Brainprint"
+license = "GPL-3.0-only"
 
 [workspace.dependencies]
 brainprint-core = { path = "crates/core" }
