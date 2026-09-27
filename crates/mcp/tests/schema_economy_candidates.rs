@@ -109,7 +109,10 @@ fn print_contracts(label: &str, items: &[ContractMeasure]) {
         "tool_count={} total_schema_bytes={} total_description_bytes={} total_contract_bytes={}",
         items.len(),
         sum_schema_bytes(items),
-        items.iter().map(|item| item.description.len()).sum::<usize>(),
+        items
+            .iter()
+            .map(|item| item.description.len())
+            .sum::<usize>(),
         sum_contract_bytes(items)
     );
 }
@@ -164,10 +167,7 @@ async fn issue_35_schema_economy_candidates_are_measured_without_picking_a_winne
     // round-trip the current structured continuation losslessly; no MCP-side
     // cursor/session map is introduced.
     let reduced = vec![
-        measure_contract::<ReducedFind>(
-            "brainprint.find",
-            baseline_description("brainprint.find"),
-        ),
+        measure_contract::<ReducedFind>("brainprint.find", baseline_description("brainprint.find")),
         measure_contract::<ReducedInspect>(
             "brainprint.inspect",
             baseline_description("brainprint.inspect"),
@@ -237,10 +237,10 @@ async fn issue_35_schema_economy_candidates_are_measured_without_picking_a_winne
             .await
             .expect("lazy-contract server should shut down cleanly");
     });
-    let lazy_client = ()
-        .serve(lazy_client_io)
-        .await
-        .expect("lazy-contract client should initialize");
+    let lazy_client =
+        ().serve(lazy_client_io)
+            .await
+            .expect("lazy-contract client should initialize");
 
     let mut lazy_lookup = Vec::new();
     for contract in &split {
@@ -745,7 +745,10 @@ struct LazyContractServer;
 impl ServerHandler for LazyContractServer {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_resources().build())
-            .with_server_info(Implementation::new("brainprint-schema-economy-fixture", "0"))
+            .with_server_info(Implementation::new(
+                "brainprint-schema-economy-fixture",
+                "0",
+            ))
     }
 
     async fn read_resource(
@@ -778,4 +781,3 @@ impl ServerHandler for LazyContractServer {
         .into())
     }
 }
-
