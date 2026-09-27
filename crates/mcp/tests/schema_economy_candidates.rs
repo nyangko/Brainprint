@@ -13,9 +13,9 @@
 use brainprint_mcp::{
     BrainprintMcp,
     params::{
-        BudgetProfileParam, CorrelationParams, DeliveryParams, ResourceKindParam,
-        ResourceLanguageParam, ResourceRoleParam, SearchBudgetProfileParam, TargetParam,
-        WorkspaceSelectorParam,
+        BudgetProfileParam, ContinuationBudgetParam, CorrelationParams, DeliveryContinuationParam,
+        DeliveryKeyParam, DeliveryParams, ResourceKindParam, ResourceLanguageParam,
+        ResourceRoleParam, SearchBudgetProfileParam, TargetParam, WorkspaceSelectorParam,
     },
     tools::{
         context::{
@@ -26,18 +26,92 @@ use brainprint_mcp::{
         relations::{ChangeKindParam, RelationDirectionParam, RelationKindParam, RelationsMode},
     },
 };
-use rmcp::{ServiceExt, model::PaginatedRequestParams};
+use rmcp::{
+    ErrorData, RoleServer, ServerHandler, ServiceExt,
+    model::{
+        Implementation, PaginatedRequestParams, ReadResourceRequestParams, ReadResourceResponse,
+        ReadResourceResult, ResourceContents, ServerCapabilities, ServerConfig,
+    },
+    service::RequestContext,
+};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
+fn schema_value<T: JsonSchema>() -> serde_json::Value {
+    serde_json::to_value(schemars::schema_for!(T)).expect("schema should serialize")
+}
+
 fn schema_bytes<T: JsonSchema>() -> usize {
-    serde_json::to_string(&schemars::schema_for!(T))
+    serde_json::to_string(&schema_value::<T>())
         .expect("schema should serialize")
         .len()
 }
 
-fn sum_named(items: &[(&str, usize)]) -> usize {
-    items.iter().map(|(_, bytes)| *bytes).sum()
+#[derive(Debug, Clone)]
+struct ContractMeasure {
+    name: String,
+    description: String,
+    schema: serde_json::Value,
+    schema_bytes: usize,
+    contract_bytes: usize,
+}
+
+fn measure_contract_value(
+    name: impl Into<String>,
+    description: impl Into<String>,
+    schema: serde_json::Value,
+) -> ContractMeasure {
+    let name = name.into();
+    let description = description.into();
+    let schema_bytes = serde_json::to_string(&schema)
+        .expect("schema should serialize")
+        .len();
+    let contract_bytes = serde_json::to_string(&serde_json::json!({
+        "name": &name,
+        "description": &description,
+        "inputSchema": &schema,
+    }))
+    .expect("tool contract should serialize")
+    .len();
+    ContractMeasure {
+        name,
+        description,
+        schema,
+        schema_bytes,
+        contract_bytes,
+    }
+}
+
+fn measure_contract<T: JsonSchema>(name: &str, description: &str) -> ContractMeasure {
+    measure_contract_value(name, description, schema_value::<T>())
+}
+
+fn sum_schema_bytes(items: &[ContractMeasure]) -> usize {
+    items.iter().map(|item| item.schema_bytes).sum()
+}
+
+fn sum_contract_bytes(items: &[ContractMeasure]) -> usize {
+    items.iter().map(|item| item.contract_bytes).sum()
+}
+
+fn print_contracts(label: &str, items: &[ContractMeasure]) {
+    println!("=== {label} ===");
+    for item in items {
+        println!(
+            "{}: schema_bytes={} description_bytes={} contract_bytes={}",
+            item.name,
+            item.schema_bytes,
+            item.description.len(),
+            item.contract_bytes
+        );
+    }
+    println!(
+        "tool_count={} total_schema_bytes={} total_description_bytes={} total_contract_bytes={}",
+        items.len(),
+        sum_schema_bytes(items),
+        items.iter().map(|item| item.description.len()).sum::<usize>(),
+        sum_contract_bytes(items)
+    );
 }
 
 #[tokio::test]
@@ -61,69 +135,151 @@ async fn issue_35_schema_economy_candidates_are_measured_without_picking_a_winne
         .expect("tools/list should succeed");
     assert_eq!(tools.tools.len(), 4, "#25 baseline is exactly four tools");
 
-    let mut baseline = Vec::new();
-    let mut baseline_description_bytes = 0usize;
-    for tool in &tools.tools {
-        let bytes = serde_json::to_string(&*tool.input_schema)
-            .expect("schema should serialize")
-            .len();
-        baseline.push((tool.name.to_string(), bytes));
-        baseline_description_bytes += tool.description.as_deref().unwrap_or("").len();
-    }
-    let baseline_total: usize = baseline.iter().map(|(_, bytes)| *bytes).sum();
+    let baseline: Vec<_> = tools
+        .tools
+        .iter()
+        .map(|tool| {
+            measure_contract_value(
+                tool.name.to_string(),
+                tool.description.as_deref().unwrap_or(""),
+                serde_json::Value::Object((*tool.input_schema).clone()),
+            )
+        })
+        .collect();
 
     client.cancel().await.expect("client should close cleanly");
     server.await.expect("server task should not panic");
 
-    // ------------------------------------------ B: reduced typed 4-tool fixture
-    // This candidate intentionally tests two hypotheses together:
-    // 1) continuation is opaque to the Agent, and
-    // 2) correlation/session bookkeeping is injected by integration rather
-    //    than exposed in the model-visible tool schema.
-    // Workspace remains explicit so generic MCP-only routing still has a
-    // fallback. This is a measurement fixture, not a product decision.
-    let reduced = [
-        ("brainprint.find", schema_bytes::<ReducedFind>()),
-        ("brainprint.inspect", schema_bytes::<ReducedInspect>()),
-        ("brainprint.relations", schema_bytes::<ReducedRelations>()),
-        ("brainprint.context", schema_bytes::<ReducedContext>()),
-    ];
-    let reduced_total = sum_named(&reduced);
+    let baseline_description = |name: &str| {
+        baseline
+            .iter()
+            .find(|item| item.name == name)
+            .map(|item| item.description.as_str())
+            .expect("baseline description should exist")
+    };
 
-    // -------------------------------- C: full-vocabulary small typed operations
-    // Unlike #25's historical 7-tool lower-bound fixture, these shapes reuse
-    // the real Target/Delivery/Workspace/Correlation/change/grouping vocabularies.
-    let split = [
-        ("find_target", schema_bytes::<FindTarget>()),
-        ("find_files", schema_bytes::<FindFiles>()),
-        ("find_text", schema_bytes::<FindText>()),
-        ("inspect", schema_bytes::<Inspect>()),
-        ("relations_direct", schema_bytes::<RelationsDirect>()),
-        ("impact", schema_bytes::<Impact>()),
-        ("context_change", schema_bytes::<ContextChange>()),
-        ("context_resume", schema_bytes::<ContextResume>()),
-        ("rules", schema_bytes::<Rules>()),
-        ("work_items", schema_bytes::<WorkItems>()),
-        ("lineage", schema_bytes::<Lineage>()),
-        ("handoffs", schema_bytes::<Handoffs>()),
-        ("structure", schema_bytes::<Structure>()),
-        ("status", schema_bytes::<Status>()),
+    // ------------------------------------------ B: reduced typed 4-tool fixture
+    // This candidate measures a stateless opaque-continuation adapter plus
+    // integration-injected correlation. The opaque string is proven below to
+    // round-trip the current structured continuation losslessly; no MCP-side
+    // cursor/session map is introduced.
+    let reduced = vec![
+        measure_contract::<ReducedFind>(
+            "brainprint.find",
+            baseline_description("brainprint.find"),
+        ),
+        measure_contract::<ReducedInspect>(
+            "brainprint.inspect",
+            baseline_description("brainprint.inspect"),
+        ),
+        measure_contract::<ReducedRelations>(
+            "brainprint.relations",
+            baseline_description("brainprint.relations"),
+        ),
+        measure_contract::<ReducedContext>(
+            "brainprint.context",
+            baseline_description("brainprint.context"),
+        ),
     ];
-    let split_total = sum_named(&split);
+
+    let continuation = DeliveryContinuationParam {
+        workspace_id: "00000000-0000-0000-0000-000000000001".to_owned(),
+        index_incarnation_id: "00000000-0000-0000-0000-000000000002".to_owned(),
+        workspace_revision: "rev-7".to_owned(),
+        generation_no: 3,
+        generation_basis_revision: "rev-6".to_owned(),
+        request_fingerprint: "request-fingerprint".to_owned(),
+        projection_fingerprint: "projection-fingerprint".to_owned(),
+        budget: ContinuationBudgetParam {
+            max_items: Some(16),
+            max_bytes: Some(16 * 1024),
+            max_tokens: None,
+        },
+        next: DeliveryKeyParam {
+            tier: 2,
+            depth: 4,
+            identity: "next-key".to_owned(),
+        },
+    };
+    let opaque = encode_opaque_continuation(&continuation);
+    let decoded = decode_opaque_continuation(&opaque).expect("opaque continuation should decode");
+    assert_eq!(
+        serde_json::to_value(&decoded).expect("decoded continuation should serialize"),
+        serde_json::to_value(&continuation).expect("source continuation should serialize"),
+        "opaque adapter must preserve every current continuation field"
+    );
+
+    // -------------------------------- C: full-fidelity small typed operations
+    // These fixtures reuse the real nested vocabularies and retain the
+    // operation-specific field documentation that contributes to JSON Schema.
+    // Tool descriptions are measured too, so 4-tool vs 14-tool comparison does
+    // not silently give the split candidate free description bytes.
+    let split = split_contracts();
 
     // ------------------------------------- D: dispatcher + lazy typed contract
-    let dispatcher_bytes = schema_bytes::<Dispatcher>();
-    let lazy_contract_total = split_total;
-    let lazy_single_contract_min = split
-        .iter()
-        .map(|(_, bytes)| *bytes)
-        .min()
-        .expect("split fixture is non-empty");
-    let lazy_single_contract_max = split
-        .iter()
-        .map(|(_, bytes)| *bytes)
-        .max()
-        .expect("split fixture is non-empty");
+    // Unlike the first fixture, this performs a real rmcp resources/read
+    // round-trip against a test-only resource server. Whether a real host puts
+    // the returned resource into model-visible context is a Phase 2/client fact,
+    // not inferred from this local protocol test.
+    let dispatcher = measure_contract::<Dispatcher>(
+        "brainprint.execute",
+        "Execute one Brainprint operation. Read the matching brainprint://contracts/{operation} resource before first use when the host exposes MCP resources.",
+    );
+
+    let (lazy_client_io, lazy_server_io) = tokio::io::duplex(64 * 1024);
+    let lazy_server = tokio::spawn(async move {
+        let running = LazyContractServer
+            .serve(lazy_server_io)
+            .await
+            .expect("lazy-contract server should start");
+        running
+            .waiting()
+            .await
+            .expect("lazy-contract server should shut down cleanly");
+    });
+    let lazy_client = ()
+        .serve(lazy_client_io)
+        .await
+        .expect("lazy-contract client should initialize");
+
+    let mut lazy_lookup = Vec::new();
+    for contract in &split {
+        let uri = contract_uri(&contract.name);
+        let result = lazy_client
+            .read_resource(ReadResourceRequestParams::new(uri.clone()))
+            .await
+            .expect("resources/read should succeed");
+        let text = match result.contents.as_slice() {
+            [ResourceContents::TextResourceContents { text, .. }] => text.clone(),
+            _ => panic!("contract resource should contain exactly one text payload"),
+        };
+        let returned: serde_json::Value =
+            serde_json::from_str(&text).expect("contract resource should be JSON");
+        assert_eq!(returned["name"], contract.name);
+        assert_eq!(returned["description"], contract.description);
+        assert_eq!(returned["inputSchema"], contract.schema);
+
+        let request_bytes = serde_json::to_string(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "resources/read",
+            "params": { "uri": uri },
+        }))
+        .expect("resource request should serialize")
+        .len();
+        let result_bytes = serde_json::to_string(&result)
+            .expect("resource result should serialize")
+            .len();
+        lazy_lookup.push((contract.name.clone(), request_bytes, result_bytes));
+    }
+
+    lazy_client
+        .cancel()
+        .await
+        .expect("lazy-contract client should close cleanly");
+    lazy_server
+        .await
+        .expect("lazy-contract server task should not panic");
 
     // ------------------------------------- isolated common-field contributions
     let current_delivery = schema_bytes::<DeliveryParams>();
@@ -131,37 +287,37 @@ async fn issue_35_schema_economy_candidates_are_measured_without_picking_a_winne
     let correlation = schema_bytes::<CorrelationParams>();
     let workspace = schema_bytes::<WorkspaceSelectorParam>();
 
-    println!("=== #35 A: current real MCP surface ===");
-    for (name, bytes) in &baseline {
-        println!("{name}: schema_bytes={bytes}");
-    }
+    print_contracts("#35 A: current real MCP surface", &baseline);
+    print_contracts("#35 B: reduced typed 4-tool fixture", &reduced);
+    print_contracts("#35 C: full-fidelity split typed fixture", &split);
+
+    println!("=== #35 D: dispatcher + real resources/read contract lookup ===");
     println!(
-        "tool_count={} total_schema_bytes={baseline_total} total_description_bytes={baseline_description_bytes}",
-        baseline.len()
+        "dispatcher_schema_bytes={} dispatcher_description_bytes={} dispatcher_contract_bytes={}",
+        dispatcher.schema_bytes,
+        dispatcher.description.len(),
+        dispatcher.contract_bytes
     );
-
-    println!("=== #35 B: reduced typed 4-tool fixture ===");
-    for (name, bytes) in reduced {
-        println!("{name}: schema_bytes={bytes}");
+    for (name, request_bytes, result_bytes) in &lazy_lookup {
+        println!(
+            "{name}: resource_read_request_bytes={request_bytes} resource_read_result_bytes={result_bytes} first_use_bytes={}",
+            request_bytes + result_bytes
+        );
     }
-    println!("tool_count=4 total_schema_bytes={reduced_total}");
-
-    println!("=== #35 C: full-vocabulary split typed fixture ===");
-    for (name, bytes) in split {
-        println!("{name}: schema_bytes={bytes}");
-    }
-    println!("tool_count=14 total_schema_bytes={split_total}");
-
-    println!("=== #35 D: dispatcher + lazy operation contract ===");
-    println!("dispatcher_schema_bytes={dispatcher_bytes}");
-    println!("all_operation_contract_bytes={lazy_contract_total}");
+    let lazy_min = lazy_lookup
+        .iter()
+        .map(|(_, request, result)| request + result)
+        .min()
+        .expect("lazy lookup fixture is non-empty");
+    let lazy_max = lazy_lookup
+        .iter()
+        .map(|(_, request, result)| request + result)
+        .max()
+        .expect("lazy lookup fixture is non-empty");
     println!(
-        "single_operation_contract_bytes_min={lazy_single_contract_min} max={lazy_single_contract_max}"
-    );
-    println!(
-        "single_lazy_use_total_min={} single_lazy_use_total_max={}",
-        dispatcher_bytes + lazy_single_contract_min,
-        dispatcher_bytes + lazy_single_contract_max
+        "single_lazy_first_use_total_min={} single_lazy_first_use_total_max={}",
+        dispatcher.contract_bytes + lazy_min,
+        dispatcher.contract_bytes + lazy_max
     );
 
     println!("=== #35 common vocabulary ===");
@@ -169,17 +325,26 @@ async fn issue_35_schema_economy_candidates_are_measured_without_picking_a_winne
     println!("opaque_delivery_schema_bytes={opaque_delivery}");
     println!("correlation_schema_bytes={correlation}");
     println!("workspace_schema_bytes={workspace}");
+    println!("opaque_continuation_payload_bytes={}", opaque.len());
 
-    // Decision gate: only factual invariants, never "candidate X must be smaller".
-    assert!(baseline_total > 0);
-    assert!(reduced_total > 0);
-    assert!(split_total > 0);
-    assert!(dispatcher_bytes > 0);
+    // Decision gate: factual invariants only, never "candidate X must be smaller".
+    assert_eq!(sum_schema_bytes(&baseline), 24_069, "#25 baseline drifted");
+    assert!(sum_schema_bytes(&reduced) > 0);
+    assert!(sum_schema_bytes(&split) > 0);
+    assert!(dispatcher.schema_bytes > 0);
     assert!(current_delivery > 0);
     assert!(opaque_delivery > 0);
 }
 
 // ---------------------------------------------------------------- B fixture
+
+fn encode_opaque_continuation(value: &DeliveryContinuationParam) -> String {
+    serde_json::to_string(value).expect("continuation should serialize")
+}
+
+fn decode_opaque_continuation(value: &str) -> Result<DeliveryContinuationParam, serde_json::Error> {
+    serde_json::from_str(value)
+}
 
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
 #[serde(default)]
@@ -278,27 +443,94 @@ struct ReducedContext {
 
 // ---------------------------------------------------------------- C fixture
 
+fn split_contracts() -> Vec<ContractMeasure> {
+    vec![
+        measure_contract::<FindTarget>(
+            "brainprint.find_target",
+            "Resolve one explicit project target and deliver its bounded current projection.",
+        ),
+        measure_contract::<FindFiles>(
+            "brainprint.find_files",
+            "List indexed project files/resources using explicit directory, prefix, role, language, kind, and limit filters.",
+        ),
+        measure_contract::<FindText>(
+            "brainprint.find_text",
+            "Run an explicit bounded literal or regex text search. Text search is never an automatic fallback from a structured miss.",
+        ),
+        measure_contract::<Inspect>(
+            "brainprint.inspect",
+            "The resolved target's exact current declaration source (or a typed SourceUnavailable reason) plus both directions of its direct relations.",
+        ),
+        measure_contract::<RelationsDirect>(
+            "brainprint.relations_direct",
+            "Return one anchor's confirmed direct relations, one hop, unpaged, with no source materialization.",
+        ),
+        measure_contract::<Impact>(
+            "brainprint.impact",
+            "Run the I3 impact traversal for an explicitly declared ChangeKind; the change form is never inferred.",
+        ),
+        measure_contract::<ContextChange>(
+            "brainprint.context_change",
+            "Build bounded change context for an explicit edit target and optional declared change/work-item identity.",
+        ),
+        measure_contract::<ContextResume>(
+            "brainprint.context_resume",
+            "Resume an explicit WorkItem, optionally scoped to one target, with bounded delivery and continuation.",
+        ),
+        measure_contract::<Rules>(
+            "brainprint.rules",
+            "Return current applicable Policy/rules without inventing role, persona, or authority.",
+        ),
+        measure_contract::<WorkItems>(
+            "brainprint.work_items",
+            "Return current WorkItems matching explicit statuses under a bounded item limit.",
+        ),
+        measure_contract::<Lineage>(
+            "brainprint.lineage",
+            "Return one-hop lineage for an explicit ProjectPolicy, UserPolicy, or Decision identity.",
+        ),
+        measure_contract::<Handoffs>(
+            "brainprint.handoffs",
+            "Return handoff history for an explicit WorkItem, newest first, under a bounded item limit.",
+        ),
+        measure_contract::<Structure>(
+            "brainprint.structure",
+            "Return a deterministic grouped structural summary using explicit grouping, resource scope, relation kinds, cycle, and sample controls.",
+        ),
+        measure_contract::<Status>(
+            "brainprint.status",
+            "Return the daemon's own Status without fabricating a Workspace health score.",
+        ),
+    ]
+}
+
 #[derive(Debug, Deserialize, JsonSchema)]
 struct FindTarget {
+    /// Exact target selector. The shared TargetParam schema preserves the
+    /// current explicit target vocabulary and target_json escape hatch.
     #[serde(flatten)]
     target: TargetParam,
     #[serde(flatten)]
     workspace: WorkspaceSelectorParam,
     #[serde(flatten)]
     correlation: CorrelationParams,
+    /// Planner-backed delivery budget and exact continuation.
     #[serde(flatten)]
     delivery: DeliveryParams,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct FindFiles {
+    /// Optional directory selector for indexed file/resource discovery.
     directory: Option<String>,
     #[serde(default)]
     recursive: bool,
+    /// Resource path prefix filter.
     path_prefix: Option<String>,
     role: Option<ResourceRoleParam>,
     language: Option<ResourceLanguageParam>,
     kind: Option<ResourceKindParam>,
+    /// Defaults to 100 in the current operation semantics.
     limit: Option<usize>,
     #[serde(flatten)]
     workspace: WorkspaceSelectorParam,
@@ -308,11 +540,14 @@ struct FindFiles {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct FindText {
+    /// Explicit literal or regex pattern. Required for text search.
     pattern: String,
+    /// Treat pattern as a regular expression rather than a literal string.
     #[serde(default)]
     regex: bool,
     #[serde(default)]
     case_insensitive: bool,
+    /// Search scope prefix.
     path_prefix: Option<String>,
     #[serde(default = "default_true")]
     with_preview: bool,
@@ -342,6 +577,7 @@ struct RelationsDirect {
     target: TargetParam,
     #[serde(default)]
     direction: RelationDirectionParam,
+    /// Empty means every relation kind.
     #[serde(default)]
     kinds: Vec<RelationKindParam>,
     #[serde(flatten)]
@@ -354,6 +590,7 @@ struct RelationsDirect {
 struct Impact {
     #[serde(flatten)]
     target: TargetParam,
+    /// Required explicit change form; never inferred by MCP/Agent.
     change: ChangeKindParam,
     #[serde(flatten)]
     workspace: WorkspaceSelectorParam,
@@ -367,7 +604,9 @@ struct Impact {
 struct ContextChange {
     #[serde(flatten)]
     target: TargetParam,
+    /// Optional declared change form; omission means a plain edit.
     change: Option<ChangeKindParam>,
+    /// Optional canonical WorkItem UUID this edit belongs to.
     work_item: Option<String>,
     #[serde(flatten)]
     workspace: WorkspaceSelectorParam,
@@ -379,8 +618,10 @@ struct ContextChange {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct ContextResume {
+    /// Optional target: an empty selector is a valid unscoped Resume.
     #[serde(flatten)]
     target: TargetParam,
+    /// Required canonical WorkItem UUID.
     work_item: String,
     #[serde(flatten)]
     workspace: WorkspaceSelectorParam,
@@ -400,7 +641,9 @@ struct Rules {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct WorkItems {
+    /// Required explicit WorkItem statuses.
     statuses: Vec<WorkItemStatusParam>,
+    /// Defaults to 50 in the current operation semantics.
     limit: Option<usize>,
     #[serde(flatten)]
     workspace: WorkspaceSelectorParam,
@@ -410,7 +653,9 @@ struct WorkItems {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct Lineage {
+    /// Required lineage target kind.
     lineage_of: LineageOfParam,
+    /// Required canonical UUID of the Policy or Decision.
     id: String,
     #[serde(flatten)]
     workspace: WorkspaceSelectorParam,
@@ -420,7 +665,9 @@ struct Lineage {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct Handoffs {
+    /// Required canonical WorkItem UUID.
     work_item: String,
+    /// Defaults to 20 in the current operation semantics.
     limit: Option<usize>,
     #[serde(flatten)]
     workspace: WorkspaceSelectorParam,
@@ -459,13 +706,13 @@ fn default_true() -> bool {
 #[derive(Debug, Deserialize, JsonSchema)]
 struct Dispatcher {
     /// Selects one Brainprint operation. The matching typed contract is
-    /// disclosed only when the client/runtime can do so lazily.
+    /// disclosed only when the client/runtime can expose MCP resources lazily.
     operation: DispatcherOperation,
     /// Request payload validated against the selected operation contract.
     request: serde_json::Value,
 }
 
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 enum DispatcherOperation {
     FindTarget,
@@ -483,3 +730,52 @@ enum DispatcherOperation {
     Structure,
     Status,
 }
+
+fn contract_uri(name: &str) -> String {
+    format!("brainprint://contracts/{name}")
+}
+
+fn contract_by_name(name: &str) -> Option<ContractMeasure> {
+    split_contracts().into_iter().find(|item| item.name == name)
+}
+
+#[derive(Debug, Clone, Copy)]
+struct LazyContractServer;
+
+impl ServerHandler for LazyContractServer {
+    fn get_info(&self) -> ServerConfig {
+        ServerConfig::new(ServerCapabilities::builder().enable_resources().build())
+            .with_server_info(Implementation::new("brainprint-schema-economy-fixture", "0"))
+    }
+
+    async fn read_resource(
+        &self,
+        request: ReadResourceRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ReadResourceResponse, ErrorData> {
+        let prefix = "brainprint://contracts/";
+        let Some(name) = request.uri.strip_prefix(prefix) else {
+            return Err(ErrorData::resource_not_found(
+                "unknown contract resource",
+                Some(serde_json::json!({ "uri": request.uri })),
+            ));
+        };
+        let Some(contract) = contract_by_name(name) else {
+            return Err(ErrorData::resource_not_found(
+                "unknown contract resource",
+                Some(serde_json::json!({ "uri": request.uri })),
+            ));
+        };
+        let text = serde_json::to_string(&serde_json::json!({
+            "name": contract.name,
+            "description": contract.description,
+            "inputSchema": contract.schema,
+        }))
+        .expect("contract resource should serialize");
+        Ok(ReadResourceResult::new(vec![
+            ResourceContents::text(text, request.uri).with_mime_type("application/schema+json"),
+        ])
+        .into())
+    }
+}
+
