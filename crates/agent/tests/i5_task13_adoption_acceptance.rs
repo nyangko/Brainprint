@@ -584,7 +584,7 @@ fn agent_sources() -> Vec<(String, String)> {
                     .strip_prefix(env!("CARGO_MANIFEST_DIR"))
                     .expect("rel")
                     .to_string_lossy()
-                    .into_owned();
+                    .replace('\\', "/");
                 files.push((name, fs::read_to_string(&path).expect("read")));
             }
         }

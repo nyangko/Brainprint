@@ -132,6 +132,9 @@ impl SessionRecord {
     }
 
     pub fn forget_path(&mut self, path_rel_or_abs: &str) {
+        // `path_rel` is always forward-slash (#26); a native path handed in
+        // here is OS-native, backslash on Windows.
+        let path_rel_or_abs = path_rel_or_abs.replace('\\', "/");
         self.sources.retain(|source| {
             !(path_rel_or_abs == source.path_rel
                 || path_rel_or_abs.ends_with(&format!("/{}", source.path_rel)))
