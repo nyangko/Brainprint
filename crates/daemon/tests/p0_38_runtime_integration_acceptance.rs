@@ -102,6 +102,17 @@ fn git(dir: &Path, args: &[&str]) {
     assert!(status.success(), "git {args:?}");
 }
 
+/// `Path::canonicalize()` on Windows returns a `\\?\`-prefixed verbatim
+/// path; git.exe (MSYS) does not accept that prefix in a path argument
+/// (only `Command::current_dir` tolerates it). Strip it for arguments.
+fn git_path_arg(path: &Path) -> String {
+    let raw = path.to_string_lossy().into_owned();
+    match raw.strip_prefix(r"\\?\") {
+        Some(stripped) => stripped.to_owned(),
+        None => raw,
+    }
+}
+
 /// A watch source the test drives: it "observes" exactly the events the
 /// test pushes, like an OS watcher whose events arrive on demand.
 #[derive(Clone, Default)]
@@ -901,7 +912,7 @@ async fn a16_two_worktrees_have_separate_runtime_and_currentness() {
             "worktree",
             "add",
             "-q",
-            &linked.path().to_string_lossy(),
+            &git_path_arg(linked.path()),
             "HEAD",
         ],
     );
