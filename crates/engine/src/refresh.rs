@@ -139,6 +139,9 @@ pub enum DeferReason {
     TargetPathMissing { path_rel: String },
     /// The target's path is now excluded by the discovery rules.
     TargetExcluded { path_rel: String },
+    /// The pending candidate resolved to a Directory Resource, which has
+    /// no content for this single-file path to read.
+    NotAFile { path_rel: String },
     /// Kind, role, or language changed: this is no longer the same kind of
     /// Resource, and its structural treatment may differ.
     ClassificationChanged { path_rel: String },
@@ -371,6 +374,14 @@ impl TargetedRefresh {
         if resource.state != crate::resource::ResourceState::Active {
             return Ok(Err(DeferReason::NotAnExistingResource {
                 path: Some(resource.path_rel),
+            }));
+        }
+        // A Directory Resource has no content of its own (#16 task 3): a
+        // watcher backend that journals one as a pending MODIFY (observed
+        // on Windows) is not the single-file shape this path handles.
+        if resource.kind == crate::resource::ResourceKind::Directory {
+            return Ok(Err(DeferReason::NotAFile {
+                path_rel: resource.path_rel,
             }));
         }
 
@@ -1319,6 +1330,34 @@ def run():
             matches!(
                 outcome,
                 RefreshOutcome::Deferred(DeferReason::MultiplePendingResources { resources: 2 })
+            ),
+            "unexpected outcome: {outcome:?}"
+        );
+        let after = fixture.state();
+        assert_eq!(after, before, "nothing at all was written");
+        assert_eq!(after.freshness, FreshnessState::Dirty);
+    }
+
+    /// A watcher backend can journal a Directory Resource's own path as a
+    /// MODIFY (observed from `notify` on Windows for a workspace root);
+    /// this path has no content to read for it and must defer, not panic
+    /// or misattribute a file's identity to a directory (#40).
+    #[test]
+    fn a_directory_reported_as_modified_defers_rather_than_reading_it() {
+        let fixture = Fixture::create("directory-modified");
+        fixture.index();
+        fixture.ingest(&[RawWatchEvent::Modified {
+            path: fixture.path("src"),
+        }]);
+        let before = fixture.state();
+
+        let outcome = fixture.run();
+
+        assert!(
+            matches!(
+                outcome,
+                RefreshOutcome::Deferred(DeferReason::NotAFile { ref path_rel })
+                    if path_rel == "src"
             ),
             "unexpected outcome: {outcome:?}"
         );
