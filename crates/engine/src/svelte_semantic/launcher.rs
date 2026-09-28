@@ -416,7 +416,12 @@ mod tests {
         let launcher = SvelteLauncher::new(install.clone(), "node");
         let line = launcher.command_line();
         assert!(line.starts_with("node "), "{line}");
-        assert!(line.ends_with("bin/server.js --stdio"), "{line}");
+        // The entry point's own separator is OS-native (correct for the
+        // real subprocess argument); normalize only for this check.
+        assert!(
+            line.replace('\\', "/").ends_with("bin/server.js --stdio"),
+            "{line}"
+        );
         let _ = fs::remove_dir_all(&root);
     }
 

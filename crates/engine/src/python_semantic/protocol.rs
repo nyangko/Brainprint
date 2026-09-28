@@ -422,7 +422,15 @@ fn range_json(range: Range) -> Value {
 /// [`ResourceId`](brainprint_core::ResourceId).
 #[must_use]
 pub fn path_to_uri(path: &std::path::Path) -> String {
-    let text = path.to_string_lossy().replace('\\', "/");
+    let raw = path.to_string_lossy();
+    // `fs::canonicalize` on Windows returns a `\\?\`-prefixed verbatim
+    // path; a real language server's own URIs never carry that marker,
+    // so a request built from one would be malformed and a response
+    // compared against a canonicalized workspace root would never
+    // match it back (#40). Strip it before this path ever becomes a
+    // wire string.
+    let raw = raw.strip_prefix(r"\\?\").unwrap_or(&raw);
+    let text = raw.replace('\\', "/");
     let mut encoded = String::with_capacity(text.len() + 8);
     if !text.starts_with('/') {
         // A Windows drive path becomes `file:///C:/...`.
@@ -477,6 +485,30 @@ pub fn uri_to_path(uri: &str) -> Option<std::path::PathBuf> {
     } else {
         format!("/{decoded}")
     }))
+}
+
+/// `path`'s slash-joined path relative to `root`, or `None` if `path`
+/// does not lie under it.
+///
+/// String-based rather than [`Path::strip_prefix`] on purpose: a real
+/// backend's own URI is always the plain drive form, while `root` here
+/// is typically a `fs::canonicalize`-derived, `\\?\`-prefixed
+/// [`Prefix::VerbatimDisk`](std::path::Prefix::VerbatimDisk) on
+/// Windows, and that never compares equal to the plain
+/// [`Prefix::Disk`](std::path::Prefix::Disk) component-wise (#40).
+#[must_use]
+pub fn relative_path_key(path: &std::path::Path, root: &std::path::Path) -> Option<String> {
+    fn normalized(path: &std::path::Path) -> String {
+        let text = path.to_string_lossy().replace('\\', "/");
+        match text.strip_prefix("//?/") {
+            Some(stripped) => stripped.to_owned(),
+            None => text,
+        }
+    }
+    let path_text = normalized(path);
+    let root_text = normalized(root);
+    let rest = path_text.strip_prefix(&root_text)?.strip_prefix('/')?;
+    Some(rest.to_owned())
 }
 
 // ---------------------------------------------------------------------
@@ -690,6 +722,36 @@ fn decode_incoming(result: &Value) -> Vec<IncomingCall> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn path_to_uri_strips_the_windows_verbatim_prefix() {
+        // Backslash has no separator meaning on this test's own platform,
+        // so this exercises the string logic directly rather than a real
+        // Windows path (#40).
+        let verbatim = std::path::PathBuf::from(r"\\?\C:\Users\test\main.rs");
+        let plain = std::path::PathBuf::from(r"C:\Users\test\main.rs");
+        assert_eq!(path_to_uri(&verbatim), path_to_uri(&plain));
+        assert_eq!(path_to_uri(&plain), "file:///C:/Users/test/main.rs");
+    }
+
+    #[test]
+    fn relative_path_key_matches_regardless_of_which_side_is_verbatim() {
+        let verbatim_root = std::path::PathBuf::from(r"\\?\C:\Users\test\ws");
+        let plain_root = std::path::PathBuf::from(r"C:\Users\test\ws");
+        let plain_path = std::path::PathBuf::from(r"C:\Users\test\ws\src\main.rs");
+        assert_eq!(
+            relative_path_key(&plain_path, &verbatim_root).as_deref(),
+            Some("src/main.rs")
+        );
+        assert_eq!(
+            relative_path_key(&plain_path, &plain_root).as_deref(),
+            Some("src/main.rs")
+        );
+        assert_eq!(
+            relative_path_key(&plain_path, std::path::Path::new(r"C:\Users\test\other")),
+            None
+        );
+    }
 
     #[test]
     fn protocol_compatibility_accepts_only_the_probed_minor() {

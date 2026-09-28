@@ -424,6 +424,13 @@ pub fn uri_to_path(uri: &str) -> Option<std::path::PathBuf> {
     crate::python_semantic::protocol::uri_to_path(uri)
 }
 
+/// `path`'s slash-joined path relative to `root`, or `None` if `path`
+/// does not lie under it.
+#[must_use]
+pub fn relative_path_key(path: &std::path::Path, root: &std::path::Path) -> Option<String> {
+    crate::python_semantic::protocol::relative_path_key(path, root)
+}
+
 /// The directory Roslyn decompiles metadata into.
 ///
 /// A target in a referenced assembly resolves to a file under here, with

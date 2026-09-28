@@ -38,7 +38,7 @@ use rusqlite::Connection;
 
 use super::protocol::{
     Location, POSITION_ENCODING, RustRequest, RustResponse, is_dependency_path, is_virtual_uri,
-    path_to_uri, uri_to_path,
+    path_to_uri, relative_path_key, uri_to_path,
 };
 use crate::{
     gaps::UnresolvedReason,
@@ -304,14 +304,9 @@ impl<'a> Normalizer<'a> {
     }
 
     fn resource_for(&self, path: &Path) -> Result<Option<Resource>, AdapterError> {
-        let Ok(relative) = path.strip_prefix(self.workspace_root) else {
+        let Some(path_key) = relative_path_key(path, self.workspace_root) else {
             return Ok(None);
         };
-        let path_key = relative
-            .components()
-            .map(|component| component.as_os_str().to_string_lossy())
-            .collect::<Vec<_>>()
-            .join("/");
         resource_by_path_key(self.connection, &path_key).map_err(index)
     }
 

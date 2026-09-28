@@ -44,7 +44,7 @@ use rusqlite::Connection;
 
 use super::protocol::{
     CSharpRequest, CSharpResponse, Location, POSITION_ENCODING, is_metadata_uri, path_to_uri,
-    uri_to_path,
+    relative_path_key, uri_to_path,
 };
 use crate::{
     gaps::UnresolvedReason,
@@ -408,14 +408,9 @@ impl<'a> Normalizer<'a> {
         let Some(path) = uri_to_path(uri) else {
             return Ok(None);
         };
-        let Ok(relative) = path.strip_prefix(self.workspace_root) else {
+        let Some(path_key) = relative_path_key(&path, self.workspace_root) else {
             return Ok(None);
         };
-        let path_key = relative
-            .components()
-            .map(|component| component.as_os_str().to_string_lossy())
-            .collect::<Vec<_>>()
-            .join("/");
         resource_by_path_key(self.connection, &path_key).map_err(index)
     }
 
