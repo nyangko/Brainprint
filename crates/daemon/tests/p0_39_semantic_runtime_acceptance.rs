@@ -741,7 +741,7 @@ async fn unavailable_backends_keep_structural_truth_and_explicit_gaps() {
     }
 
     // C# / Rust locators are recorded, never started: Level A loads the
-    // project, which needs an explicit trust decision the product lacks.
+    // project, and this Workspace's config grants no trust.
     let home = Home::new("trust");
     home.config(
         "\n[semantic_backends.csharp]\ninstall_root = \"/opt/roslyn\"\n\n[semantic_backends.rust]\nexecutable = \"/opt/rust-analyzer\"\n",
@@ -891,6 +891,326 @@ async fn worktree_semantic_runtimes_are_isolated() {
     assert_enriched(&daemon.outgoing(b, "call").await);
     assert_eq!(daemon.semantic(b).await.backend_requests, requests);
     daemon.stop().await;
+}
+
+/// The real C# / Rust installs, or the printed reason a case skips.
+fn csharp_install() -> Option<PathBuf> {
+    let root = repo().join("scripts/csharp_semantic_spike");
+    if root.join("packages").is_dir() {
+        Some(root.canonicalize().expect("canonical"))
+    } else {
+        println!("skipped: no pinned Roslyn under scripts/csharp_semantic_spike");
+        None
+    }
+}
+
+fn rust_analyzer() -> Option<PathBuf> {
+    let which = Command::new("rustup")
+        .args(["which", "rust-analyzer"])
+        .output()
+        .ok()
+        .filter(|output| output.status.success());
+    let Some(which) = which else {
+        println!("skipped: rust-analyzer is not installed");
+        return None;
+    };
+    Some(PathBuf::from(String::from_utf8_lossy(&which.stdout).trim()))
+}
+
+/// The Workspace's own config: the only owner of the trust decision.
+fn workspace_config(root: &Path, body: &str) {
+    let paths = WorkspacePaths::from_root(root);
+    fs::create_dir_all(&paths.root).expect("workspace config root");
+    fs::write(&paths.config_file, format!("format_version = 1\n{body}")).expect("config");
+}
+
+/// A symbol target, pinned to one Resource when `within` is given.
+async fn target_for(
+    daemon: &Daemon,
+    workspace: WorkspaceId,
+    name: &str,
+    language: ResourceLanguageWire,
+    within: Option<&str>,
+) -> ProjectionTargetWire {
+    let mut target = symbol(name, language);
+    if let (Some(path), ProjectionTargetWire::Symbol(symbol)) = (within, &mut target) {
+        let resolved = daemon
+            .relations(
+                workspace,
+                ProjectionTargetWire::Resource(ResourceTargetWire::Path(path.to_owned())),
+                RelationDirectionWire::Outgoing,
+            )
+            .await
+            .target;
+        let TargetResolutionWire::Resolved(GraphEndpointWire::Resource(resource)) = resolved else {
+            panic!("{path}: {resolved:?}")
+        };
+        symbol.resource = Some(resource);
+    }
+    target
+}
+
+async fn outgoing_within(
+    daemon: &Daemon,
+    workspace: WorkspaceId,
+    name: &str,
+    language: ResourceLanguageWire,
+    within: Option<&str>,
+) -> RelationAnswerWire {
+    let target = target_for(daemon, workspace, name, language, within).await;
+    let result = daemon
+        .relations(workspace, target.clone(), RelationDirectionWire::Outgoing)
+        .await;
+    assert!(
+        matches!(result.target, TargetResolutionWire::Resolved(_)),
+        "{target:?}: {:?}",
+        result.target
+    );
+    assert_eq!(result.currentness, CurrentnessWire::Current);
+    result.answers.into_iter().next().expect("one answer")
+}
+
+/// Call sites, not distinct callees: an edit may call a known target again.
+fn call_sites(answer: &RelationAnswerWire) -> usize {
+    answer
+        .confirmed
+        .iter()
+        .filter(|relation| relation.kind == RelationKindWire::Calls)
+        .map(|relation| relation.evidence.len())
+        .sum()
+}
+
+fn semantic_gaps(answer: &RelationAnswerWire) -> usize {
+    answer.coverage.requires_semantics
+}
+
+/// 17 / trust correction: C# and Rust Level A is off until the
+/// Workspace's own config says `Trusted`; then a real gap lazily starts
+/// the real backend through the product path, and structural-only
+/// queries still start nothing.
+#[tokio::test]
+async fn csharp_and_rust_enrich_only_under_explicit_workspace_trust() {
+    struct Case {
+        family: &'static str,
+        fixture: &'static str,
+        name: &'static str,
+        language: ResourceLanguageWire,
+        /// Narrows an otherwise ambiguous name to one Resource.
+        within: Option<&'static str>,
+        /// One more call the target makes after an edit: (file, anchor,
+        /// inserted after the anchor).
+        edit: (&'static str, &'static str, &'static str),
+        locator: String,
+        alias: PathBuf,
+    }
+    let mut cases = Vec::new();
+    let home = Home::new("trusted");
+    if let Some(install) = csharp_install() {
+        let alias = home.dir.path().join("roslyn-install");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&install, &alias).expect("alias");
+        cases.push(Case {
+            family: "csharp",
+            fixture: "csharp-semantic-spike",
+            name: "App.Program.Main",
+            language: ResourceLanguageWire::CSharp,
+            within: None,
+            edit: (
+                "src/App/Program.cs",
+                "var label = runner.Label();",
+                "\n        var again = runner.Compute(2);",
+            ),
+            locator: format!("install_root = \"{}\"", alias.display()),
+            alias,
+        });
+    }
+    if let Some(executable) = rust_analyzer() {
+        let alias = home.dir.path().join("rust-analyzer-p039");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&executable, &alias).expect("alias");
+        cases.push(Case {
+            family: "rust",
+            fixture: "rust-semantic-spike",
+            // `main` alone is ambiguous with build.rs.
+            name: "main",
+            language: ResourceLanguageWire::Rust,
+            within: Some("crates/app/src/main.rs"),
+            edit: (
+                "crates/app/src/main.rs",
+                "let _idle = Idle.run();",
+                "\n    let _again = worker.execute();",
+            ),
+            locator: format!("executable = \"{}\"", alias.display()),
+            alias,
+        });
+    }
+    home.config(
+        &cases
+            .iter()
+            .map(|case| format!("\n[semantic_backends.{}]\n{}\n", case.family, case.locator))
+            .collect::<String>(),
+    );
+
+    for case in &cases {
+        let alias = case.alias.to_string_lossy().into_owned();
+        // Untrusted (absent) and explicitly Untrusted: the existing
+        // degradation -- located, never registered, structural gap stays.
+        let mut structural = None;
+        for (label, body) in [
+            ("absent", String::new()),
+            (
+                "untrusted",
+                "project_execution_trust = \"Untrusted\"\n".to_owned(),
+            ),
+        ] {
+            let root = home.workspace(&format!("{}-{label}", case.family), case.fixture);
+            workspace_config(&root, &body);
+            let daemon = Daemon::start(&home.global).await;
+            let workspace = daemon.init(&root).await;
+            let answer =
+                outgoing_within(&daemon, workspace, case.name, case.language, case.within).await;
+            assert!(semantic_gaps(&answer) >= 1, "{}: {answer:?}", case.family);
+            let stats = daemon.semantic(workspace).await;
+            assert!(!stats.registered.contains(&case.family), "{stats:?}");
+            assert!(
+                stats.unavailable[case.family].contains("UNTRUSTED"),
+                "{stats:?}"
+            );
+            assert_eq!(stats.backend_starts, 0);
+            assert_eq!(processes_matching(&alias), 0);
+            assert!(owner_states(&root).is_empty(), "nothing published");
+            structural = Some(answer);
+            daemon.stop().await;
+        }
+        let structural = structural.expect("structural answer");
+
+        // Explicit Workspace Trusted: registered, asleep until demand.
+        let root = home.workspace(&format!("{}-trusted", case.family), case.fixture);
+        workspace_config(&root, "project_execution_trust = \"Trusted\"\n");
+        if case.family == "csharp" {
+            // The user's own environment step (#19): a restored solution.
+            let restored = Command::new("dotnet")
+                .args(["restore", "CSharpSemanticSpike.sln"])
+                .current_dir(&root)
+                .output()
+                .expect("dotnet restore");
+            assert!(restored.status.success(), "{restored:?}");
+        }
+        let daemon = Daemon::start(&home.global).await;
+        let workspace = daemon.init(&root).await;
+        let stats = daemon.semantic(workspace).await;
+        assert!(stats.registered.contains(&case.family), "{stats:?}");
+        assert_eq!(stats.backend_starts, 0, "fresh init starts nothing");
+        daemon.query(workspace, find_files()).await;
+        daemon
+            .query(
+                workspace,
+                QueryOperationWire::Find(FindQueryWire::Target {
+                    target: target_for(&daemon, workspace, case.name, case.language, case.within)
+                        .await,
+                    delivery: delivery(),
+                }),
+            )
+            .await;
+        let stats = daemon.semantic(workspace).await;
+        assert_eq!(stats.backend_starts, 0, "structural-only: {stats:?}");
+        assert_eq!(processes_matching(&alias), 0);
+
+        let started = Instant::now();
+        let enriched =
+            outgoing_within(&daemon, workspace, case.name, case.language, case.within).await;
+        let cold = started.elapsed();
+        let stats = daemon.semantic(workspace).await;
+        println!(
+            "{}: cold {cold:?}; structural calls {} gaps {} requires_semantics {}; \
+             enriched calls {} gaps {} requires_semantics {}; {stats:?}",
+            case.family,
+            calls(&structural),
+            structural.gaps.len(),
+            semantic_gaps(&structural),
+            calls(&enriched),
+            enriched.gaps.len(),
+            semantic_gaps(&enriched),
+        );
+        assert_eq!(stats.backend_starts, 1, "{stats:?}");
+        assert_eq!(stats.backend_start_successes, 1);
+        assert_eq!(stats.live_runtimes, 1);
+        assert!(stats.owners_refreshed >= 1, "{stats:?}");
+        assert_eq!(stats.owner_failures, 0, "{stats:?}");
+        assert_eq!(processes_matching(&alias), 1);
+        assert_eq!(enriched.coverage.semantic.contexts, 1, "{enriched:?}");
+        assert!(!enriched.coverage.semantic.not_current);
+        assert!(
+            semantic_gaps(&enriched) < semantic_gaps(&structural),
+            "semantics closed gaps: {} -> {}",
+            semantic_gaps(&structural),
+            semantic_gaps(&enriched)
+        );
+        assert!(
+            calls(&enriched) > calls(&structural),
+            "Level A binds calls: {} -> {}",
+            calls(&structural),
+            calls(&enriched)
+        );
+        assert!(owner_states(&root).contains(&SemanticState::Current));
+
+        // rust-analyzer's own `cargo metadata` at load raises a watcher
+        // event on Cargo.lock (bytes unchanged); the next barrier's
+        // existing withdraw-before-refresh then re-proves the owner once,
+        // on the same process. Settle that, then measure warm reuse.
+        let settled =
+            outgoing_within(&daemon, workspace, case.name, case.language, case.within).await;
+        assert_eq!(calls(&settled), calls(&enriched));
+        let stats = daemon.semantic(workspace).await;
+        assert_eq!(stats.backend_starts, 1, "never a respawn: {stats:?}");
+
+        // Warm: same process, nothing re-requested for a current answer.
+        let requests = stats.backend_requests;
+        let again =
+            outgoing_within(&daemon, workspace, case.name, case.language, case.within).await;
+        assert_eq!(calls(&again), calls(&enriched));
+        let stats = daemon.semantic(workspace).await;
+        assert_eq!(stats.backend_starts, 1);
+        assert_eq!(stats.backend_requests, requests, "current: no request");
+        assert_eq!(processes_matching(&alias), 1);
+
+        // A source edit: structural truth moves on, the prior semantic
+        // basis is not current, and the next semantic query delivers the
+        // edit to the warm process and re-proves the owner.
+        let (file, anchor, inserted) = case.edit;
+        let path = root.join(file);
+        let source = fs::read_to_string(&path).expect("source");
+        assert!(source.contains(anchor), "{file}");
+        fs::write(
+            &path,
+            source.replacen(anchor, &format!("{anchor}{inserted}"), 1),
+        )
+        .expect("edit");
+        let expected = call_sites(&enriched) + 1;
+        let mut edited = None;
+        for _ in 0..40 {
+            let answer =
+                outgoing_within(&daemon, workspace, case.name, case.language, case.within).await;
+            if call_sites(&answer) == expected {
+                edited = Some(answer);
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+        let edited = edited.unwrap_or_else(|| panic!("{}: the edit's call binds", case.family));
+        assert_eq!(semantic_gaps(&edited), 0, "{edited:?}");
+        assert!(!edited.coverage.semantic.not_current);
+        let stats = daemon.semantic(workspace).await;
+        assert_eq!(stats.backend_starts, 1, "no respawn for an edit: {stats:?}");
+        assert!(stats.change_notifications >= 1, "{stats:?}");
+        assert_eq!(stats.owner_failures, 0, "{stats:?}");
+        assert_eq!(processes_matching(&alias), 1);
+        daemon.stop().await;
+        eventually("the backend shuts down with the daemon", || async {
+            processes_matching(&alias) == 0
+        })
+        .await;
+    }
 }
 
 /// 17: TypeScript/JavaScript and Svelte through the same product path.

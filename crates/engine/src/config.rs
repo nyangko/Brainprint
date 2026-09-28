@@ -10,7 +10,10 @@ use std::{
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
-use crate::paths::{GlobalPaths, WorkspacePaths};
+use crate::{
+    paths::{GlobalPaths, WorkspacePaths},
+    trust::ProjectExecutionTrust,
+};
 
 /// Current on-disk TOML configuration format.
 pub const CONFIG_FORMAT_VERSION: u32 = 1;
@@ -98,6 +101,11 @@ pub struct WorkspaceConfig {
     /// Per-Workspace backend locator overrides (#39).
     #[serde(default, skip_serializing_if = "SemanticBackendLocators::is_empty")]
     pub semantic_backends: SemanticBackendLocators,
+    /// The user's explicit per-Workspace decision that its project build
+    /// logic may run (#39). Absent means Untrusted; there is deliberately
+    /// no global equivalent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_execution_trust: Option<ProjectExecutionTrust>,
 }
 
 impl Default for WorkspaceConfig {
@@ -106,6 +114,7 @@ impl Default for WorkspaceConfig {
             format_version: CONFIG_FORMAT_VERSION,
             extra_excluded_directory_names: Vec::new(),
             semantic_backends: SemanticBackendLocators::default(),
+            project_execution_trust: None,
         }
     }
 }
@@ -499,6 +508,60 @@ mod tests {
         .expect("write");
         assert!(matches!(
             load_global_config(&paths),
+            Err(ConfigError::Decode { .. })
+        ));
+    }
+
+    #[test]
+    fn project_execution_trust_is_an_explicit_workspace_only_opt_in() {
+        let workspace = TestDir::create("trust-config");
+        let paths = WorkspacePaths::from_root(workspace.path());
+        bootstrap_workspace_config(&paths).expect("bootstrap");
+        assert_eq!(
+            fs::read_to_string(&paths.config_file).expect("config"),
+            "format_version = 1\nextra_excluded_directory_names = []\n",
+            "the bootstrapped default is unchanged"
+        );
+        let absent = load_workspace_config(&paths).expect("load");
+        assert_eq!(absent.project_execution_trust, None);
+
+        for (value, expected) in [
+            ("Trusted", ProjectExecutionTrust::Trusted),
+            ("Untrusted", ProjectExecutionTrust::Untrusted),
+        ] {
+            fs::write(
+                &paths.config_file,
+                format!("format_version = 1\nproject_execution_trust = \"{value}\"\n"),
+            )
+            .expect("write");
+            assert_eq!(
+                load_workspace_config(&paths)
+                    .expect("load")
+                    .project_execution_trust,
+                Some(expected)
+            );
+        }
+        fs::write(
+            &paths.config_file,
+            "format_version = 1\nproject_execution_trust = \"yes\"\n",
+        )
+        .expect("write");
+        assert!(matches!(
+            load_workspace_config(&paths),
+            Err(ConfigError::Decode { .. })
+        ));
+
+        // No global default can make every Workspace trusted.
+        let home = TestDir::create("trust-global");
+        let global = GlobalPaths::from_home(home.path());
+        fs::create_dir_all(&global.root).expect("root");
+        fs::write(
+            &global.config_file,
+            "format_version = 1\nproject_execution_trust = \"Trusted\"\n",
+        )
+        .expect("write");
+        assert!(matches!(
+            load_global_config(&global),
             Err(ConfigError::Decode { .. })
         ));
     }

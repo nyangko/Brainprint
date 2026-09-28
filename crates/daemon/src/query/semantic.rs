@@ -20,7 +20,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex, PoisonError, Weak},
     time::Duration,
 };
 
@@ -30,6 +30,7 @@ use brainprint_engine::{
         ExecutableLocator, InstallRootLocator, NodeBackendLocator, SemanticBackendLocators,
         WorkspaceConfig, load_global_config,
     },
+    csharp_semantic::{self as csharp, CSharpHost, CSharpInstall, CSharpLauncher},
     merge,
     paths::GlobalPaths,
     projection::ProjectionTarget,
@@ -40,16 +41,26 @@ use brainprint_engine::{
     },
     resolution::{Resolution, Support},
     resource::{ResourceLanguage, ResourceStore},
-    runtime::{RequestOptions, RuntimePolicy, SemanticRuntimeSupervisor},
+    runtime::{
+        HostError, RequestOptions, RuntimePolicy, SemanticBackendLauncher, SemanticRuntimeHost,
+        SemanticRuntimeSupervisor,
+    },
+    rust_semantic::{self as rust, RustHost, RustInstall, RustLauncher},
     semantic::{AnalysisContext, AnalysisContextBinding, ProjectRootIdentity, SemanticBackendKind},
     semantic_index::{SemanticIndex, SemanticOwner, SemanticState},
     svelte_semantic::{self as svelte, SvelteInstall, SvelteLauncher},
+    trust::ProjectExecutionTrust,
     typescript_semantic::{self as typescript, TypeScriptInstall, TypeScriptLauncher},
 };
 
 /// Per-request backend timeout: the value the I4 real-backend acceptance
 /// uses (a tuning value, not a contract).
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// How long a C# project load / a Rust workspace settle may take: the
+/// I4 real-backend acceptance values (tuning, not contract).
+const CSHARP_LOAD_TIMEOUT: Duration = Duration::from_secs(180);
+const RUST_SETTLE_TIMEOUT: Duration = Duration::from_secs(240);
 
 /// Snapshot-invalidation retries per owner refresh, as I4 acceptance uses.
 const PYTHON_BATCH_ATTEMPTS: u32 = 12;
@@ -99,6 +110,16 @@ enum Backend {
     Svelte {
         install: SvelteInstall,
     },
+    /// Registered only under an explicit Workspace `Trusted` decision.
+    CSharp {
+        install: CSharpInstall,
+        launched: Arc<Launched<CSharpLauncher, CSharpHost>>,
+    },
+    /// Registered only under an explicit Workspace `Trusted` decision.
+    Rust {
+        install: RustInstall,
+        launched: Arc<Launched<RustLauncher, RustHost>>,
+    },
 }
 
 impl Backend {
@@ -107,6 +128,8 @@ impl Backend {
             Self::Python { .. } => "python",
             Self::TypeScript { .. } => "typescript",
             Self::Svelte { .. } => "svelte",
+            Self::CSharp { .. } => "csharp",
+            Self::Rust { .. } => "rust",
         }
     }
 
@@ -115,14 +138,134 @@ impl Backend {
             Self::Python { .. } => language == ResourceLanguage::Python,
             Self::TypeScript { .. } => typescript::lifecycle::SERVED_LANGUAGES.contains(&language),
             Self::Svelte { .. } => language == ResourceLanguage::Svelte,
+            Self::CSharp { .. } => language == ResourceLanguage::CSharp,
+            Self::Rust { .. } => language == ResourceLanguage::Rust,
+        }
+    }
+}
+
+/// The existing C#/Rust launcher, as the supervisor sees it, remembering
+/// the host it last started. The project-load / settle barrier and the
+/// opened-document versions belong to that connection, which a lease
+/// does not expose; I4 acceptance drives them on the host the same way.
+struct Launched<L, H> {
+    launcher: L,
+    last: Mutex<Weak<H>>,
+}
+
+impl<L, H> Launched<L, H> {
+    fn new(launcher: L) -> Self {
+        Self {
+            launcher,
+            last: Mutex::new(Weak::new()),
+        }
+    }
+
+    fn remember(&self, host: H) -> Arc<H> {
+        let host = Arc::new(host);
+        *self.last.lock().unwrap_or_else(PoisonError::into_inner) = Arc::downgrade(&host);
+        host
+    }
+
+    fn host(&self) -> Result<Arc<H>, String> {
+        self.last
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .upgrade()
+            .ok_or_else(|| "the leased backend connection is gone".to_owned())
+    }
+}
+
+impl SemanticBackendLauncher for Launched<CSharpLauncher, CSharpHost> {
+    fn kind(&self) -> SemanticBackendKind {
+        SemanticBackendKind::CSharp
+    }
+
+    fn launch(
+        &self,
+        binding: &AnalysisContextBinding,
+    ) -> Result<Arc<dyn SemanticRuntimeHost>, HostError> {
+        Ok(self.remember(self.launcher.start(binding)?))
+    }
+}
+
+impl SemanticBackendLauncher for Launched<RustLauncher, RustHost> {
+    fn kind(&self) -> SemanticBackendKind {
+        SemanticBackendKind::Rust
+    }
+
+    fn launch(
+        &self,
+        binding: &AnalysisContextBinding,
+    ) -> Result<Arc<dyn SemanticRuntimeHost>, HostError> {
+        Ok(self.remember(self.launcher.start(binding)?))
+    }
+}
+
+/// A C# connection's own state, for the existing lifecycle traits.
+struct CSharpConnection<'a>(&'a CSharpHost);
+
+impl csharp::lifecycle::DocumentVersions for CSharpConnection<'_> {
+    fn next_document_version(&self) -> i64 {
+        self.0.next_document_version()
+    }
+
+    fn exchange_text(&self, uri: &str, text: &str) -> Option<String> {
+        self.0.exchange_text(uri, text)
+    }
+}
+
+impl csharp::lifecycle::ProjectLoadBarrier for CSharpConnection<'_> {
+    fn completions_seen(&self) -> u64 {
+        self.0.load_completions()
+    }
+
+    fn wait_for_project_load(&self, seen: u64) -> Result<usize, String> {
+        if self.0.wait_for_project_load(seen, CSHARP_LOAD_TIMEOUT) {
+            Ok(1)
+        } else {
+            Err(format!(
+                "the server did not announce project initialization within {CSHARP_LOAD_TIMEOUT:?}"
+            ))
+        }
+    }
+}
+
+/// A Rust connection's own state, for the existing lifecycle traits.
+struct RustConnection<'a>(&'a RustHost);
+
+impl rust::lifecycle::DocumentVersions for RustConnection<'_> {
+    fn next_document_version(&self) -> i64 {
+        self.0.next_document_version()
+    }
+
+    fn exchange_text(&self, uri: &str, text: &str) -> Option<String> {
+        self.0.exchange_text(uri, text)
+    }
+}
+
+impl rust::lifecycle::QuiescenceBarrier for RustConnection<'_> {
+    fn settlings_seen(&self) -> u64 {
+        self.0.load_completions()
+    }
+
+    fn wait_for_quiescent(&self, seen: u64) -> Result<usize, String> {
+        if self.0.wait_for_quiescent(seen, RUST_SETTLE_TIMEOUT) {
+            Ok(1)
+        } else {
+            Err(format!(
+                "the server did not settle within {RUST_SETTLE_TIMEOUT:?}"
+            ))
         }
     }
 }
 
 /// What one running backend has been shown of the Workspace: the
 /// supervisor's start count when it was shown, and each active
-/// Resource's locator and revision.
-type BackendView = (u64, BTreeMap<ResourceId, (String, String)>);
+/// Resource's locator, revision and language.
+type BackendView = (u64, BTreeMap<ResourceId, Shown>);
+
+type Shown = (String, String, Option<ResourceLanguage>);
 
 /// One Resource change the backend has not been told about yet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -142,6 +285,8 @@ pub struct WorkspaceSemantic {
     /// Per family, in `backends` order.
     views: Vec<Option<BackendView>>,
     stats: SemanticStats,
+    /// The Workspace config's explicit decision; absent is Untrusted.
+    trust: ProjectExecutionTrust,
 }
 
 impl WorkspaceSemantic {
@@ -231,22 +376,45 @@ impl WorkspaceSemantic {
 
         // C# and Rust Level A both load the project (MSBuild evaluation;
         // Cargo build scripts / proc macros), which `trust.rs` gates on an
-        // explicit `ProjectExecutionTrust::Trusted` decision. The product
-        // default is Untrusted and nothing infers otherwise, so these
-        // families are reported, never started.
-        let csharp: Option<InstallRootLocator> = pick(&locators.csharp, &global.csharp);
-        let rust: Option<ExecutableLocator> = pick(&locators.rust, &global.rust);
-        for (name, configured) in [("csharp", csharp.is_some()), ("rust", rust.is_some())] {
-            stats.unavailable.insert(
-                name,
-                if configured {
-                    "Level A requires ProjectExecutionTrust::Trusted; the product default is \
-                     Untrusted and no trust decision exists"
-                        .to_owned()
-                } else {
-                    no_locator()
-                },
-            );
+        // explicit `ProjectExecutionTrust::Trusted` decision. The only
+        // owner of that decision is this Workspace's own config; absent is
+        // Untrusted, and an Untrusted family is reported, never started.
+        let trust = workspace_config
+            .project_execution_trust
+            .unwrap_or_else(ProjectExecutionTrust::default_for_workspace);
+        match trusted(trust, pick(&locators.csharp, &global.csharp)).and_then(
+            |locator: InstallRootLocator| {
+                CSharpInstall::locate(absolute(&locator.install_root)?)
+                    .map_err(|error| error.to_string())
+            },
+        ) {
+            Ok(install) => {
+                let launched = Arc::new(Launched::new(CSharpLauncher::new(
+                    install.clone(),
+                    trust,
+                    global_paths.logs_dir.join(format!("csharp-{workspace}")),
+                )));
+                supervisor = supervisor.with_backend(launched.clone());
+                backends.push(Backend::CSharp { install, launched });
+            }
+            Err(reason) => {
+                stats.unavailable.insert("csharp", reason);
+            }
+        }
+
+        match trusted(trust, pick(&locators.rust, &global.rust)).and_then(
+            |locator: ExecutableLocator| {
+                RustInstall::at(absolute(&locator.executable)?).map_err(|error| error.to_string())
+            },
+        ) {
+            Ok(install) => {
+                let launched = Arc::new(Launched::new(RustLauncher::new(install.clone(), trust)));
+                supervisor = supervisor.with_backend(launched.clone());
+                backends.push(Backend::Rust { install, launched });
+            }
+            Err(reason) => {
+                stats.unavailable.insert("rust", reason);
+            }
         }
 
         stats.registered = backends.iter().map(Backend::name).collect();
@@ -258,6 +426,7 @@ impl WorkspaceSemantic {
             views: backends.iter().map(|_| None).collect(),
             backends,
             stats,
+            trust,
         }
     }
 
@@ -434,6 +603,29 @@ impl WorkspaceSemantic {
                         .map_err(|error| error.to_string())?,
                 ),
             ),
+            // The trust mode is inside both fingerprints, so a trusted and
+            // an untrusted analysis are different contexts.
+            Backend::CSharp { install, .. } => (
+                SemanticBackendKind::CSharp,
+                ResourceLanguage::CSharp,
+                csharp::toolchain_identity(
+                    install,
+                    &csharp::lifecycle::environment_identity(
+                        install,
+                        &self.csharp_projects(index)?,
+                    )
+                    .map_err(|error| error.to_string())?,
+                ),
+            ),
+            Backend::Rust { install, .. } => (
+                SemanticBackendKind::Rust,
+                ResourceLanguage::Rust,
+                rust::toolchain_identity(
+                    install,
+                    &rust::lifecycle::environment_identity(install, &self.rust_packages(index)?)
+                        .map_err(|error| error.to_string())?,
+                ),
+            ),
         };
         Ok(AnalysisContext {
             workspace: self.workspace,
@@ -444,6 +636,40 @@ impl WorkspaceSemantic {
             project_root: ProjectRootIdentity::Key(String::new()),
             toolchain,
         })
+    }
+
+    fn csharp_projects(
+        &self,
+        index: &SemanticIndex,
+    ) -> Result<csharp::CSharpProjectConfig, String> {
+        csharp::lifecycle::discover_projects_under(index.connection(), self.trust, Some(&self.root))
+            .map_err(|error| error.to_string())
+    }
+
+    fn rust_packages(
+        &self,
+        index: &SemanticIndex,
+    ) -> Result<rust::lifecycle::RustProjectConfig, String> {
+        rust::lifecycle::discover_packages_under(index.connection(), self.trust, Some(&self.root))
+            .map_err(|error| error.to_string())
+    }
+
+    /// A Resource's language now, or as the backend last saw it (a
+    /// deleted Resource is only in the latter).
+    fn language_of(
+        &self,
+        family: usize,
+        current: &BTreeMap<ResourceId, Shown>,
+        resource: ResourceId,
+    ) -> Option<ResourceLanguage> {
+        current
+            .get(&resource)
+            .or_else(|| {
+                self.views[family]
+                    .as_ref()
+                    .and_then(|(_, shown)| shown.get(&resource))
+            })
+            .and_then(|(_, _, language)| *language)
     }
 
     fn refresh(&mut self, family: usize, resources: &BTreeSet<ResourceId>) -> Result<(), String> {
@@ -574,6 +800,140 @@ impl WorkspaceSemantic {
                 )
                 .map_err(|error| error.to_string())?;
             }
+            // C#: a connection this daemon has not prepared loads the
+            // projects (registration already required Trusted) and is
+            // handed every source; a prepared one gets the change batch,
+            // reloading first when project membership moved -- the I4
+            // acceptance sequence, on the leased connection.
+            (Backend::CSharp { launched, .. }, pending) => {
+                let host = launched.host()?;
+                let connection = CSharpConnection(&host);
+                let queries = csharp::LeaseQueries::new(&lease, options);
+                let changes: Vec<csharp::lifecycle::ResourceChange> = match pending {
+                    None => {
+                        let projects = self.csharp_projects(&index)?;
+                        let seen = host.load_completions();
+                        csharp::adapter::reopen_projects(
+                            &queries,
+                            projects
+                                .project_files
+                                .iter()
+                                .filter(|project| project.path_key.ends_with(".csproj"))
+                                .map(|project| {
+                                    csharp::protocol::path_to_uri(&root.join(&project.path_key))
+                                })
+                                .collect(),
+                        )
+                        .map_err(|failure| failure.to_string())?;
+                        csharp::lifecycle::ProjectLoadBarrier::wait_for_project_load(
+                            &connection,
+                            seen,
+                        )?;
+                        sources(&current, ResourceLanguage::CSharp)
+                            .map(|(resource, path)| {
+                                csharp::lifecycle::ResourceChange::new(
+                                    resource,
+                                    csharp::lifecycle::ChangeKind::Changed,
+                                    path,
+                                )
+                            })
+                            .collect()
+                    }
+                    Some(changes) => {
+                        let changes: Vec<_> = changes
+                            .iter()
+                            .map(|(resource, kind, path, previous)| {
+                                let mut change = csharp::lifecycle::ResourceChange::new(
+                                    *resource,
+                                    match kind {
+                                        Change::Added => csharp::lifecycle::ChangeKind::Added,
+                                        Change::Changed => csharp::lifecycle::ChangeKind::Changed,
+                                        Change::Moved => csharp::lifecycle::ChangeKind::Moved,
+                                        Change::Deleted => csharp::lifecycle::ChangeKind::Deleted,
+                                    },
+                                    path.clone(),
+                                )
+                                .with_language(self.language_of(family, &current, *resource));
+                                change.previous_path_rel.clone_from(previous);
+                                change
+                            })
+                            .collect();
+                        if changes.iter().any(|change| {
+                            change.class() == csharp::lifecycle::ChangeClass::ProjectStructure
+                        }) {
+                            csharp::lifecycle::reload_projects(
+                                &queries,
+                                &connection,
+                                root,
+                                &changes,
+                                &self.csharp_projects(&index)?,
+                            )
+                            .map_err(|error| error.to_string())?;
+                        }
+                        changes
+                    }
+                };
+                csharp::lifecycle::synchronize_documents(&queries, &connection, root, &changes)
+                    .map_err(|error| error.to_string())?;
+            }
+            // Rust: rust-analyzer loads the Cargo workspace itself at
+            // start; a fresh connection is waited on until it settles and
+            // handed every source, a prepared one gets the batch (a
+            // manifest change reloads first).
+            (Backend::Rust { launched, .. }, pending) => {
+                let host = launched.host()?;
+                let connection = RustConnection(&host);
+                let queries = rust::LeaseQueries::new(&lease, options);
+                let changes: Vec<rust::lifecycle::ResourceChange> = match pending {
+                    None => {
+                        rust::lifecycle::QuiescenceBarrier::wait_for_quiescent(&connection, 0)?;
+                        sources(&current, ResourceLanguage::Rust)
+                            .map(|(resource, path)| {
+                                rust::lifecycle::ResourceChange::new(
+                                    resource,
+                                    rust::lifecycle::ChangeKind::Changed,
+                                    path,
+                                )
+                            })
+                            .collect()
+                    }
+                    Some(changes) => {
+                        let changes: Vec<_> = changes
+                            .iter()
+                            .map(|(resource, kind, path, previous)| {
+                                let mut change = rust::lifecycle::ResourceChange::new(
+                                    *resource,
+                                    match kind {
+                                        Change::Added => rust::lifecycle::ChangeKind::Added,
+                                        Change::Changed => rust::lifecycle::ChangeKind::Changed,
+                                        Change::Moved => rust::lifecycle::ChangeKind::Moved,
+                                        Change::Deleted => rust::lifecycle::ChangeKind::Deleted,
+                                    },
+                                    path.clone(),
+                                )
+                                .with_language(self.language_of(family, &current, *resource));
+                                change.previous_path_rel.clone_from(previous);
+                                change
+                            })
+                            .collect();
+                        if changes.iter().any(|change| {
+                            change.class() == rust::lifecycle::ChangeClass::ProjectDefinition
+                        }) {
+                            rust::lifecycle::reload_projects(
+                                &queries,
+                                &connection,
+                                root,
+                                &changes,
+                                &self.rust_packages(&index)?,
+                            )
+                            .map_err(|error| error.to_string())?;
+                        }
+                        changes
+                    }
+                };
+                rust::lifecycle::synchronize_documents(&queries, &connection, root, &changes)
+                    .map_err(|error| error.to_string())?;
+            }
             (_, None) => {}
         }
         if pending.as_ref().is_some_and(|changes| !changes.is_empty()) {
@@ -664,6 +1024,54 @@ impl WorkspaceSemantic {
                         .map(svelte::lifecycle::OwnerOutcome::succeeded),
                 )
             }
+            Backend::CSharp { .. } => {
+                let queries = csharp::LeaseQueries::new(&lease, options);
+                let projects = self.csharp_projects(&index)?;
+                let config = projects.basis();
+                let capabilities = csharp::capability_report(&context, self.trust);
+                let outcomes = csharp::lifecycle::refresh_owners(
+                    &index,
+                    &queries,
+                    &mut csharp::RefreshRequest {
+                        context: &context,
+                        workspace_root: root,
+                        owner: *resources.first().expect("non-empty"),
+                        config: &config,
+                        capabilities: &capabilities,
+                        projects: &projects,
+                    },
+                    &owners,
+                )
+                .map_err(|error| error.to_string())?;
+                count(
+                    outcomes
+                        .iter()
+                        .map(csharp::lifecycle::OwnerOutcome::succeeded),
+                )
+            }
+            Backend::Rust { .. } => {
+                let queries = rust::LeaseQueries::new(&lease, options);
+                let config = self.rust_packages(&index)?.basis();
+                let capabilities = rust::capability_report(&context, self.trust);
+                let outcomes = rust::lifecycle::refresh_owners(
+                    &index,
+                    &queries,
+                    &mut rust::RefreshRequest {
+                        context: &context,
+                        workspace_root: root,
+                        owner: *resources.first().expect("non-empty"),
+                        config: &config,
+                        capabilities: &capabilities,
+                    },
+                    &owners,
+                )
+                .map_err(|error| error.to_string())?;
+                count(
+                    outcomes
+                        .iter()
+                        .map(rust::lifecycle::OwnerOutcome::succeeded),
+                )
+            }
         };
         self.stats.owners_refreshed += refreshed;
         self.stats.owner_failures += failed;
@@ -733,41 +1141,61 @@ fn pick<T: Clone>(workspace: &Option<T>, global: &Option<T>) -> Option<T> {
     workspace.clone().or_else(|| global.clone())
 }
 
-/// Every active Resource's locator and revision, by identity.
+/// Every active Resource's locator, revision and language, by identity.
 ///
 /// ponytail: a full inventory read per refresh batch (only on proven
 /// demand); journal-driven change sets if large Workspaces make it show.
-fn resource_view(index_db: &Path) -> Result<BTreeMap<ResourceId, (String, String)>, String> {
+fn resource_view(index_db: &Path) -> Result<BTreeMap<ResourceId, Shown>, String> {
     Ok(ResourceStore::open(index_db)
         .and_then(|store| store.list_active())
         .map_err(|error| error.to_string())?
         .into_iter()
-        .map(|resource| (resource.id, (resource.path_rel, resource.resource_revision)))
+        .map(|resource| {
+            (
+                resource.id,
+                (
+                    resource.path_rel,
+                    resource.resource_revision,
+                    resource.language,
+                ),
+            )
+        })
         .collect())
+}
+
+/// Every active source of one language: what a fresh connection is handed.
+fn sources(
+    current: &BTreeMap<ResourceId, Shown>,
+    language: ResourceLanguage,
+) -> impl Iterator<Item = (ResourceId, String)> + '_ {
+    current
+        .iter()
+        .filter(move |(_, (_, _, shown))| *shown == Some(language))
+        .map(|(resource, (path, _, _))| (*resource, path.clone()))
 }
 
 /// What changed between what a backend was shown and the index now.
 fn diff(
-    shown: &BTreeMap<ResourceId, (String, String)>,
-    current: &BTreeMap<ResourceId, (String, String)>,
+    shown: &BTreeMap<ResourceId, Shown>,
+    current: &BTreeMap<ResourceId, Shown>,
 ) -> Vec<(ResourceId, Change, String, Option<String>)> {
     let mut changes = Vec::new();
-    for (resource, (path, revision)) in current {
+    for (resource, (path, revision, _)) in current {
         match shown.get(resource) {
             None => changes.push((*resource, Change::Added, path.clone(), None)),
-            Some((old_path, _)) if old_path != path => changes.push((
+            Some((old_path, _, _)) if old_path != path => changes.push((
                 *resource,
                 Change::Moved,
                 path.clone(),
                 Some(old_path.clone()),
             )),
-            Some((_, old_revision)) if old_revision != revision => {
+            Some((_, old_revision, _)) if old_revision != revision => {
                 changes.push((*resource, Change::Changed, path.clone(), None));
             }
             Some(_) => {}
         }
     }
-    for (resource, (path, _)) in shown {
+    for (resource, (path, _, _)) in shown {
         if !current.contains_key(resource) {
             changes.push((*resource, Change::Deleted, path.clone(), Some(path.clone())));
         }
@@ -777,6 +1205,19 @@ fn diff(
 
 fn no_locator() -> String {
     "no backend locator in the Workspace or global config".to_owned()
+}
+
+/// A project-loading backend's locator, only under an explicit Trusted.
+fn trusted<T>(trust: ProjectExecutionTrust, locator: Option<T>) -> Result<T, String> {
+    let locator = locator.ok_or_else(no_locator)?;
+    if trust.may_load_projects() {
+        Ok(locator)
+    } else {
+        Err(format!(
+            "Level A requires ProjectExecutionTrust::Trusted; this Workspace is {trust} \
+             (no project_execution_trust = \"Trusted\" in its config)"
+        ))
+    }
 }
 
 /// #39: an install locator is an absolute filesystem path, never one
