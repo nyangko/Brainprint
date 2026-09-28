@@ -404,10 +404,19 @@ fn directory_move_repairs_locator_and_preserves_identity() {
     let project_id = field(&init_out, "project:").to_owned();
     let workspace_id = field(&init_out, "workspace:").to_owned();
 
-    // A real `mv`: the old locator becomes genuinely unreachable.
+    // A real `mv`: the old locator becomes genuinely unreachable. The
+    // daemon holds its own watcher and index.db open under this same
+    // root for as long as it stays activated -- an open-handle rename
+    // is not portable (Windows refuses it outright; #38's own contract
+    // is that the runtime re-binds on the *next* activation, not that a
+    // move is possible while the old one is live), so it is stopped and
+    // restarted around the move itself.
+    drop(daemon);
     let new_path = temp_dir("move-target");
     fs::remove_dir(&new_path).expect("placeholder target dir should be removable");
     fs::rename(original.path(), &new_path).expect("directory move should succeed");
+    let daemon = DaemonGuard::spawn(home.path());
+    wait_for_daemon_ready(home.path());
 
     let moved_init = run_cli(home.path(), &["init", &new_path.to_string_lossy()]);
     assert!(
@@ -441,9 +450,16 @@ fn project_home_missing_is_explicit_not_silently_recreated() {
     let init = run_cli(home.path(), &["init", &workspace.path().to_string_lossy()]);
     assert!(init.status.success());
 
+    // The daemon holds project.db open for as long as it stays
+    // activated; deleting it out from under an open handle is not
+    // portable (Windows refuses it outright), so it is stopped and
+    // restarted around the fixture removal.
+    drop(daemon);
     let workspace_paths = WorkspacePaths::from_root(canonical(workspace.path()));
     fs::remove_file(&workspace_paths.project_db)
         .expect("project.db fixture removal should succeed");
+    let daemon = DaemonGuard::spawn(home.path());
+    wait_for_daemon_ready(home.path());
 
     let reinit = run_cli(home.path(), &["init", &workspace.path().to_string_lossy()]);
     assert!(
