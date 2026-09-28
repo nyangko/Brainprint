@@ -4,6 +4,13 @@
 //! macro's argument tree -- plus one site that names the function
 //! without calling it, so a naive "any reference" reading would be
 //! wrong.
+//!
+//! #45 adds two more shapes the reciprocal outgoingCalls confirmation
+//! must handle: a caller with both a real call and a bare reference to
+//! the same target in one function body, and a call reached through a
+//! renamed import.
+
+use crate::target_probe::target_probe as aliased_probe;
 
 /// The single target Symbol every probe site below points at.
 pub fn target_probe() -> u32 {
@@ -13,6 +20,21 @@ pub fn target_probe() -> u32 {
 /// Same file as the declaration.
 pub fn same_file_caller() -> u32 {
     target_probe()
+}
+
+/// #45: one real call plus a separate bare reference to the same
+/// target, inside the same caller. Reciprocal outgoingCalls must keep
+/// only the call's fromRange and drop the reference's.
+pub fn mixed_call_and_reference_caller() -> u32 {
+    let value = target_probe();
+    let _not_a_call: fn() -> u32 = target_probe;
+    value
+}
+
+/// #45: a call through a renamed import. Target matching must resolve
+/// this by semantic identity, not by the spelling at the call site.
+pub fn aliased_import_caller() -> u32 {
+    aliased_probe()
 }
 
 #[cfg(test)]
