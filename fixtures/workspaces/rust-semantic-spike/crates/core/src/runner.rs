@@ -3,11 +3,19 @@
 use bp_contracts::{Detailed, Reporter, Runner};
 
 use crate::target_probe::target_probe;
+use crate::target_probe::target_probe as aliased_probe;
 
 /// A call to #44's probe target from a different file in the same
 /// crate.
 pub fn cross_file_caller() -> u32 {
     target_probe()
+}
+
+/// #46: a call through a renamed import, from a normal consumer module
+/// (not the declaring module itself, unlike #45's fixture). Target
+/// matching must resolve this by semantic identity, not spelling.
+pub fn aliased_import_caller() -> u32 {
+    aliased_probe()
 }
 
 pub struct Worker {
