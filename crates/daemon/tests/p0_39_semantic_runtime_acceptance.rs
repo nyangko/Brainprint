@@ -192,9 +192,11 @@ impl Daemon {
     }
 
     async fn connect(&self) -> ClientConnection {
-        let mut connection = ClientConnection::connect(&self.endpoint.socket_path)
-            .await
-            .expect("connect");
+        #[cfg(unix)]
+        let connection = ClientConnection::connect(&self.endpoint.socket_path).await;
+        #[cfg(windows)]
+        let connection = ClientConnection::connect(&self.endpoint.pipe_name).await;
+        let mut connection = connection.expect("connect");
         send(
             &mut connection,
             Request::Handshake(HandshakeRequest {
@@ -692,7 +694,7 @@ async fn source_edit_invalidates_then_next_semantic_query_refreshes() {
 
     // 7: the next semantic-required query refreshes, on the warm process.
     let answer = daemon.outgoing(workspace, "call_again").await;
-    assert_eq!(calls(&answer), 1, "{:?}", answer);
+    assert_eq!(calls(&answer), 1, "{answer:?}");
     assert_eq!(receiver_gaps(&answer), 0);
     assert_enriched(&daemon.outgoing(workspace, "call").await);
     assert_eq!(owner_states(&root), vec![SemanticState::Current]);
@@ -1005,6 +1007,7 @@ async fn csharp_and_rust_enrich_only_under_explicit_workspace_trust() {
     }
     let mut cases = Vec::new();
     let home = Home::new("trusted");
+    #[cfg_attr(not(unix), allow(unused_variables))]
     if let Some(install) = csharp_install() {
         let alias = home.dir.path().join("roslyn-install");
         #[cfg(unix)]
@@ -1024,6 +1027,7 @@ async fn csharp_and_rust_enrich_only_under_explicit_workspace_trust() {
             alias,
         });
     }
+    #[cfg_attr(not(unix), allow(unused_variables))]
     if let Some(executable) = rust_analyzer() {
         let alias = home.dir.path().join("rust-analyzer-p039");
         #[cfg(unix)]

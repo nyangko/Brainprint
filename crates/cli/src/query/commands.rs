@@ -48,7 +48,7 @@ impl CommonArgs {
 }
 
 #[derive(Debug, Parser)]
-#[command(name = "brainprint", disable_help_subcommand = true)]
+#[command(name = "brainprint", version, disable_help_subcommand = true)]
 pub enum Cli {
     Install,
     Status,

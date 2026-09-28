@@ -118,9 +118,11 @@ async fn fixture(label: &str) -> (Fixture, tokio::task::JoinHandle<()>) {
     fs::write(workspace.0.join("src/shared.ts"), SHARED_TS).expect("shared");
     fs::write(workspace.0.join("src/app.ts"), APP_TS).expect("app");
 
-    let mut connection = ClientConnection::connect(&endpoint.socket_path)
-        .await
-        .expect("connect");
+    #[cfg(unix)]
+    let connection = ClientConnection::connect(&endpoint.socket_path).await;
+    #[cfg(windows)]
+    let connection = ClientConnection::connect(&endpoint.pipe_name).await;
+    let mut connection = connection.expect("connect");
     send(
         &mut connection,
         Request::Handshake(HandshakeRequest {
@@ -536,9 +538,11 @@ async fn e2e_real_daemon_exact_safe_matrix() {
 
     // ---- Task 11/12 unaffected: the agent never acked, retained or
     // mutated anything; the same queries still answer normally.
-    let mut connection = ClientConnection::connect(&fixture.endpoint.socket_path)
-        .await
-        .expect("connect");
+    #[cfg(unix)]
+    let connection = ClientConnection::connect(&fixture.endpoint.socket_path).await;
+    #[cfg(windows)]
+    let connection = ClientConnection::connect(&fixture.endpoint.pipe_name).await;
+    let mut connection = connection.expect("connect");
     send(
         &mut connection,
         Request::Handshake(HandshakeRequest {

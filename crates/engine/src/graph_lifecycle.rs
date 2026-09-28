@@ -1443,6 +1443,7 @@ export function lone(): number {
         let fixture = Fixture::create("unreadable");
         fixture.baseline();
         let run = fixture.declaration("src/app.ts", "App.run");
+        #[cfg_attr(not(unix), allow(unused_variables))]
         let before = fixture.outgoing(&run, RelationKind::Calls);
 
         // The dependent cannot be read when its target changes.

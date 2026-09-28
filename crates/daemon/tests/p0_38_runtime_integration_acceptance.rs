@@ -174,9 +174,11 @@ impl Daemon {
     }
 
     async fn connect(&self) -> ClientConnection {
-        let mut connection = ClientConnection::connect(&self.endpoint.socket_path)
-            .await
-            .expect("connect");
+        #[cfg(unix)]
+        let connection = ClientConnection::connect(&self.endpoint.socket_path).await;
+        #[cfg(windows)]
+        let connection = ClientConnection::connect(&self.endpoint.pipe_name).await;
+        let mut connection = connection.expect("connect");
         send(
             &mut connection,
             Request::Handshake(HandshakeRequest {

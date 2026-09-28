@@ -211,7 +211,7 @@ impl Slice {
             // the reason "dependencies are not deep-indexed" is a claim
             // about a real `node_modules`.
             let pinned = plan
-                .spike(&format!("{}_semantic_spike", label))
+                .spike(&format!("{label}_semantic_spike"))
                 .join("node_modules")
                 .canonicalize()?;
             #[cfg(unix)]
