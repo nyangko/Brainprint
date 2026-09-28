@@ -2,6 +2,14 @@
 
 use bp_contracts::{Detailed, Reporter, Runner};
 
+use crate::target_probe::target_probe;
+
+/// A call to #44's probe target from a different file in the same
+/// crate.
+pub fn cross_file_caller() -> u32 {
+    target_probe()
+}
+
 pub struct Worker {
     seed: u32,
 }

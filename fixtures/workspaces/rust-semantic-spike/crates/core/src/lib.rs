@@ -4,6 +4,7 @@
 pub mod grouped;
 pub mod model;
 pub mod runner;
+pub mod target_probe;
 
 mod nested;
 
