@@ -7,10 +7,17 @@
 //! local IPC. Lives in `brainprint-daemon` (which already depends on the
 //! engine) and dev-depends on `brainprint-agent`/`brainprint-mcp` -- the
 //! opposite of the forbidden direction.
+//!
+//! `e2e_real_daemon_exact_safe_matrix` below exercises the unreadable-file
+//! path via a real `chmod`, so it (and the helpers it alone uses) is
+//! Unix-only; on Windows that leaves them unreachable rather than
+//! reimplemented against a non-equivalent permission model.
+#![cfg_attr(windows, allow(dead_code, unused_imports))]
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::{
     env, fs,
-    os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     process,
     sync::atomic::{AtomicU64, Ordering},
@@ -245,6 +252,7 @@ impl Fixture {
             .expect("rescan");
     }
 
+    #[cfg(unix)]
     fn set_mode(&self, rel: &str, mode: u32) {
         fs::set_permissions(self.workspace.0.join(rel), fs::Permissions::from_mode(mode))
             .expect("chmod");
@@ -255,6 +263,7 @@ fn params<T: serde::de::DeserializeOwned>(value: Value) -> T {
     serde_json::from_value(value).expect("params")
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn e2e_real_daemon_exact_safe_matrix() {
     let (fixture, _server) = fixture("matrix").await;
