@@ -27,8 +27,8 @@ use std::{
 use serde_json::Value;
 
 use super::protocol::{
-    METHOD_NOT_FOUND, ProjectExecutionTrust, REQUEST_CANCELLED, RustRequest, RustResponse, decode,
-    method,
+    CONTENT_MODIFIED, METHOD_NOT_FOUND, ProjectExecutionTrust, REQUEST_CANCELLED, RustRequest,
+    RustResponse, decode, method,
 };
 use crate::{
     lsp::jsonrpc::{Client, RpcFailure, ServerHandler},
@@ -319,10 +319,14 @@ impl RustHost {
             Err(RpcFailure::Remote(error)) if error.code == METHOD_NOT_FOUND => {
                 Ok(RustResponse::Unsupported(wire.to_owned()))
             }
-            // Withdrawn, not answered. A caller that read this as an
-            // empty answer would publish "nothing is there", which is
-            // the one thing it certainly does not mean.
-            Err(RpcFailure::Remote(error)) if error.code == REQUEST_CANCELLED => {
+            // Withdrawn, not answered -- either the server canceled it
+            // outright, or its snapshot moved under the request before
+            // it could answer (LSP's ContentModified). A caller that
+            // read either as an empty answer would publish "nothing is
+            // there", which is the one thing it certainly does not mean.
+            Err(RpcFailure::Remote(error))
+                if error.code == REQUEST_CANCELLED || error.code == CONTENT_MODIFIED =>
+            {
                 Ok(RustResponse::Cancelled(wire.to_owned()))
             }
             Err(failure) => Err(HostError::new(failure.to_string())),
@@ -564,6 +568,40 @@ mod tests {
             None,
             "a restarted server has opened nothing"
         );
+    }
+
+    /// The peer's snapshot moving under a request (LSP's
+    /// ContentModified, -32801) is a withdrawal to retry, not a failure
+    /// -- the same reading already given to an explicit cancellation.
+    #[test]
+    fn content_modified_reads_as_a_withdrawal_not_a_failure() {
+        let (_handler, host, sender, received) = connected(ProjectExecutionTrust::Trusted);
+        let worker = std::thread::spawn(move || {
+            let sent: serde_json::Value =
+                serde_json::from_slice(&received.recv().expect("sent")).expect("json");
+            let id = sent["id"].clone();
+            sender
+                .send(crate::lsp::jsonrpc::testing::frame(&json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "error": { "code": -32801, "message": "content modified" }
+                })))
+                .expect("send");
+        });
+        let response = host
+            .call(
+                &RustRequest::Definition {
+                    uri: "file:///w/a.rs".into(),
+                    position: crate::lsp::coordinates::Position {
+                        line: 0,
+                        character: 0,
+                    },
+                },
+                &CancelToken::new(),
+            )
+            .expect("a withdrawal is not an error");
+        assert!(matches!(response, super::RustResponse::Cancelled(_)));
+        worker.join().expect("worker");
     }
 
     /// A closed connection is an unhealthy host.

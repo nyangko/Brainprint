@@ -73,6 +73,12 @@ pub const METHOD_NOT_FOUND: i64 = -32601;
 /// The peer withdrew a request rather than answering it.
 pub const REQUEST_CANCELLED: i64 = -32800;
 
+/// The peer's snapshot moved under the request (background reindexing)
+/// before it could answer. LSP defines this the same way as a
+/// withdrawal: the caller's remedy is to ask again, not to read it as
+/// "nothing is there".
+pub const CONTENT_MODIFIED: i64 = -32801;
+
 /// Why document synchronization is used at all.
 pub const DOCUMENT_SYNC_DECISION: &str = "the server declares textDocumentSync {openClose: true, change: 2}; an incremental \
      change carrying the replaced range moved the answer, so Brainprint sends its own \
