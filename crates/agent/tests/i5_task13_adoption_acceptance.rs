@@ -403,8 +403,7 @@ fn projected(evidence: Vec<EvidenceWire>) -> ProjectedAnswerWire {
         target_resolution: TargetResolutionWire::NoTarget,
         currentness: CurrentnessWire::Current,
         page: DeliveryPageWire {
-            references: vec![None; evidence.len()],
-            evidence,
+            evidence: evidence.into_iter().map(DeliveredItemWire::Full).collect(),
             gaps: Vec::new(),
             used_items: 1,
             used_bytes: 1,

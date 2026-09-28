@@ -132,7 +132,7 @@ fn compact_delivery() -> DeliveryWire {
 // --------------------------------------------------------------- protocol
 
 #[tokio::test]
-async fn v1_client_against_v2_daemon_is_rejected() {
+async fn v1_client_against_v3_daemon_is_rejected() {
     let home = TestHome::create("v1-client");
     let global_paths = home.global_paths();
     let (_server, endpoint) = start_server(&global_paths).await;
@@ -143,7 +143,7 @@ async fn v1_client_against_v2_daemon_is_rejected() {
         matches!(
             response,
             Response::Handshake(HandshakeResponse::VersionMismatch {
-                server_protocol_version: 2,
+                server_protocol_version: 3,
                 client_protocol_version: 1,
             })
         ),
@@ -152,8 +152,8 @@ async fn v1_client_against_v2_daemon_is_rejected() {
 }
 
 #[tokio::test]
-async fn v2_client_speaks_the_current_protocol_version() {
-    assert_eq!(PROTOCOL_VERSION, 2);
+async fn v3_client_speaks_the_current_protocol_version() {
+    assert_eq!(PROTOCOL_VERSION, 3);
 }
 
 #[tokio::test]

@@ -108,17 +108,25 @@ pub struct DeliveryEconomyWire {
     pub continuation_unavailable: Option<ContinuationUnavailableWire>,
 }
 
+/// One delivered slot: either the full canonical evidence, or -- when
+/// Task 8 proved the caller's retained context already has an identical
+/// payload -- a reference to it instead of the payload itself. Exactly
+/// one, never both (#24 §8, #41: the earlier wire sent a full item and
+/// its reference side by side, which defeated the byte savings this
+/// exists for).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DeliveredItemWire {
+    Full(EvidenceWire),
+    Reuse(ReuseReferenceWire),
+}
+
 /// One delivered page: `brainprint_engine::projection::planner::economy::
 /// PendingDelivery`'s `page`, restricted to what the client needs -- the
 /// evidence/gaps plus the accounting `DeliveryEconomyWire` carries
 /// separately.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeliveryPageWire {
-    pub evidence: Vec<EvidenceWire>,
-    /// One per `evidence` item: `Some` when Task 8 delivered that item as
-    /// a reference to an already-acknowledged identical payload instead
-    /// of in full (#24 §8 "references").
-    pub references: Vec<Option<ReuseReferenceWire>>,
+    pub evidence: Vec<DeliveredItemWire>,
     pub gaps: Vec<ProjectionGapWire>,
     pub used_items: usize,
     pub used_bytes: usize,

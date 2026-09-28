@@ -464,11 +464,10 @@ async fn parity_inspect() {
         panic!("expected Inspect result")
     };
     assert!(
-        answer
-            .page
-            .evidence
-            .iter()
-            .any(|item| matches!(item, EvidenceWire::CurrentSource(_))),
+        answer.page.evidence.iter().any(|item| matches!(
+            item,
+            DeliveredItemWire::Full(EvidenceWire::CurrentSource(_))
+        )),
         "inspect on a real Resource should deliver CurrentSource"
     );
 }
@@ -1100,7 +1099,9 @@ fn current_source_text(answer: &ProjectedAnswerWire) -> String {
         .evidence
         .iter()
         .find_map(|item| match item {
-            EvidenceWire::CurrentSource(range) => Some(range.source.clone()),
+            DeliveredItemWire::Full(EvidenceWire::CurrentSource(range)) => {
+                Some(range.source.clone())
+            }
             _ => None,
         })
         .expect("expected a CurrentSource evidence item")

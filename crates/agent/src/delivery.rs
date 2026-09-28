@@ -8,8 +8,8 @@
 //! never stored.
 
 use brainprint_core::protocol::query::{
-    CurrentnessWire, EvidenceWire, FindResultWire, ProjectedAnswerWire, QueryResultWire,
-    QueryStatusWire, TargetResolutionWire,
+    CurrentnessWire, DeliveredItemWire, EvidenceWire, FindResultWire, ProjectedAnswerWire,
+    QueryResultWire, QueryStatusWire, TargetResolutionWire,
 };
 use serde_json::Value;
 
@@ -266,18 +266,10 @@ fn source_facts(answer: &ProjectedAnswerWire) -> Vec<DeliveredFact> {
         .page
         .evidence
         .iter()
-        .zip(
-            answer
-                .page
-                .references
-                .iter()
-                .map(Option::is_some)
-                .chain(std::iter::repeat(true)),
-        )
-        .filter_map(|(evidence, by_reference)| match evidence {
+        .filter_map(|item| match item {
             // A reference means the body was *not* in this response.
-            EvidenceWire::CurrentSource(range)
-                if !by_reference && range.verification.currentness == CurrentnessWire::Current =>
+            DeliveredItemWire::Full(EvidenceWire::CurrentSource(range))
+                if range.verification.currentness == CurrentnessWire::Current =>
             {
                 fully_covered_lines(range.span.start, range.span.end).map(|lines| {
                     DeliveredFact::Source {

@@ -62,19 +62,49 @@ fn print_current_source(out: &mut impl Write, range: &PreparedRangeWire) -> std:
     writeln!(out, "{}", range.source)
 }
 
+/// Prints one evidence item, returning whether it was `SourceUnavailable`
+/// (batched into a single trailing marker by the caller).
+fn print_one_evidence(out: &mut impl Write, item: &EvidenceWire) -> std::io::Result<bool> {
+    match item {
+        EvidenceWire::CurrentSource(range) => {
+            print_current_source(out, range)?;
+            Ok(false)
+        }
+        EvidenceWire::SourceUnavailable { .. } => Ok(true),
+        // A full bespoke one-line format per evidence variant is a
+        // larger surface than this compact renderer covers; the debug
+        // form is lossless (every field survives) even though it is
+        // not hand-formatted prose. ponytail: compact rendering for
+        // non-source evidence is Debug-based; add per-variant
+        // formatting if a human compact reader needs it later.
+        other => {
+            writeln!(out, "{other:?}")?;
+            Ok(false)
+        }
+    }
+}
+
 fn print_evidence(out: &mut impl Write, items: &[EvidenceWire]) -> std::io::Result<()> {
     let mut source_unavailable = false;
     for item in items {
+        source_unavailable |= print_one_evidence(out, item)?;
+    }
+    if source_unavailable {
+        marker(out, "SOURCE_UNAVAILABLE")?;
+    }
+    Ok(())
+}
+
+/// Same as [`print_evidence`], for a delivery page's slots: each is
+/// either the full item or a Task 8 reuse reference in its place (#41).
+fn print_delivered_items(out: &mut impl Write, items: &[DeliveredItemWire]) -> std::io::Result<()> {
+    let mut source_unavailable = false;
+    for item in items {
         match item {
-            EvidenceWire::CurrentSource(range) => print_current_source(out, range)?,
-            EvidenceWire::SourceUnavailable { .. } => source_unavailable = true,
-            // A full bespoke one-line format per evidence variant is a
-            // larger surface than this compact renderer covers; the debug
-            // form is lossless (every field survives) even though it is
-            // not hand-formatted prose. ponytail: compact rendering for
-            // non-source evidence is Debug-based; add per-variant
-            // formatting if a human compact reader needs it later.
-            other => writeln!(out, "{other:?}")?,
+            DeliveredItemWire::Full(evidence) => {
+                source_unavailable |= print_one_evidence(out, evidence)?;
+            }
+            DeliveredItemWire::Reuse(reference) => writeln!(out, "REUSE {reference:?}")?,
         }
     }
     if source_unavailable {
@@ -110,7 +140,7 @@ fn print_projected_answer(
 ) -> std::io::Result<()> {
     print_target_resolution(out, &answer.target_resolution)?;
     print_currentness(out, &answer.currentness)?;
-    print_evidence(out, &answer.page.evidence)?;
+    print_delivered_items(out, &answer.page.evidence)?;
     print_delivery_tail(out, &answer.page, &answer.economy, &answer.continuation)
 }
 

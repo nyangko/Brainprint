@@ -1528,13 +1528,26 @@ fn reuse_reference_wire(reference: ReuseReference) -> ReuseReferenceWire {
     }
 }
 
+/// One logical item becomes exactly one wire representation: the
+/// reference in place of the full payload it stands for, never both
+/// (#41).
+fn delivered_item_wire(
+    evidence: EvidenceItem,
+    reference: Option<ReuseReference>,
+) -> DeliveredItemWire {
+    match reference {
+        Some(reference) => DeliveredItemWire::Reuse(reuse_reference_wire(reference)),
+        None => DeliveredItemWire::Full(evidence_item_wire(evidence)),
+    }
+}
+
 fn delivery_page_wire(page: DeliveryPage) -> DeliveryPageWire {
     DeliveryPageWire {
-        evidence: page.evidence.into_iter().map(evidence_item_wire).collect(),
-        references: page
-            .references
+        evidence: page
+            .evidence
             .into_iter()
-            .map(|reference| reference.map(reuse_reference_wire))
+            .zip(page.references)
+            .map(|(evidence, reference)| delivered_item_wire(evidence, reference))
             .collect(),
         gaps: page.gaps.into_iter().map(projection_gap_wire).collect(),
         used_items: page.used_items,

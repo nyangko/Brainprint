@@ -328,7 +328,7 @@ async fn inspect(daemon: &Daemon, workspace: WorkspaceId, name: &str) -> Option<
         return None;
     }
     answer.page.evidence.iter().find_map(|item| match item {
-        EvidenceWire::CurrentSource(range) => Some(range.source.clone()),
+        DeliveredItemWire::Full(EvidenceWire::CurrentSource(range)) => Some(range.source.clone()),
         _ => None,
     })
 }

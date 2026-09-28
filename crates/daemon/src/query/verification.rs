@@ -200,6 +200,31 @@ fn compact_wire_delivery() -> DeliveryWire {
     }
 }
 
+fn retained_wire_delivery() -> DeliveryWire {
+    DeliveryWire {
+        retention: RetentionWire::Retained,
+        ..compact_wire_delivery()
+    }
+}
+
+async fn query_with_correlation(
+    connection: &mut ClientConnection,
+    workspace_id: WorkspaceId,
+    operation: QueryOperationWire,
+    correlation: CorrelationWire,
+) -> QueryResponse {
+    let request = Request::Query(QueryRequest {
+        request_id: uuid::Uuid::new_v4().to_string(),
+        workspace: WorkspaceSelectorWire::Id { workspace_id },
+        correlation: Some(correlation),
+        operation,
+    });
+    let Response::Query(response) = send(connection, request).await else {
+        panic!("expected a Query response")
+    };
+    response
+}
+
 fn compact_direct_delivery() -> DeliveryOptions<'static> {
     DeliveryOptions {
         budget: DeliveryBudget::new(Some(64), Some(64 * 1024), None).expect("budget"),
@@ -539,12 +564,86 @@ async fn parity_inspect() {
     };
     assert_eq!(expected, actual);
     assert!(
-        actual
+        actual.page.evidence.iter().any(|item| matches!(
+            item,
+            DeliveredItemWire::Full(EvidenceWire::CurrentSource(_))
+        )),
+        "inspect on a real Resource should deliver CurrentSource, got {actual:?}"
+    );
+}
+
+/// #41: a repeated retained request reuses the identical, acknowledged
+/// payload as a reference instead of resending it in full, and the wire
+/// carries exactly one representation per slot -- never both -- so the
+/// second response is strictly smaller.
+#[tokio::test]
+async fn retained_repeat_reuses_instead_of_resending_full_payload() {
+    let (fixture, mut connection, _server, _endpoint) = populated_fixture("reuse").await;
+    let correlation = CorrelationWire {
+        client_id: Some("reuse-test-client".to_owned()),
+        session_id: Some("reuse-test-session".to_owned()),
+        ..CorrelationWire::default()
+    };
+    let operation = || {
+        QueryOperationWire::Inspect(InspectWire {
+            target: app_ts_target_wire(),
+            delivery: retained_wire_delivery(),
+        })
+    };
+
+    let first = query_with_correlation(
+        &mut connection,
+        fixture.workspace_id,
+        operation(),
+        correlation.clone(),
+    )
+    .await;
+    if let Some(ack_token) = first.ack_token.clone() {
+        send(
+            &mut connection,
+            Request::QueryAck(QueryAckRequest {
+                request_id: uuid::Uuid::new_v4().to_string(),
+                workspace_id: fixture.workspace_id,
+                ack_token,
+            }),
+        )
+        .await;
+    }
+    let first_bytes = serde_json::to_vec(&first).expect("serializable").len();
+    let QueryResultWire::Inspect(first_answer) = ok_result(first) else {
+        panic!("expected Inspect result")
+    };
+    assert!(
+        first_answer
             .page
             .evidence
             .iter()
-            .any(|item| matches!(item, EvidenceWire::CurrentSource(_))),
-        "inspect on a real Resource should deliver CurrentSource, got {actual:?}"
+            .all(|item| matches!(item, DeliveredItemWire::Full(_))),
+        "nothing acknowledged yet: every slot must be Full"
+    );
+
+    let second = query_with_correlation(
+        &mut connection,
+        fixture.workspace_id,
+        operation(),
+        correlation,
+    )
+    .await;
+    let second_bytes = serde_json::to_vec(&second).expect("serializable").len();
+    let QueryResultWire::Inspect(second_answer) = ok_result(second) else {
+        panic!("expected Inspect result")
+    };
+    assert!(
+        second_answer
+            .page
+            .evidence
+            .iter()
+            .any(|item| matches!(item, DeliveredItemWire::Reuse(_))),
+        "an identical repeat with the same correlation must reuse at least one slot, got {second_answer:?}"
+    );
+    assert!(
+        second_bytes < first_bytes,
+        "a reused slot must shrink the wire: first={first_bytes} second={second_bytes}"
     );
 }
 
@@ -662,11 +761,10 @@ async fn parity_context_change() {
     };
     assert_eq!(expected, actual);
     assert!(
-        actual
-            .page
-            .evidence
-            .iter()
-            .any(|item| matches!(item, EvidenceWire::CurrentSource(_))),
+        actual.page.evidence.iter().any(|item| matches!(
+            item,
+            DeliveredItemWire::Full(EvidenceWire::CurrentSource(_))
+        )),
         "context Change on a real Resource should deliver CurrentSource, got {actual:?}"
     );
 }
