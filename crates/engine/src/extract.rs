@@ -760,7 +760,11 @@ impl Walker<'_> {
             }
             (ParserDialect::Rust, "use_declaration") => {
                 if let Some(argument) = node.child_by_field_name("argument") {
-                    push(OccurrenceKind::ImportSite, span_of(argument));
+                    let mut spans = Vec::new();
+                    rust_use_leaf_spans(argument, &mut spans);
+                    for span in spans {
+                        push(OccurrenceKind::ImportSite, span);
+                    }
                 }
             }
             _ => {}
@@ -1352,6 +1356,31 @@ fn descendants<'tree>(node: Node<'tree>, kind: &str) -> Vec<Node<'tree>> {
         found.extend(descendants(child, kind));
     }
     found
+}
+
+/// Every leaf item's span inside a Rust `use` tree (#42), mirroring
+/// `imports::collect_rust_use_leaves`'s decomposition exactly -- the
+/// IMPORT_SITE Occurrence and the resolved `ImportStatement` must agree
+/// on spans for evidence binding to hold (see `imports`'s module doc).
+fn rust_use_leaf_spans(node: Node<'_>, spans: &mut Vec<SourceSpan>) {
+    match node.kind() {
+        "use_list" => {
+            let mut cursor = node.walk();
+            for child in node.named_children(&mut cursor) {
+                rust_use_leaf_spans(child, spans);
+            }
+        }
+        "scoped_use_list" => {
+            if let Some(list) = node.child_by_field_name("list") {
+                rust_use_leaf_spans(list, spans);
+            }
+        }
+        "use_as_clause" | "identifier" | "scoped_identifier" | "use_wildcard" | "crate"
+        | "self" | "super" => {
+            spans.push(span_of(node));
+        }
+        _ => {}
+    }
 }
 
 pub(crate) fn span_of(node: Node<'_>) -> SourceSpan {

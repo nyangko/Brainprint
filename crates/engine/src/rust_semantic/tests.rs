@@ -27,13 +27,13 @@ use crate::{
 /// The module whose trait implementations the fixture turns on.
 const RUNNER: &str = "crates/core/src/runner.rs";
 
-/// The byte span of the `use` specifier containing `needle`.
+/// The byte span of the `use` leaf item containing `needle`.
 ///
-/// The structural tier anchors a compound `use crate::a::{B, C}` as
-/// **one** occurrence over the whole specifier, so that span -- not the
-/// module name inside it -- is what the adapter asks about. Recorded
-/// here rather than guessed at, because a test that asked somewhere
-/// else would pass against a scripted backend and prove nothing.
+/// The structural tier anchors a compound `use crate::a::{B, C}` as one
+/// occurrence per decomposed leaf item -- `B` and `C` each get their own
+/// narrow span, not the whole grouped specifier (#42). Recorded here
+/// rather than guessed at, because a test that asked somewhere else
+/// would pass against a scripted backend and prove nothing.
 fn compound_use(fixture: &Fixture, rel: &str, needle: &str) -> (usize, usize) {
     let owner = fixture.resource(rel);
     let text = fixture.text(rel);
@@ -764,7 +764,7 @@ fn a_missing_backend_says_exactly_what_is_missing() {
 fn a_withdrawn_request_is_asked_again() {
     let fixture = Fixture::create("cancel-retry");
     let index = SemanticIndex::open(&fixture.db_path()).expect("index");
-    let specifier = compound_use(&fixture, "crates/app/src/main.rs", "bp_core::runner::");
+    let specifier = compound_use(&fixture, "crates/app/src/main.rs", "Idle");
     let backend = ScriptedBackend::loaded().cancelling(1).with_definition(
         &fixture.uri("crates/app/src/main.rs"),
         fixture.last_character("crates/app/src/main.rs", specifier.0, specifier.1),
@@ -830,7 +830,7 @@ fn a_module_resolves_to_its_resource() {
     let fixture = Fixture::create("module-target");
     let index = SemanticIndex::open(&fixture.db_path()).expect("index");
     let main = "crates/app/src/main.rs";
-    let specifier = compound_use(&fixture, main, "bp_core::runner::");
+    let specifier = compound_use(&fixture, main, "Idle");
     let backend = ScriptedBackend::loaded().with_definition(
         &fixture.uri(main),
         fixture.last_character(main, specifier.0, specifier.1),

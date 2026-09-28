@@ -1,6 +1,7 @@
 //! Module hierarchy, re-exports, and the trait implementations the
 //! acceptance turns on.
 
+pub mod grouped;
 pub mod model;
 pub mod runner;
 

@@ -223,12 +223,93 @@ fn collect(
     source: &[u8],
     statements: &mut Vec<ImportStatement>,
 ) {
-    if let Some(statement) = statement_of(node, dialect, source) {
+    if dialect == ParserDialect::Rust && node.kind() == "use_declaration" {
+        if let Some(argument) = node.child_by_field_name("argument") {
+            collect_rust_use_leaves(argument, source, String::new(), statements);
+        }
+    } else if let Some(statement) = statement_of(node, dialect, source) {
         statements.push(statement);
     }
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
         collect(child, dialect, source, statements);
+    }
+}
+
+/// Recursively expands one Rust `use` tree into one [`ImportStatement`]
+/// per leaf item (#42). A grouped `use a::{b, c::d}` is exactly as much
+/// evidence as `use a::b; use a::c::d;` written flat -- the braces are
+/// grouping syntax, not a reason to throw the leaves away. Each leaf
+/// keeps its own narrow span (the item as written, not the whole
+/// statement), so evidence stays anchored to the smallest range that
+/// actually supports it, per this module's own contract.
+///
+/// A glob (`use a::*`) still names no specific item: its reconstructed
+/// specifier keeps the literal `*`, so [`resolve_rust`]'s existing
+/// `contains('*')` check classifies it as
+/// [`UnresolvedImport::CompoundSpecifier`] exactly as before --
+/// non-enumerable, never a guessed name.
+fn collect_rust_use_leaves(
+    node: Node<'_>,
+    source: &[u8],
+    prefix: String,
+    statements: &mut Vec<ImportStatement>,
+) {
+    match node.kind() {
+        "use_list" => {
+            let mut cursor = node.walk();
+            for child in node.named_children(&mut cursor) {
+                collect_rust_use_leaves(child, source, prefix.clone(), statements);
+            }
+        }
+        "scoped_use_list" => {
+            let prefix = match node.child_by_field_name("path") {
+                Some(path) => join_rust_path(&prefix, &text_of(path, source)),
+                None => prefix,
+            };
+            if let Some(list) = node.child_by_field_name("list") {
+                collect_rust_use_leaves(list, source, prefix, statements);
+            }
+        }
+        "use_as_clause" => {
+            // The alias is a new local name, not part of the target
+            // path; the whole clause (target + `as alias`) is the
+            // narrowest span that names this one binding.
+            if let Some(path) = node.child_by_field_name("path") {
+                let specifier = join_rust_path(&prefix, &text_of(path, source));
+                statements.push(rust_leaf_statement(specifier, span_of(node)));
+            }
+        }
+        "identifier" | "scoped_identifier" | "use_wildcard" | "crate" | "self" | "super" => {
+            let specifier = join_rust_path(&prefix, &text_of(node, source));
+            statements.push(rust_leaf_statement(specifier, span_of(node)));
+        }
+        _ => {}
+    }
+}
+
+fn join_rust_path(prefix: &str, tail: &str) -> String {
+    if prefix.is_empty() {
+        tail.to_owned()
+    } else {
+        format!("{prefix}::{tail}")
+    }
+}
+
+fn rust_leaf_statement(specifier: String, span: SourceSpan) -> ImportStatement {
+    let form = if specifier.starts_with("crate::")
+        || specifier.starts_with("self::")
+        || specifier.starts_with("super::")
+        || matches!(specifier.as_str(), "crate" | "self" | "super")
+    {
+        ImportForm::ModuleTreeRelative
+    } else {
+        ImportForm::Absolute
+    };
+    ImportStatement {
+        specifier,
+        form,
+        span,
     }
 }
 
@@ -284,23 +365,6 @@ fn statement_of(node: Node<'_>, dialect: ParserDialect, source: &[u8]) -> Option
                 specifier,
                 form,
                 span: span_of(source_node),
-            })
-        }
-        (ParserDialect::Rust, "use_declaration") => {
-            let argument = node.child_by_field_name("argument")?;
-            let specifier = text_of(argument, source);
-            let form = if specifier.starts_with("crate::")
-                || specifier.starts_with("self::")
-                || specifier.starts_with("super::")
-            {
-                ImportForm::ModuleTreeRelative
-            } else {
-                ImportForm::Absolute
-            };
-            Some(ImportStatement {
-                specifier,
-                form,
-                span: span_of(argument),
             })
         }
         (ParserDialect::CSharp, "using_directive") => {
@@ -666,6 +730,13 @@ mod tests {
             .collect()
     }
 
+    fn resolved_specifiers(resolved: &[(String, ImportOutcome)]) -> Vec<&str> {
+        resolved
+            .iter()
+            .map(|(specifier, _)| specifier.as_str())
+            .collect()
+    }
+
     /// One inventory of Resources, built once so the ids a test
     /// compares against are the ids the resolver saw.
     struct Scenario {
@@ -900,6 +971,106 @@ mod tests {
                 "{path} must not be guessed into src/app.rs"
             );
         }
+    }
+
+    /// #42: braces group syntax, not evidence -- every leaf a flat `use`
+    /// would have named is still named once decomposed, each with its
+    /// own resolution exactly as if it had been written flat.
+    #[test]
+    fn rust_grouped_use_decomposes_every_leaf_exactly_as_the_flat_form_would() {
+        let scenario = Scenario::new("src/lib.rs", &["src/app.rs"]);
+
+        // A simple group of external items: two leaves, same crate.
+        let resolved = scenario.resolve("use serde::{Serialize, Deserialize};\n");
+        assert_eq!(
+            resolved_specifiers(&resolved),
+            ["serde::Serialize", "serde::Deserialize"]
+        );
+        for (_, outcome) in &resolved {
+            let ImportOutcome::External(external) = outcome else {
+                panic!("expected External, got {outcome:?}")
+            };
+            assert_eq!(external.package_identity, "serde");
+        }
+
+        // A simple group of module-tree items: each leaf still needs
+        // semantics, individually -- not one lump CompoundSpecifier.
+        let resolved = scenario.resolve("use crate::app::{run, stop};\n");
+        assert_eq!(
+            resolved_specifiers(&resolved),
+            ["crate::app::run", "crate::app::stop"]
+        );
+        for (specifier, outcome) in &resolved {
+            assert_eq!(
+                *outcome,
+                ImportOutcome::Unresolved(UnresolvedImport::RustModuleTree),
+                "{specifier} must require semantics, not be dropped"
+            );
+        }
+
+        // Nested groups: the prefix accumulates through every level.
+        let resolved = scenario.resolve("use crate::{app::{run, stop}, config::Settings};\n");
+        assert_eq!(
+            resolved_specifiers(&resolved),
+            [
+                "crate::app::run",
+                "crate::app::stop",
+                "crate::config::Settings"
+            ]
+        );
+        assert!(
+            resolved.iter().all(|(_, outcome)| *outcome
+                == ImportOutcome::Unresolved(UnresolvedImport::RustModuleTree))
+        );
+
+        // An alias: the target, not the local name, is what resolution
+        // needs -- resolves exactly as the unaliased path would.
+        let resolved = scenario.resolve("use std::collections::HashMap as Map;\n");
+        assert_eq!(
+            resolved_specifiers(&resolved),
+            ["std::collections::HashMap"]
+        );
+        let ImportOutcome::External(external) = &resolved[0].1 else {
+            panic!("expected External")
+        };
+        assert_eq!(external.package_identity, "std");
+
+        // `self::`/`super::` groups: same module-tree treatment as `crate::`.
+        let resolved = scenario.resolve("use self::{helper, other};\n");
+        assert_eq!(
+            resolved_specifiers(&resolved),
+            ["self::helper", "self::other"]
+        );
+        let resolved = scenario.resolve("use super::{thing, other};\n");
+        assert_eq!(
+            resolved_specifiers(&resolved),
+            ["super::thing", "super::other"]
+        );
+        for resolved in [
+            scenario.resolve("use self::{helper, other};\n"),
+            scenario.resolve("use super::{thing, other};\n"),
+        ] {
+            assert!(resolved.iter().all(|(_, outcome)| *outcome
+                == ImportOutcome::Unresolved(UnresolvedImport::RustModuleTree)));
+        }
+
+        // A glob stays non-enumerable even decomposed out of a group:
+        // it is never guessed into a specific name.
+        let resolved = scenario.resolve("use crate::{prelude::*, config::Settings};\n");
+        assert_eq!(
+            resolved_specifiers(&resolved),
+            ["crate::prelude::*", "crate::config::Settings"]
+        );
+        assert_eq!(
+            resolved[0].1,
+            ImportOutcome::Unresolved(UnresolvedImport::CompoundSpecifier),
+            "a glob must stay non-enumerable even once its sibling leaves are decomposed"
+        );
+        assert_eq!(
+            resolved[1].1,
+            ImportOutcome::Unresolved(UnresolvedImport::RustModuleTree),
+            "the glob's sibling leaf must still resolve on its own"
+        );
     }
 
     #[test]

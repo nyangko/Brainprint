@@ -1,7 +1,7 @@
-//! Reached through `super` and `self`.
+//! Reached through `super` and `self`, each grouped and aliased (#42).
 
-use super::Nested;
-use self::inner::Inner;
+use super::{Nested, Nested as AliasedNested};
+use self::inner::{Inner, Inner as AliasedInner};
 
 mod inner {
     pub struct Inner;
@@ -14,5 +14,5 @@ mod inner {
 }
 
 pub fn combine() -> u32 {
-    Nested.depth() + Inner.value()
+    Nested.depth() + Inner.value() + AliasedNested.depth() + AliasedInner.value()
 }

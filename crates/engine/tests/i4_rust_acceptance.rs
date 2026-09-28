@@ -1208,6 +1208,78 @@ fn self_and_super_paths_resolve() {
     });
 }
 
+/// Grouped `use` (#42): braces are grouping syntax, not a reason to drop
+/// leaf evidence. Every leaf a flat `use` would name still resolves once
+/// decomposed -- aliased, nested two groups deep, and reached through a
+/// glob -- against the real backend, not a scripted one.
+#[test]
+#[ignore = "needs an installed rust-analyzer"]
+fn grouped_use_leaves_resolve_exactly_as_the_flat_form_would() {
+    let Some(install) = install_or_skip() else {
+        return;
+    };
+    let slice = Slice::open("grouped", 60, &install, ProjectExecutionTrust::Trusted);
+    slice.with_host(|queries| {
+        let deep = "crates/core/src/nested/deep.rs";
+        let grouped = "crates/core/src/grouped.rs";
+        slice.refresh(queries, deep);
+        slice.refresh(queries, grouped);
+
+        let at = |rel: &str, needle: &str, name: &str| {
+            let start = slice.offset_of(rel, needle, 0) + needle.find(name).expect("inside");
+            (start, start + name.len())
+        };
+
+        // A grouped, aliased `super::{Nested, Nested as AliasedNested}`
+        // resolves the alias to the same declaration as the unaliased
+        // leaf.
+        let nested_depth = slice.only("crates/core/src/nested/mod.rs", "Nested::depth");
+        let (start, end) = at(deep, "AliasedNested.depth()", "AliasedNested.depth");
+        assert_eq!(
+            slice.target_at(deep, start, end),
+            Some(GraphEndpoint::Symbol(nested_depth.id)),
+            "an aliased leaf inside a group resolves like the unaliased one"
+        );
+
+        // A grouped, aliased `self::inner::{Inner, Inner as AliasedInner}`.
+        let inner_value = slice.only(deep, "inner::Inner::value");
+        let (start, end) = at(deep, "AliasedInner.value()", "AliasedInner.value");
+        assert_eq!(
+            slice.target_at(deep, start, end),
+            Some(GraphEndpoint::Symbol(inner_value.id)),
+            "a self-relative alias inside a group resolves too"
+        );
+
+        // Nested groups: `crate::{model::{Boxed, identity}, runner::Worker}`.
+        let boxed_new = slice.only("crates/core/src/model.rs", "Boxed::new");
+        let (start, end) = at(grouped, "Boxed::new(identity(4_u32))", "Boxed::new");
+        assert_eq!(
+            slice.target_at(grouped, start, end),
+            Some(GraphEndpoint::Symbol(boxed_new.id)),
+            "a leaf two groups deep resolves to its declaration"
+        );
+        let worker_new = slice.only(RUNNER, "Worker::new");
+        let (start, end) = at(grouped, "Worker::new(2)", "Worker::new");
+        assert_eq!(
+            slice.target_at(grouped, start, end),
+            Some(GraphEndpoint::Symbol(worker_new.id)),
+            "a sibling leaf in the same nested group resolves too"
+        );
+
+        // A glob (`crate::nested::deep::*`) brought `combine` into
+        // scope; the call site it backs still resolves.
+        let combine = slice.only(deep, "combine");
+        let (start, end) = at(grouped, "combine()", "combine");
+        assert_eq!(
+            slice.target_at(grouped, start, end),
+            Some(GraphEndpoint::Symbol(combine.id)),
+            "a call site backed by a glob import resolves to the real declaration"
+        );
+
+        slice.assert_nothing_executed();
+    });
+}
+
 /// The standard library is an identity, and its absence is recorded.
 ///
 /// `rust-src` is not installed by Brainprint and may not be present.

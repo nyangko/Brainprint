@@ -1734,11 +1734,14 @@ fn persisted_semantic_truth_is_used_without_waking_a_backend() {
     assert_eq!(semantic.db_path(), fixture.paths.index_db);
 
     // The fleet publishes semantic truth ahead of time (the watcher's job).
-    let main = "crates/app/src/main.rs";
+    // `crate::runner::Worker as PublicWorker` is a flat, aliased,
+    // `crate::`-relative import: module-tree resolution needs semantics
+    // regardless of grouping, so this gap exists independently of #42's
+    // grouped-`use` decomposition.
+    let main = "crates/core/src/lib.rs";
     let runner = "crates/core/src/runner.rs";
     let index = SemanticIndex::open(&fixture.paths.index_db).expect("semantic index");
     let text = semantic.text(main);
-    // The structural tier anchors the whole compound `use` specifier.
     let (start, end) = crate::evidence::list_unresolved_for_resource(
         index.connection(),
         fixture.resource(main).id,
@@ -1746,7 +1749,7 @@ fn persisted_semantic_truth_is_used_without_waking_a_backend() {
     .expect("gaps")
     .iter()
     .map(|gap| (gap.occurrence.start_byte, gap.occurrence.end_byte))
-    .find(|(start, end)| text[*start..*end].contains("bp_core::runner::"))
+    .find(|(start, end)| text[*start..*end].contains("PublicWorker"))
     .expect("the use site");
     let backend = ScriptedBackend::loaded().with_definition(
         &semantic.uri(main),
