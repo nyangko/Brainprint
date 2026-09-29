@@ -63,6 +63,7 @@ pub enum UnresolvedReasonWire {
     RelationKindNotStructural,
     OverrideTargetRequiresSemantics,
     DynamicKeyExpression,
+    MacroCallRequiresSemantics,
 }
 
 /// Mirrors `brainprint_engine::relations::RelationGap`.

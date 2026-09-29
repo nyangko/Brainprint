@@ -18,6 +18,14 @@ pub fn aliased_import_caller() -> u32 {
     aliased_probe()
 }
 
+/// #47: the call through the renamed import again, this time inside a
+/// macro's arguments, where only the backend can say what it reaches.
+pub fn aliased_call_inside_a_macro() -> u32 {
+    let value = 7;
+    assert_eq!(aliased_probe(), value);
+    value
+}
+
 pub struct Worker {
     seed: u32,
 }

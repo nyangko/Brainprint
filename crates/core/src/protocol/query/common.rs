@@ -160,6 +160,7 @@ pub enum OccurrenceKindWire {
     ReferenceSite,
     TypeSite,
     KeySite,
+    CallCandidateSite,
 }
 
 /// Mirrors `brainprint_engine::relations::EvidenceLocation`.

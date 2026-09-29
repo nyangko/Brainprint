@@ -293,7 +293,7 @@ impl ResolvableKind {
     pub const fn of_occurrence(kind: OccurrenceKind) -> Option<Self> {
         match kind {
             OccurrenceKind::ImportSite => Some(Self::Imports),
-            OccurrenceKind::CallSite => Some(Self::Calls),
+            OccurrenceKind::CallSite | OccurrenceKind::CallCandidateSite => Some(Self::Calls),
             OccurrenceKind::ReferenceSite => Some(Self::References),
             OccurrenceKind::TypeSite | OccurrenceKind::Definition | OccurrenceKind::KeySite => None,
         }

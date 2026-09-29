@@ -12,6 +12,10 @@
 //! self-referential (imported from within its own declaring module)
 //! and is not evidence of general alias behavior.
 //!
+//! #47 is the product path for the shapes below that sit inside a
+//! macro's arguments: each call-shaped token there is a structural
+//! candidate, and only the backend's own answers make one a CALLS edge.
+//!
 //! #46 adds the signatureHelp-confirmation negative shapes: a
 //! `stringify!` macro whose tokens look like a call but never execute
 //! it, a token-swallowing `macro_rules!` arm that discards its input
@@ -68,6 +72,22 @@ pub fn unrelated_call_beside_reference() -> u32 {
     let _other = same_file_caller();
     let _not_a_call: fn() -> u32 = target_probe;
     _other
+}
+
+/// #47: the target named -- not called -- inside a macro's arguments,
+/// beside an unrelated real call. No callable token is directly followed
+/// by an argument list for the target, so structural extraction records
+/// no candidate for it, and the neighbouring call must not lend it one.
+pub fn a_bare_reference_beside_an_unrelated_call_in_a_macro() -> bool {
+    assert_eq!(same_file_caller(), 7);
+    matches!(target_probe as fn() -> u32, _)
+}
+
+/// #47: a constructor call and a pattern that share a spelling, inside
+/// one macro. Both are call-shaped tokens; only what the backend says
+/// about each decides anything.
+pub fn a_constructor_and_a_pattern_in_a_macro() -> bool {
+    matches!(Some(target_probe()), Some(_))
 }
 
 #[cfg(test)]

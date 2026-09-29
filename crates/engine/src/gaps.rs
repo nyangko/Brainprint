@@ -39,7 +39,7 @@ use std::fmt;
 use brainprint_core::{ResourceId, SymbolId};
 
 use crate::{
-    calls::{CallOutcome, ResolvedCall, UnresolvedCall},
+    calls::{CallOutcome, MacroCallCandidate, ResolvedCall, UnresolvedCall},
     domain::{KeyAccess, KeyLiteral},
     evidence::OccurrenceRef,
     graph::{self, GraphEndpoint, RelationKind},
@@ -152,6 +152,11 @@ pub enum UnresolvedReason {
     /// site is real; the key it names is a runtime value, so there is
     /// no entity to point at (#17 task 12/14).
     DynamicKeyExpression,
+    /// A call-shaped token sequence inside a Rust macro's arguments
+    /// (#47). The syntax tree has no call expression there, and whether
+    /// expansion executes it is a compiler question: the site is a
+    /// candidate, not a finding, until a semantic backend proves it.
+    MacroCallRequiresSemantics,
 }
 
 impl UnresolvedReason {
@@ -174,6 +179,7 @@ impl UnresolvedReason {
             Self::RelationKindNotStructural => "RELATION_KIND_NOT_STRUCTURAL",
             Self::OverrideTargetRequiresSemantics => "OVERRIDE_TARGET_REQUIRES_SEMANTICS",
             Self::DynamicKeyExpression => "DYNAMIC_KEY_EXPRESSION",
+            Self::MacroCallRequiresSemantics => "MACRO_CALL_REQUIRES_SEMANTICS",
         }
     }
 
@@ -195,6 +201,7 @@ impl UnresolvedReason {
             "RELATION_KIND_NOT_STRUCTURAL" => Self::RelationKindNotStructural,
             "OVERRIDE_TARGET_REQUIRES_SEMANTICS" => Self::OverrideTargetRequiresSemantics,
             "DYNAMIC_KEY_EXPRESSION" => Self::DynamicKeyExpression,
+            "MACRO_CALL_REQUIRES_SEMANTICS" => Self::MacroCallRequiresSemantics,
             other => {
                 return Err(GapError::UnknownReason {
                     raw: other.to_owned(),
@@ -216,6 +223,7 @@ impl UnresolvedReason {
                 | Self::TypeSemanticsRequired
                 | Self::OverrideTargetRequiresSemantics
                 | Self::ConfigDependentSpecifier
+                | Self::MacroCallRequiresSemantics
         )
     }
 
@@ -420,6 +428,32 @@ const fn reason_of_call(reason: UnresolvedCall) -> UnresolvedReason {
         UnresolvedCall::NameNotInModule => UnresolvedReason::NameNotInModule,
         UnresolvedCall::NotANameExpression => UnresolvedReason::NotANameExpression,
     }
+}
+
+/// The gaps the call candidates inside Rust macro arguments leave (#47).
+///
+/// Every candidate starts unresolved: this tier can see a callable token
+/// written in front of an argument list, and nothing else. The anchor is
+/// the `CALL_CANDIDATE_SITE` Occurrence published from the same
+/// [`MacroCallCandidate`], so the gap and the site cannot drift, and no
+/// relation is ever derived from the candidate here.
+#[must_use]
+pub fn macro_call_gaps(candidates: &[MacroCallCandidate]) -> Vec<UnresolvedEvidence> {
+    candidates
+        .iter()
+        .map(|candidate| UnresolvedEvidence {
+            occurrence: OccurrenceRef {
+                kind: OccurrenceKind::CallCandidateSite,
+                start_byte: candidate.span.start_byte,
+                end_byte: candidate.span.end_byte,
+            },
+            intended: IntendedRelation::Known(RelationKind::Calls),
+            lookup_name: candidate.written.clone(),
+            module_hint: None,
+            reason: UnresolvedReason::MacroCallRequiresSemantics,
+            candidates: Vec::new(),
+        })
+        .collect()
 }
 
 /// The gaps #17 task 12's env/config extraction leaves.

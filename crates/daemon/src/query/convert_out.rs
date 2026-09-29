@@ -355,6 +355,7 @@ fn occurrence_kind_wire(kind: OccurrenceKind) -> OccurrenceKindWire {
         OccurrenceKind::ReferenceSite => OccurrenceKindWire::ReferenceSite,
         OccurrenceKind::TypeSite => OccurrenceKindWire::TypeSite,
         OccurrenceKind::KeySite => OccurrenceKindWire::KeySite,
+        OccurrenceKind::CallCandidateSite => OccurrenceKindWire::CallCandidateSite,
     }
 }
 
@@ -441,6 +442,9 @@ fn unresolved_reason_wire(reason: UnresolvedReason) -> UnresolvedReasonWire {
             UnresolvedReasonWire::OverrideTargetRequiresSemantics
         }
         UnresolvedReason::DynamicKeyExpression => UnresolvedReasonWire::DynamicKeyExpression,
+        UnresolvedReason::MacroCallRequiresSemantics => {
+            UnresolvedReasonWire::MacroCallRequiresSemantics
+        }
     }
 }
 

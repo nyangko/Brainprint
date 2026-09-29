@@ -1382,3 +1382,423 @@ fn the_shared_query_surface_names_no_rust_concept() {
     ];
     assert_eq!(produced.len(), 5);
 }
+
+// ---------------------------------------------------------------------
+// Call candidates inside a macro's arguments (#47)
+// ---------------------------------------------------------------------
+
+/// The fixture file that holds the macro shapes.
+const PROBE: &str = "crates/core/src/target_probe.rs";
+
+/// One call candidate: where the callable is written.
+struct Candidate {
+    start: usize,
+    end: usize,
+}
+
+impl Candidate {
+    /// The `name` written right after `anchor`.
+    fn after(fixture: &Fixture, rel: &str, anchor: &str, name: &str) -> Self {
+        let start = fixture.offset_of(rel, anchor, 0) + anchor.find(name).expect("inside");
+        Self {
+            start,
+            end: start + name.len(),
+        }
+    }
+
+    /// `assert_eq!(target_probe(), 7)`, the macro-nested positive.
+    fn macro_nested(fixture: &Fixture) -> Self {
+        Self::after(
+            fixture,
+            PROBE,
+            "assert_eq!(target_probe(), 7)",
+            "target_probe",
+        )
+    }
+
+    /// `stringify!(target_probe())`, tokens that are never executed.
+    fn stringified(fixture: &Fixture) -> Self {
+        Self::after(fixture, PROBE, "stringify!(target_probe())", "target_probe")
+    }
+
+    /// What the server answers when asked about this candidate: the
+    /// definition at its last character, and `signatures` from just
+    /// inside its parenthesis.
+    fn answered(
+        &self,
+        fixture: &Fixture,
+        backend: ScriptedBackend,
+        definition: crate::rust_semantic::protocol::Location,
+        signatures: usize,
+    ) -> ScriptedBackend {
+        backend
+            .with_definition(
+                &fixture.uri(PROBE),
+                fixture.last_character(PROBE, self.start, self.end),
+                vec![definition],
+            )
+            .with_signature_help(
+                &fixture.uri(PROBE),
+                fixture.position_at(PROBE, self.end + 1),
+                signatures,
+            )
+    }
+}
+
+/// The name token of `pub fn target_probe`, the way a definition
+/// answer points at it.
+fn target_probe_declaration(fixture: &Fixture) -> crate::rust_semantic::protocol::Location {
+    let start = fixture.offset_of(PROBE, "pub fn target_probe", 0) + "pub fn ".len();
+    fixture.location(PROBE, start, start + "target_probe".len())
+}
+
+fn symbols_of(fixture: &Fixture, rel: &str) -> Vec<crate::symbol::Symbol> {
+    crate::symbol::SymbolStore::open(&fixture.db_path())
+        .expect("index")
+        .list_for_resource(fixture.resource(rel).id)
+        .expect("symbols")
+}
+
+fn only_symbol(fixture: &Fixture, rel: &str, qualified_name: &str) -> crate::symbol::Symbol {
+    symbols_of(fixture, rel)
+        .into_iter()
+        .find(|symbol| symbol.qualified_name.ends_with(qualified_name))
+        .unwrap_or_else(|| panic!("{qualified_name} is declared in {rel}"))
+}
+
+/// Who calls `target_probe` *through a macro candidate*, as confirmed
+/// relations. The ordinary structural callers are somebody else's.
+fn callers_of_target(fixture: &Fixture) -> Vec<crate::relations::RelationResult> {
+    let target = only_symbol(fixture, PROBE, "target_probe");
+    crate::relations::RelationIndex::open(&fixture.db_path())
+        .expect("index")
+        .incoming(&GraphEndpoint::Symbol(target.id), &[RelationKind::Calls])
+        .expect("incoming")
+        .confirmed
+        .into_iter()
+        .filter(|relation| {
+            relation.evidence.iter().any(|site| {
+                site.occurrence_kind == crate::symbol::OccurrenceKind::CallCandidateSite
+            })
+        })
+        .collect()
+}
+
+fn open_candidate_gaps(fixture: &Fixture) -> Vec<usize> {
+    let index = SemanticIndex::open(&fixture.db_path()).expect("index");
+    crate::evidence::list_unresolved_for_resource(index.connection(), fixture.resource(PROBE).id)
+        .expect("gaps")
+        .into_iter()
+        .filter(|gap| gap.reason == crate::gaps::UnresolvedReason::MacroCallRequiresSemantics)
+        .map(|gap| gap.occurrence.start_byte)
+        .collect()
+}
+
+fn signature_help_positions(backend: &ScriptedBackend) -> Vec<crate::lsp::coordinates::Position> {
+    backend
+        .calls()
+        .into_iter()
+        .filter_map(|request| match request {
+            protocol::RustRequest::SignatureHelp { position, .. } => Some(position),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Definition and SignatureHelp both proving it is what makes a call
+/// candidate a CALLS edge -- anchored on the candidate's own span, from
+/// the function it sits inside, read back through the query API.
+#[test]
+fn a_call_candidate_the_server_proves_becomes_a_call() {
+    let fixture = Fixture::create("macro-proved");
+    let index = SemanticIndex::open(&fixture.db_path()).expect("index");
+    let candidate = Candidate::macro_nested(&fixture);
+    assert!(open_candidate_gaps(&fixture).contains(&candidate.start));
+    let backend = candidate.answered(
+        &fixture,
+        ScriptedBackend::loaded(),
+        target_probe_declaration(&fixture),
+        1,
+    );
+
+    let outcome = refresh(&fixture, &index, &backend, PROBE).expect("refresh");
+
+    assert!(
+        outcome.report.iter().any(|line| {
+            line.contains(&format!("@{}..{}", candidate.start, candidate.end))
+                && line.contains("RESOLVED Symbol")
+        }),
+        "{:?}",
+        outcome.report
+    );
+    assert!(outcome.merged.gaps_resolved >= 1, "{:?}", outcome.merged);
+    assert!(
+        !open_candidate_gaps(&fixture).contains(&candidate.start),
+        "the proven candidate is no longer a gap"
+    );
+
+    let containing = only_symbol(&fixture, PROBE, "macro_nested_call_matches_the_target");
+    let callers = callers_of_target(&fixture);
+    let found = callers
+        .iter()
+        .find(|relation| relation.source == GraphEndpoint::Symbol(containing.id))
+        .unwrap_or_else(|| panic!("the test function calls the target: {callers:?}"));
+    assert_eq!(found.evidence.len(), 1);
+    let site = &found.evidence[0];
+    assert_eq!(
+        (site.span.start_byte, site.span.end_byte),
+        (candidate.start, candidate.end),
+        "the edge is anchored on the written callable"
+    );
+    assert_eq!(
+        site.occurrence_kind,
+        crate::symbol::OccurrenceKind::CallCandidateSite
+    );
+    assert_eq!(
+        signature_help_positions(&backend),
+        vec![fixture.position_at(PROBE, candidate.end + 1)],
+        "asked once, just inside the candidate's own parenthesis"
+    );
+}
+
+/// The definition alone is not a proof.
+#[test]
+fn a_candidate_without_signature_help_stays_a_gap() {
+    let fixture = Fixture::create("macro-no-signature");
+    let index = SemanticIndex::open(&fixture.db_path()).expect("index");
+    let candidate = Candidate::stringified(&fixture);
+    let backend = candidate.answered(
+        &fixture,
+        ScriptedBackend::loaded(),
+        target_probe_declaration(&fixture),
+        0,
+    );
+
+    let outcome = refresh(&fixture, &index, &backend, PROBE).expect("refresh");
+
+    assert!(
+        outcome.report.iter().any(|line| {
+            line.contains(&format!("@{}..{}", candidate.start, candidate.end))
+                && line.contains("UNRESOLVED MacroCallRequiresSemantics")
+        }),
+        "{:?}",
+        outcome.report
+    );
+    assert!(callers_of_target(&fixture).is_empty(), "no edge, no guess");
+    assert!(
+        open_candidate_gaps(&fixture).contains(&candidate.start),
+        "explicit coverage, not a zero"
+    );
+}
+
+/// SignatureHelp is asked only after a definition proved a callable
+/// declaration -- a type, a module, a dependency's item and no answer at
+/// all never earn the second question, and none becomes a call.
+#[test]
+fn only_a_callable_definition_earns_the_signature_question() {
+    let dependency = crate::rust_semantic::protocol::Location {
+        uri: crate::rust_semantic::protocol::path_to_uri(Path::new(
+            "/home/u/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.219/src/lib.rs",
+        )),
+        range: crate::lsp::coordinates::Range::new(
+            crate::lsp::coordinates::Position::new(0, 0),
+            crate::lsp::coordinates::Position::new(0, 5),
+        ),
+    };
+
+    for (label, definition) in [
+        ("a struct", "struct"),
+        ("a module", "module"),
+        ("a dependency's item", "dependency"),
+        ("nothing", "nothing"),
+    ] {
+        let fixture = Fixture::create("macro-not-callable");
+        let index = SemanticIndex::open(&fixture.db_path()).expect("index");
+        let candidate = Candidate::macro_nested(&fixture);
+        let answer = match definition {
+            "struct" => Some(fixture.declaration(RUNNER, "Worker", 0)),
+            "module" => Some(fixture.module_location(RUNNER)),
+            "dependency" => Some(dependency.clone()),
+            _ => None,
+        };
+        let backend = match answer {
+            Some(location) => candidate.answered(&fixture, ScriptedBackend::loaded(), location, 1),
+            None => ScriptedBackend::loaded(),
+        };
+
+        let outcome = refresh(&fixture, &index, &backend, PROBE).expect("refresh");
+
+        assert!(
+            callers_of_target(&fixture).is_empty(),
+            "{label} is not a call"
+        );
+        assert!(
+            open_candidate_gaps(&fixture).contains(&candidate.start),
+            "{label}: the candidate stays a gap"
+        );
+        assert!(
+            signature_help_positions(&backend).is_empty(),
+            "{label}: no signature question was asked: {:?}",
+            outcome.report
+        );
+    }
+}
+
+/// Only a call candidate is ever asked about SignatureHelp.
+#[test]
+fn signature_help_is_never_asked_for_an_ordinary_site() {
+    let fixture = Fixture::create("macro-only-candidates");
+    let index = SemanticIndex::open(&fixture.db_path()).expect("index");
+    let backend = ScriptedBackend::loaded();
+
+    refresh(&fixture, &index, &backend, RUNNER).expect("refresh");
+
+    assert!(
+        backend
+            .calls()
+            .iter()
+            .any(|request| matches!(request, protocol::RustRequest::Definition { .. })),
+        "ordinary sites were asked about"
+    );
+    assert!(signature_help_positions(&backend).is_empty());
+}
+
+/// A withdrawn SignatureHelp is asked again once, then recorded.
+#[test]
+fn a_withdrawn_signature_help_is_retried_then_recorded() {
+    let candidate_of = |fixture: &Fixture| Candidate::macro_nested(fixture);
+
+    let fixture = Fixture::create("macro-withdrawn-once");
+    let index = SemanticIndex::open(&fixture.db_path()).expect("index");
+    let candidate = candidate_of(&fixture);
+    let backend = candidate
+        .answered(
+            &fixture,
+            ScriptedBackend::loaded(),
+            target_probe_declaration(&fixture),
+            1,
+        )
+        .withdrawing_signature_help(1);
+    let outcome = refresh(&fixture, &index, &backend, PROBE).expect("refresh");
+    assert!(
+        outcome.withdrawn.is_empty(),
+        "one withdrawal is retried: {:?}",
+        outcome.withdrawn
+    );
+    assert_eq!(callers_of_target(&fixture).len(), 1, "and then proved");
+
+    let fixture = Fixture::create("macro-withdrawn-twice");
+    let index = SemanticIndex::open(&fixture.db_path()).expect("index");
+    let candidate = candidate_of(&fixture);
+    let backend = candidate
+        .answered(
+            &fixture,
+            ScriptedBackend::loaded(),
+            target_probe_declaration(&fixture),
+            1,
+        )
+        .withdrawing_signature_help(2);
+    let outcome = refresh(&fixture, &index, &backend, PROBE).expect("refresh");
+    assert!(
+        outcome
+            .withdrawn
+            .iter()
+            .any(|site| site.start_byte == candidate.start),
+        "withdrawn twice is recorded coverage: {:?}",
+        outcome.withdrawn
+    );
+    assert!(callers_of_target(&fixture).is_empty());
+    assert!(open_candidate_gaps(&fixture).contains(&candidate.start));
+}
+
+/// The same proof twice changes nothing; a proof that stops holding
+/// gives the candidate back as the gap it was.
+#[test]
+fn withdrawing_the_proof_restores_the_candidate_gap() {
+    let fixture = Fixture::create("macro-restored");
+    let index = SemanticIndex::open(&fixture.db_path()).expect("index");
+    let candidate = Candidate::macro_nested(&fixture);
+    let proving = |signatures: usize| {
+        candidate.answered(
+            &fixture,
+            ScriptedBackend::loaded(),
+            target_probe_declaration(&fixture),
+            signatures,
+        )
+    };
+
+    let first = refresh(&fixture, &index, &proving(1), PROBE).expect("refresh");
+    assert!(first.merged.relations_created >= 1);
+    assert_eq!(callers_of_target(&fixture).len(), 1);
+
+    let again = refresh(&fixture, &index, &proving(1), PROBE).expect("refresh");
+    assert_eq!(again.merged.relations_created, 0, "{:?}", again.merged);
+    assert_eq!(again.merged.gaps_restored, 0, "{:?}", again.merged);
+    assert_eq!(callers_of_target(&fixture).len(), 1, "still one edge");
+
+    let lost = refresh(&fixture, &index, &proving(0), PROBE).expect("refresh");
+    assert!(lost.merged.gaps_restored >= 1, "{:?}", lost.merged);
+    assert!(callers_of_target(&fixture).is_empty(), "the edge went too");
+    assert!(
+        open_candidate_gaps(&fixture).contains(&candidate.start),
+        "MacroCallRequiresSemantics is back"
+    );
+}
+
+/// No trusted backend, no proof, and no lost candidate.
+#[test]
+fn an_untrusted_or_failing_backend_leaves_every_candidate_gap_intact() {
+    let fixture = Fixture::create("macro-degraded");
+    let index = SemanticIndex::open(&fixture.db_path()).expect("index");
+    let before = open_candidate_gaps(&fixture);
+    assert!(before.len() >= 4, "the fixture holds the macro shapes");
+
+    refresh(&fixture, &index, &ScriptedBackend::untrusted(), PROBE).expect("refresh");
+    assert_eq!(open_candidate_gaps(&fixture), before);
+
+    let failing = ScriptedBackend::new().failing(crate::runtime::RequestFailure::Backend(
+        crate::runtime::HostError::new("server exited"),
+    ));
+    refresh(&fixture, &index, &failing, PROBE).expect_err("no backend");
+    assert_eq!(open_candidate_gaps(&fixture), before);
+    assert!(callers_of_target(&fixture).is_empty());
+}
+
+/// Punctuation only chooses where SignatureHelp is asked; it is bounded
+/// to the candidate's own line and never searched for.
+#[test]
+fn the_probe_position_is_bounded_by_the_candidates_own_argument_list() {
+    use crate::lsp::coordinates::{LineMap, Position};
+
+    let probe = |text: &str, needle: &str| {
+        let map = LineMap::with_encoding(text, protocol::POSITION_ENCODING);
+        let end = text.find(needle).expect("needle") + needle.len();
+        adapter::argument_list_probe(&map, text, end)
+    };
+
+    assert_eq!(probe("m!(f(1))", "f"), Some(Position::new(0, 5)));
+    assert_eq!(probe("m!(f (1))", "f"), Some(Position::new(0, 6)));
+    assert_eq!(probe("m!(f\t(1))", "f"), Some(Position::new(0, 6)));
+    // UTF-16 units: the emoji counts as two, and the column is the
+    // server's, not a byte offset.
+    assert_eq!(probe("m!(\u{1F600}, f(1))", "f"), Some(Position::new(0, 9)));
+    assert_eq!(
+        probe("// \u{1F600}\nm!(f(1))", "f"),
+        Some(Position::new(1, 5)),
+        "and only what is on the candidate's own line moves it"
+    );
+    assert_eq!(
+        probe("m!(caf\u{e9}(1))", "caf\u{e9}"),
+        Some(Position::new(0, 8))
+    );
+
+    for (label, text, needle) in [
+        ("the next line", "m!(f\n(1))", "f"),
+        ("another token", "m!(f, (1))", "f"),
+        ("a bare reference", "m!(f)", "f"),
+        ("a comment", "m!(f /* c */ (1))", "f"),
+        ("the end of the text", "m!(f", "f"),
+    ] {
+        assert_eq!(probe(text, needle), None, "{label}: no bounded position");
+    }
+}

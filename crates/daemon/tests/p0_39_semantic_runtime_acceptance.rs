@@ -1285,3 +1285,207 @@ async fn typescript_and_svelte_enrich_through_the_product_path() {
         daemon.stop().await;
     }
 }
+
+// ---------------------------------------------------------------------
+// #47: Rust macro call candidates, on Brainprint's own repository
+// ---------------------------------------------------------------------
+
+/// The parts of this repository a Cargo workspace needs, without build
+/// output, VCS state, or the other tools' working directories.
+fn copy_workspace_sources(to: &Path) {
+    fs::create_dir_all(to).expect("workspace root");
+    for file in [
+        "Cargo.toml",
+        "Cargo.lock",
+        "rust-toolchain.toml",
+        "rustfmt.toml",
+    ] {
+        fs::copy(repo().join(file), to.join(file)).expect("workspace file");
+    }
+    copy_tree(&repo().join("crates"), &to.join("crates"));
+}
+
+/// Every call candidate one file holds, as `(text, bound, open gap)`.
+fn candidate_states(root: &Path, rel: &str) -> Vec<(String, bool, bool)> {
+    let source = fs::read_to_string(root.join(rel)).expect("source");
+    let index = SemanticIndex::open(&WorkspacePaths::from_root(root).index_db).expect("index");
+    let mut statement = index
+        .connection()
+        .prepare(
+            "SELECT o.start_byte, o.end_byte, o.relation_id IS NOT NULL, \
+                    EXISTS (SELECT 1 FROM unresolved_reference u \
+                            WHERE u.occurrence_id = o.id \
+                              AND u.reason = 'MACRO_CALL_REQUIRES_SEMANTICS' \
+                              AND u.intended_relation_kind = 'CALLS') \
+             FROM occurrence o JOIN resource r ON r.id = o.resource_id \
+             WHERE r.path_key = ?1 AND o.kind = 'CALL_CANDIDATE_SITE' \
+             ORDER BY o.start_byte",
+        )
+        .expect("prepare");
+    statement
+        .query_map([rel], |row| {
+            let start = usize::try_from(row.get::<_, i64>(0)?).expect("start");
+            let end = usize::try_from(row.get::<_, i64>(1)?).expect("end");
+            Ok((source[start..end].to_owned(), row.get(2)?, row.get(3)?))
+        })
+        .expect("query")
+        .collect::<Result<_, _>>()
+        .expect("rows")
+}
+
+/// The two `load_workspace_config` calls written inside macro token
+/// trees in `crates/engine/src/config.rs` are candidates structurally,
+/// and a Trusted rust-analyzer proves them through definition and
+/// SignatureHelp -- through the whole product path, on this repository.
+#[tokio::test]
+#[ignore = "loads this whole repository into a real rust-analyzer; run explicitly"]
+async fn brainprints_own_macro_calls_resolve_through_the_product_path() {
+    #[cfg_attr(not(unix), allow(unused_variables))]
+    let Some(executable) = rust_analyzer() else {
+        return;
+    };
+    let home = Home::new("brainprint-repo");
+    let alias = home.dir.path().join("rust-analyzer-p047");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&executable, &alias).expect("alias");
+    home.config(&format!(
+        "\n[semantic_backends.rust]\nexecutable = \"{}\"\n",
+        alias.display()
+    ));
+    let root = home.dir.path().join("brainprint");
+    copy_workspace_sources(&root);
+    workspace_config(&root, "project_execution_trust = \"Trusted\"\n");
+
+    let config_rs = "crates/engine/src/config.rs";
+    let daemon = Daemon::start(&home.global).await;
+    let workspace = daemon.init(&root).await;
+
+    // Structurally: candidates, unresolved, unbound; nothing started.
+    let before = candidate_states(&root, config_rs);
+    let calls_before: Vec<_> = before
+        .iter()
+        .filter(|(text, ..)| text == "load_workspace_config")
+        .collect();
+    println!("structural candidates in config.rs: {before:?}");
+    assert_eq!(
+        calls_before.len(),
+        2,
+        "the two macro-nested calls: {before:?}"
+    );
+    assert!(calls_before.iter().all(|(_, bound, gap)| !bound && *gap));
+    let stats = daemon.semantic(workspace).await;
+    assert_eq!(stats.backend_starts, 0, "structure alone starts nothing");
+
+    // The product path: an incoming query for the target.
+    let target = target_for(
+        &daemon,
+        workspace,
+        "load_workspace_config",
+        ResourceLanguageWire::Rust,
+        Some(config_rs),
+    )
+    .await;
+    // rust-analyzer's own `cargo metadata` at load raises a watcher event
+    // on Cargo.lock (bytes unchanged); the next barrier's existing
+    // withdraw-before-refresh then re-proves the owner once, on the same
+    // process (the same settling #39's other Rust case waits out). Ask
+    // until both macro calls are proven, never longer than a minute.
+    let started = Instant::now();
+    let mut asked = 0;
+    let (answer, after) = loop {
+        asked += 1;
+        let result = daemon
+            .relations(workspace, target.clone(), RelationDirectionWire::Incoming)
+            .await;
+        assert!(matches!(result.target, TargetResolutionWire::Resolved(_)));
+        let answer = result.answers.into_iter().next().expect("one answer");
+        let after = candidate_states(&root, config_rs);
+        let settled = after
+            .iter()
+            .filter(|(text, ..)| text == "load_workspace_config")
+            .all(|(_, bound, gap)| *bound && !gap);
+        if settled || started.elapsed() > Duration::from_secs(60) {
+            break (answer, after);
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    };
+    let cold = started.elapsed();
+    let stats = daemon.semantic(workspace).await;
+    println!("asked {asked} time(s); candidates after: {after:?}");
+    let evidence_kinds: Vec<_> = answer
+        .confirmed
+        .iter()
+        .flat_map(|relation| relation.evidence.iter().map(|site| site.occurrence_kind))
+        .collect();
+    println!(
+        "cold {cold:?}; incoming call sites {}; candidate evidence {}; gaps {}; \
+         requires_semantics {}; unattributed {}; {stats:?}",
+        call_sites(&answer),
+        evidence_kinds
+            .iter()
+            .filter(|kind| **kind == OccurrenceKindWire::CallCandidateSite)
+            .count(),
+        answer.gaps.len(),
+        answer.coverage.requires_semantics,
+        answer.coverage.unattributed,
+    );
+
+    let paths: std::collections::BTreeMap<_, _> = {
+        let index = SemanticIndex::open(&WorkspacePaths::from_root(&root).index_db).expect("index");
+        let mut statement = index
+            .connection()
+            .prepare("SELECT uid, path_key FROM resource")
+            .expect("prepare");
+        statement
+            .query_map([], |row| {
+                Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, String>(1)?))
+            })
+            .expect("query")
+            .collect::<Result<_, _>>()
+            .expect("rows")
+    };
+    for relation in &answer.confirmed {
+        for site in &relation.evidence {
+            println!(
+                "  site {:?} {}:{} {:?}",
+                site.occurrence_kind,
+                paths
+                    .get(site.resource.to_bytes().as_slice())
+                    .map_or("?", String::as_str),
+                site.span.start.line + 1,
+                relation.kind
+            );
+        }
+    }
+    assert_eq!(stats.backend_starts, 1, "{stats:?}");
+    assert_eq!(stats.owner_failures, 0, "{stats:?}");
+    let proven: Vec<_> = after
+        .iter()
+        .filter(|(text, ..)| text == "load_workspace_config")
+        .collect();
+    assert!(
+        proven.iter().all(|(_, bound, gap)| *bound && !gap),
+        "both macro calls resolve: {after:?}"
+    );
+    assert_eq!(
+        evidence_kinds
+            .iter()
+            .filter(|kind| **kind == OccurrenceKindWire::CallCandidateSite)
+            .count(),
+        2,
+        "the answer carries both, as candidate-anchored evidence"
+    );
+
+    // Warm: the same process, nothing re-requested.
+    let requests = stats.backend_requests;
+    let again = daemon
+        .relations(workspace, target, RelationDirectionWire::Incoming)
+        .await;
+    let again = again.answers.into_iter().next().expect("one answer");
+    assert_eq!(call_sites(&again), call_sites(&answer));
+    let stats = daemon.semantic(workspace).await;
+    assert_eq!(stats.backend_starts, 1);
+    assert_eq!(stats.backend_requests, requests, "current: no request");
+
+    daemon.stop().await;
+}

@@ -782,6 +782,15 @@ impl Walker<'_> {
             }
         }
 
+        // Call-shaped tokens inside a Rust macro's arguments (#47). Not
+        // a `CALL_SITE`: the syntax tree has no call expression there,
+        // so the Occurrence is a candidate that resolves to nothing
+        // until a semantic backend proves it. The set and the spans are
+        // `calls`'s, shared with the gaps built from them.
+        for candidate in crate::calls::macro_call_candidates_at(node, self.dialect, self.source) {
+            push(OccurrenceKind::CallCandidateSite, candidate.span);
+        }
+
         // Environment and configuration keys the syntax settles (#17
         // task 12). Same arrangement: the set and the spans belong to
         // that module.

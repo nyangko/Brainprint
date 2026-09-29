@@ -43,7 +43,7 @@ use super::protocol::{
 use crate::{
     gaps::UnresolvedReason,
     graph::{ExternalEntity, GraphEndpoint, RelationKind},
-    lsp::coordinates::{LineMap, Range},
+    lsp::coordinates::{LineMap, Position, Range},
     resolution::{Dispatch, EvidenceBasis, Support},
     resource::Resource,
     runtime::{RequestFailure, RequestOptions, RuntimeLease, RuntimeRequest, SemanticRequestKey},
@@ -503,6 +503,94 @@ fn ask(
     Ok(None)
 }
 
+/// Ask once, and ask again if the backend withdrew the request, for how
+/// many signatures the server offers at a position.
+///
+/// `Ok(None)` means it withdrew both times, exactly as [`ask`] does.
+fn ask_signatures(
+    queries: &dyn RustQueries,
+    request: &RustRequest,
+) -> Result<Option<usize>, AdapterError> {
+    for _ in 0..2 {
+        match queries.call(request)? {
+            RustResponse::SignatureHelp { signatures } => return Ok(Some(signatures)),
+            RustResponse::Cancelled(_) => {}
+            RustResponse::Unsupported(method) => {
+                return Err(AdapterError::Protocol(format!("{method} is unsupported")));
+            }
+            other => return Err(AdapterError::Protocol(format!("{other:?}"))),
+        }
+    }
+    Ok(None)
+}
+
+/// Whether a resolved target is a declaration a call can name: a
+/// function or a method.
+///
+/// A tuple struct or an enum variant is spelled `Name(..)` both as a
+/// constructor call and as a pattern, and inside a macro's arguments the
+/// syntax cannot say which -- while the server reports a signature for
+/// both. A pattern is not a call, so such a target is never bound from a
+/// candidate. Neither is a dependency's item, whose kind is not known
+/// here, nor a module. Those candidates stay explicit gaps.
+fn targets_a_callable(outcome: &SemanticOutcome, connection: &Connection) -> bool {
+    matches!(
+        outcome,
+        SemanticOutcome::Resolved {
+            target: GraphEndpoint::Symbol(target),
+        } if matches!(
+            symbol_kind(connection, *target),
+            Some(SymbolKind::Function | SymbolKind::Method)
+        )
+    )
+}
+
+/// Where SignatureHelp may be asked about a call candidate: just inside
+/// the argument list that directly follows it.
+///
+/// Source punctuation chooses the probe position and nothing else. It
+/// never counts as evidence -- the server has to say it is a callable
+/// argument list -- and it is never searched for: the opener must be the
+/// next character on the candidate's own line, past spaces and tabs, or
+/// there is no bounded position and the candidate stays unconfirmed.
+pub(super) fn argument_list_probe(
+    map: &LineMap<'_>,
+    text: &str,
+    candidate_end: usize,
+) -> Option<Position> {
+    let rest = text.get(candidate_end..)?.as_bytes();
+    let spaces = rest
+        .iter()
+        .take_while(|byte| matches!(byte, b' ' | b'\t'))
+        .count();
+    (rest.get(spaces) == Some(&b'('))
+        .then(|| map.position(candidate_end + spaces + 1).ok())
+        .flatten()
+}
+
+/// Whether the server reads a call candidate as a real callable argument
+/// list. `None` when it withdrew the request both times.
+///
+/// # Errors
+/// When the backend cannot be reached or answers a shape this build does
+/// not read.
+fn candidate_is_callable(
+    queries: &dyn RustQueries,
+    uri: &str,
+    map: &LineMap<'_>,
+    text: &str,
+    candidate_end: usize,
+) -> Result<Option<bool>, AdapterError> {
+    let Some(position) = argument_list_probe(map, text, candidate_end) else {
+        return Ok(Some(false));
+    };
+    let question = RustRequest::SignatureHelp {
+        uri: uri.to_owned(),
+        position,
+    };
+    Ok(ask_signatures(queries, &question)?.map(|signatures| signatures > 0))
+}
+
 /// Ask the backend about every site this Resource offers, and normalize
 /// the answers.
 ///
@@ -538,7 +626,40 @@ pub fn resolve_resource(
         };
 
         let name = (!site.lookup_name.is_empty()).then_some(site.lookup_name.clone());
-        let outcome = normalize(normalizer, &locations, name.as_deref(), site)?;
+        let mut outcome = normalize(normalizer, &locations, name.as_deref(), site)?;
+
+        // A call candidate inside a macro's arguments is proven by the
+        // server's own answers, never by its shape (#47): the definition
+        // above has to resolve it to a callable declaration, and the
+        // server has to read the position after its parenthesis as a
+        // callable argument list. Either failing leaves the gap.
+        if site.occurrence.kind == OccurrenceKind::CallCandidateSite
+            && matches!(outcome, SemanticOutcome::Resolved { .. })
+        {
+            let proven = if targets_a_callable(&outcome, normalizer.connection) {
+                candidate_is_callable(
+                    queries,
+                    &owner_uri,
+                    &map,
+                    request.owner_text,
+                    site.occurrence.end_byte,
+                )?
+            } else {
+                Some(false)
+            };
+            match proven {
+                Some(true) => {}
+                Some(false) => {
+                    outcome = SemanticOutcome::Unresolved {
+                        reason: UnresolvedReason::MacroCallRequiresSemantics,
+                    };
+                }
+                None => {
+                    produced.withdrawn.push(site.occurrence);
+                    continue;
+                }
+            }
+        }
         let source = request
             .implementors
             .get(&(site.occurrence.start_byte, site.occurrence.end_byte))

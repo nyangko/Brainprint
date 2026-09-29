@@ -138,11 +138,19 @@ relation being overloaded.
 | 43 | proc-macro-generated semantics remain an explicit limitation with execution disabled | PASS | declared by the safe configuration and stated in the module header; nothing they would declare is claimed |
 | 44 | `OUT_DIR`/build-script generated source is not canonical project source | PASS | `build_script_output_is_not_project_source`; `target/` is treated as a dependency path and refused |
 
-A call written **inside** a macro invocation anchors no occurrence —
-`assert_eq!(seed, 5)` is an opaque token tree to the structural tier —
-so nothing is claimed about it. Asserted by
-`a_declarative_macro_resolves_and_its_expansion_does_not`, and it is why
-the fixture's tests bind their calls to locals.
+The macro *invocation* anchors no edge — `assert_eq!(seed, 5)` is an
+opaque token tree to the structural tier. Asserted by
+`a_declarative_macro_resolves_and_its_expansion_does_not`.
+
+A call-shaped token written **inside** a macro's arguments is a
+candidate, not a call site (#47): a `CALL_CANDIDATE_SITE` Occurrence with
+an unresolved `MACRO_CALL_REQUIRES_SEMANTICS` gap. It becomes a `CALLS`
+edge only when `textDocument/definition` resolves it to a function or
+method *and* `textDocument/signatureHelp` just inside its parenthesis
+reports a callable argument list. `stringify!` and token-swallowing
+macros, bare references, tuple-struct and enum-variant constructors (also
+spelled as patterns), dependency items and modules all stay explicit gaps.
+Asserted by `macro_call_candidates_are_calls_only_when_the_server_proves_them`.
 
 ## Lifecycle
 
@@ -220,7 +228,7 @@ the fixture's tests bind their calls to locals.
 | `alias_resolution` | SUPPORTED | rust-analyzer | — |
 | `reexport_resolution` | SUPPORTED | rust-analyzer | — |
 | `references` | SUPPORTED | rust-analyzer | — |
-| `calls_intra_file` | SUPPORTED | rust-analyzer | a call inside a macro invocation anchors nothing |
+| `calls_intra_file` | SUPPORTED | rust-analyzer | a call inside a macro's arguments is a candidate, proved only by definition + signatureHelp (#47) |
 | `calls_cross_file` | SUPPORTED | rust-analyzer | same |
 | `external_symbol_resolution` | SUPPORTED | rust-analyzer | crate and version; never a path |
 | `type_resolution` | PARTIAL | I2/I3 | generic arguments and trait bounds are not anchored |

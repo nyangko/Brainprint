@@ -462,6 +462,50 @@ impl Slice {
             .collect()
     }
 
+    /// Every call candidate one Resource holds, with whether it is
+    /// bound to a relation and whether it is an open
+    /// `MACRO_CALL_REQUIRES_SEMANTICS` gap. Read straight from the
+    /// index: a candidate is neither a call site nor an answer.
+    fn candidates(&self, rel: &str) -> Vec<Candidate> {
+        let connection = Connection::open(&self.db_path).expect("index.db");
+        let mut statement = connection
+            .prepare(
+                "SELECT o.start_byte, o.end_byte, o.relation_id IS NOT NULL, \
+                        EXISTS (SELECT 1 FROM unresolved_reference u \
+                                WHERE u.occurrence_id = o.id \
+                                  AND u.reason = 'MACRO_CALL_REQUIRES_SEMANTICS' \
+                                  AND u.intended_relation_kind = 'CALLS') \
+                 FROM occurrence o JOIN resource r ON r.id = o.resource_id \
+                 WHERE r.uid = ?1 AND o.kind = 'CALL_CANDIDATE_SITE' \
+                 ORDER BY o.start_byte",
+            )
+            .expect("statement");
+        statement
+            .query_map(
+                rusqlite::params![self.resource(rel).id.to_bytes().to_vec()],
+                |row| {
+                    Ok(Candidate {
+                        start: usize::try_from(row.get::<_, i64>(0)?).expect("start"),
+                        end: usize::try_from(row.get::<_, i64>(1)?).expect("end"),
+                        bound: row.get(2)?,
+                        open_gap: row.get(3)?,
+                    })
+                },
+            )
+            .expect("query")
+            .map(|row| row.expect("row"))
+            .collect()
+    }
+
+    /// The candidate for `name` written right after `anchor`.
+    fn candidate(&self, rel: &str, anchor: &str, name: &str) -> Candidate {
+        let start = self.offset_of(rel, anchor, 0) + anchor.find(name).expect("inside");
+        self.candidates(rel)
+            .into_iter()
+            .find(|candidate| candidate.start == start)
+            .unwrap_or_else(|| panic!("{name} after {anchor:?} in {rel} is a candidate"))
+    }
+
     fn name_of(&self, endpoint: &GraphEndpoint) -> String {
         let connection = Connection::open(&self.db_path).expect("index.db");
         match endpoint {
@@ -497,6 +541,14 @@ impl Drop for Slice {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.base);
     }
+}
+
+/// One call-shaped token inside a macro's arguments, as stored.
+struct Candidate {
+    start: usize,
+    end: usize,
+    bound: bool,
+    open_gap: bool,
 }
 
 /// The install, or the reason the suite cannot run.
@@ -1130,13 +1182,13 @@ fn a_restarted_backend_reopens_rather_than_changes() {
 ///
 /// Two separate facts. A `macro_rules!` *invocation* resolves to the
 /// macro's own declaration, which is an ordinary editable span and is
-/// published. What the macro *expands to* is not: a call written inside
-/// `assert_eq!` anchors no occurrence at all, because a macro
-/// invocation is an opaque token tree to the structural tier.
+/// published. What the macro *expands to* is not: the invocation itself
+/// is an opaque token tree to the structural tier, so it anchors no
+/// edge of its own.
 ///
-/// The second is why the fixture's tests bind their calls to locals,
-/// and it is a structural limitation rather than a backend one — there
-/// is nothing for this tier to be asked about.
+/// A call written *inside* a macro's arguments is a separate, narrower
+/// matter, and it is a candidate rather than a call site (#47; see
+/// `macro_call_candidates_are_calls_only_when_the_server_proves_them`).
 #[test]
 #[ignore = "needs an installed rust-analyzer"]
 fn a_declarative_macro_resolves_and_its_expansion_does_not() {
@@ -1147,8 +1199,8 @@ fn a_declarative_macro_resolves_and_its_expansion_does_not() {
     slice.with_host(|queries| {
         slice.refresh_all(queries);
 
-        // A call written inside a macro invocation anchors nothing, so
-        // the graph has no edge for it and no span to hand an Agent.
+        // The invocation itself anchors nothing, so the graph has no
+        // edge for it and no span to hand an Agent.
         let inside_macro =
             slice.offset_of("crates/core/tests/integration.rs", "assert_eq!(seed, 5)", 0);
         assert_eq!(
@@ -1375,4 +1427,290 @@ fn no_dependency_is_fetched_to_answer_a_question() {
             "nothing was written back into the Workspace"
         );
     });
+}
+
+// ---------------------------------------------------------------------
+// Call candidates inside a macro's arguments (#47)
+// ---------------------------------------------------------------------
+
+/// The fixture file that holds the macro shapes.
+const PROBE: &str = "crates/core/src/target_probe.rs";
+
+/// A call-shaped token inside a macro is a candidate, and only the
+/// server's own answers -- a definition that is a callable declaration,
+/// and SignatureHelp at its argument list -- make one a `CALLS` edge.
+/// Everything the syntax cannot settle stays an explicit, owner-local
+/// gap.
+#[test]
+#[ignore = "needs an installed rust-analyzer"]
+fn macro_call_candidates_are_calls_only_when_the_server_proves_them() {
+    let Some(install) = install_or_skip() else {
+        return;
+    };
+    let slice = Slice::open(
+        "macro-candidates",
+        71,
+        &install,
+        ProjectExecutionTrust::Trusted,
+    );
+    let target = slice.only(PROBE, "target_probe");
+
+    // What the syntax alone says: candidates, all unresolved, none bound
+    // to anything, none a call site.
+    let structural = slice.candidates(PROBE);
+    assert!(
+        structural.len() >= 6,
+        "the fixture's macro shapes are candidates: {}",
+        structural.len()
+    );
+    assert!(
+        structural
+            .iter()
+            .all(|candidate| candidate.open_gap && !candidate.bound),
+        "every candidate starts as an unresolved CALLS gap"
+    );
+
+    slice.with_host(|queries| {
+        // ---- The owner, and only the owner ---------------------------
+        slice.refresh(queries, PROBE);
+        assert!(
+            slice
+                .candidate(
+                    RUNNER,
+                    "assert_eq!(aliased_probe(), value)",
+                    "aliased_probe"
+                )
+                .open_gap,
+            "refreshing one Resource proves nothing in another"
+        );
+
+        // ---- Positives ------------------------------------------------
+        let proven = |rel: &str, anchor: &str, name: &str| {
+            let candidate = slice.candidate(rel, anchor, name);
+            assert!(
+                candidate.bound && !candidate.open_gap,
+                "{anchor:?}: proven, no longer a gap"
+            );
+            slice.target_at(rel, candidate.start, candidate.end)
+        };
+        for anchor in [
+            "assert_eq!(target_probe(), 7)",
+            "assert!(matches!(target_probe(), 7))",
+            "matches!(Some(target_probe()), Some(_))",
+        ] {
+            assert_eq!(
+                proven(PROBE, anchor, "target_probe"),
+                Some(GraphEndpoint::Symbol(target.id)),
+                "{anchor:?} calls the target: macro-nested, two macros deep, and as an argument"
+            );
+        }
+
+        // The edge is sourced from the function or test it sits in.
+        let callers =
+            slice.names(&slice.incoming(&GraphEndpoint::Symbol(target.id), &[RelationKind::Calls]));
+        for name in [
+            "macro_nested_call_matches_the_target",
+            "nested_macro_call_matches_the_target",
+            "a_constructor_and_a_pattern_in_a_macro",
+        ] {
+            assert!(
+                callers.iter().any(|caller| caller.contains(name)),
+                "{name} calls the target: {callers:?}"
+            );
+        }
+
+        // A nearby unrelated call binds to its own target and lends
+        // nothing to the bare reference beside it.
+        let same_file = slice.only(PROBE, "same_file_caller");
+        assert_eq!(
+            proven(
+                PROBE,
+                "assert_eq!(same_file_caller(), 7)",
+                "same_file_caller"
+            ),
+            Some(GraphEndpoint::Symbol(same_file.id))
+        );
+        let beside = slice.only(
+            PROBE,
+            "a_bare_reference_beside_an_unrelated_call_in_a_macro",
+        );
+        assert!(
+            !slice
+                .outgoing(&GraphEndpoint::Symbol(beside.id), &[RelationKind::Calls])
+                .contains(&GraphEndpoint::Symbol(target.id)),
+            "a bare reference inside a macro is not a call"
+        );
+        let invocation = "matches!(target_probe as fn() -> u32, _)";
+        let bare_from = slice.offset_of(PROBE, invocation, 0);
+        let bare_to = bare_from + invocation.len();
+        assert!(
+            slice
+                .candidates(PROBE)
+                .iter()
+                .all(|candidate| candidate.end <= bare_from || candidate.start >= bare_to),
+            "and it is not even a candidate: nothing is written in front of an argument list"
+        );
+
+        // The alias, once its owner is refreshed.
+        slice.refresh(queries, RUNNER);
+        assert_eq!(
+            proven(
+                RUNNER,
+                "assert_eq!(aliased_probe(), value)",
+                "aliased_probe"
+            ),
+            Some(GraphEndpoint::Symbol(target.id)),
+            "a call through a renamed import inside a macro resolves by identity"
+        );
+
+        // ---- Negatives ------------------------------------------------
+        for (anchor, why) in [
+            (
+                "stringify!(target_probe())",
+                "stringify! never executes its tokens",
+            ),
+            (
+                "swallow_tokens!(target_probe())",
+                "a macro_rules! arm that discards its input executes nothing",
+            ),
+        ] {
+            let candidate = slice.candidate(PROBE, anchor, "target_probe");
+            assert!(candidate.open_gap && !candidate.bound, "{why}");
+            assert_eq!(
+                slice.target_at(PROBE, candidate.start, candidate.end),
+                None,
+                "{why}"
+            );
+        }
+        // A constructor and a pattern share a spelling; neither is a
+        // function, so neither is bound from a candidate.
+        for candidate in slice
+            .candidates(PROBE)
+            .iter()
+            .filter(|candidate| slice.text(PROBE)[candidate.start..candidate.end] == *"Some")
+        {
+            assert!(
+                candidate.open_gap && !candidate.bound,
+                "`Some(..)` stays an explicit gap"
+            );
+        }
+
+        // Nothing ever came from anywhere but the owner's own Resource.
+        for rel in [PROBE, RUNNER] {
+            for candidate in slice.candidates(rel) {
+                assert_eq!(
+                    candidate.bound, !candidate.open_gap,
+                    "a candidate is exactly one of proven or an open gap"
+                );
+            }
+        }
+        slice.assert_nothing_executed();
+    });
+}
+
+/// An edit replaces the candidates with the Resource's structure, and
+/// the next proof follows the source: proven becomes unproven and
+/// unproven becomes proven.
+#[test]
+#[ignore = "needs an installed rust-analyzer"]
+fn an_edit_moves_a_candidate_between_proven_and_unproven() {
+    let Some(install) = install_or_skip() else {
+        return;
+    };
+    let slice = Slice::open("macro-edit", 72, &install, ProjectExecutionTrust::Trusted);
+    let target = slice.only(PROBE, "target_probe");
+    slice.with_host(|queries| {
+        slice.refresh(queries, PROBE);
+        let was_proven = slice.candidate(PROBE, "assert_eq!(target_probe(), 7)", "target_probe");
+        let was_stringified = slice.candidate(PROBE, "stringify!(target_probe())", "target_probe");
+        assert!(was_proven.bound && !was_stringified.bound);
+
+        // positive -> negative, negative -> positive.
+        let edited = slice
+            .text(PROBE)
+            .replace(
+                "assert_eq!(target_probe(), 7);\n    }\n\n    #[test]\n    fn nested",
+                "let _ = stringify!(target_probe());\n    }\n\n    #[test]\n    fn nested",
+            )
+            .replace(
+                "    stringify!(target_probe())\n",
+                "    { assert_eq!(target_probe(), 7); \"x\" }\n",
+            );
+        assert_ne!(edited, slice.text(PROBE), "the edit applied");
+        slice.write(PROBE, &edited);
+        slice.withdraw_all();
+        slice.rescan("workspace-rev-2");
+
+        // Structure replaced: candidates are unresolved again, wherever
+        // they moved to.
+        assert!(
+            slice
+                .candidates(PROBE)
+                .iter()
+                .all(|candidate| candidate.open_gap && !candidate.bound),
+            "an edit replaces the candidates with fresh structural evidence"
+        );
+
+        let change = lifecycle::ResourceChange::new(
+            slice.resource(PROBE).id,
+            lifecycle::ChangeKind::Changed,
+            PROBE,
+        );
+        lifecycle::synchronize_documents(
+            queries,
+            queries,
+            &slice.workspace,
+            std::slice::from_ref(&change),
+        )
+        .expect("document sync");
+        slice.refresh(queries, PROBE);
+
+        let now_negative =
+            slice.candidate(PROBE, "let _ = stringify!(target_probe())", "target_probe");
+        assert!(
+            now_negative.open_gap && !now_negative.bound,
+            "proven -> unproven"
+        );
+        assert_eq!(
+            slice.target_at(PROBE, now_negative.start, now_negative.end),
+            None
+        );
+
+        let now_positive =
+            slice.candidate(PROBE, "{ assert_eq!(target_probe(), 7);", "target_probe");
+        assert!(
+            now_positive.bound && !now_positive.open_gap,
+            "unproven -> proven"
+        );
+        assert_eq!(
+            slice.target_at(PROBE, now_positive.start, now_positive.end),
+            Some(GraphEndpoint::Symbol(target.id))
+        );
+        slice.assert_nothing_executed();
+    });
+}
+
+/// Untrusted, or no backend at all: the candidates are still there,
+/// every one an explicit gap, and nothing is claimed or started.
+#[test]
+#[ignore = "needs an installed rust-analyzer"]
+fn an_untrusted_workspace_keeps_every_macro_candidate_as_a_gap() {
+    let Some(install) = install_or_skip() else {
+        return;
+    };
+    let slice = Slice::open(
+        "macro-untrusted",
+        73,
+        &install,
+        ProjectExecutionTrust::Untrusted,
+    );
+    let candidates = slice.candidates(PROBE);
+    assert!(candidates.len() >= 6);
+    assert!(
+        candidates
+            .iter()
+            .all(|candidate| candidate.open_gap && !candidate.bound),
+        "no backend, so no proof"
+    );
+    slice.assert_nothing_executed();
 }

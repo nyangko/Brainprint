@@ -150,6 +150,7 @@ pub mod method {
     pub const DEFINITION: &str = "textDocument/definition";
     pub const REFERENCES: &str = "textDocument/references";
     pub const IMPLEMENTATION: &str = "textDocument/implementation";
+    pub const SIGNATURE_HELP: &str = "textDocument/signatureHelp";
     pub const DOCUMENT_SYMBOL: &str = "textDocument/documentSymbol";
     pub const DID_OPEN: &str = "textDocument/didOpen";
     pub const DID_CHANGE: &str = "textDocument/didChange";
@@ -232,6 +233,13 @@ pub enum RustRequest {
         position: Position,
         include_declaration: bool,
     },
+    /// Whether the server reads `position` as inside a callable's
+    /// argument list. Asked only for a macro call candidate (#47), at a
+    /// position bounded by that candidate's own argument-list opener.
+    SignatureHelp {
+        uri: String,
+        position: Position,
+    },
     DocumentSymbol {
         uri: String,
     },
@@ -280,6 +288,10 @@ impl RustRequest {
                 params["context"] = json!({ "includeDeclaration": include_declaration });
                 (method::REFERENCES, Some(params))
             }
+            Self::SignatureHelp { uri, position } => (
+                method::SIGNATURE_HELP,
+                Some(document_position(uri, *position)),
+            ),
             Self::DocumentSymbol { uri } => (
                 method::DOCUMENT_SYMBOL,
                 Some(json!({ "textDocument": { "uri": uri } })),
@@ -348,6 +360,7 @@ impl RustRequest {
             Self::Definition { uri, .. }
             | Self::Implementation { uri, .. }
             | Self::References { uri, .. }
+            | Self::SignatureHelp { uri, .. }
             | Self::DocumentSymbol { uri }
             | Self::OpenDocument { uri, .. }
             | Self::ChangeDocument { uri, .. }
@@ -379,6 +392,12 @@ fn document_position(uri: &str, position: Position) -> Value {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RustResponse {
     Locations(Vec<Location>),
+    /// How many signatures the server offered at the position. Only the
+    /// count is read: a callable context is its existence, and the label
+    /// text is never kept as identity.
+    SignatureHelp {
+        signatures: usize,
+    },
     DocumentSymbols(Vec<DocumentSymbol>),
     /// The backend does not implement the method.
     Unsupported(String),
@@ -414,10 +433,28 @@ pub fn decode(request: &RustRequest, payload: &Value) -> Result<RustResponse, De
         RustRequest::Definition { .. }
         | RustRequest::Implementation { .. }
         | RustRequest::References { .. } => Ok(RustResponse::Locations(locations(name, payload)?)),
+        RustRequest::SignatureHelp { .. } => Ok(RustResponse::SignatureHelp {
+            signatures: signature_count(name, payload)?,
+        }),
         RustRequest::DocumentSymbol { .. } => Ok(RustResponse::DocumentSymbols(document_symbols(
             name, payload,
         )?)),
         _ => Ok(RustResponse::Delivered),
+    }
+}
+
+/// `SignatureHelp | null`: null and an empty list both mean the server
+/// sees no callable argument list here, which is an answer.
+fn signature_count(name: &'static str, payload: &Value) -> Result<usize, DecodeError> {
+    if payload.is_null() {
+        return Ok(0);
+    }
+    match payload.get("signatures") {
+        Some(Value::Array(signatures)) => Ok(signatures.len()),
+        _ => Err(DecodeError {
+            method: name,
+            detail: format!("expected signature help or null, got {payload}"),
+        }),
     }
 }
 
@@ -556,6 +593,7 @@ pub fn initialize_params(root_uri: &str, process_id: u32, workspace_name: &str) 
                 "definition": { "linkSupport": false },
                 "references": {},
                 "implementation": { "linkSupport": false },
+                "signatureHelp": {},
                 "documentSymbol": { "hierarchicalDocumentSymbolSupport": false },
             },
         },

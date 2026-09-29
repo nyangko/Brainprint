@@ -177,6 +177,14 @@ impl Fixture {
             .expect("position")
     }
 
+    /// The LSP position of byte `at` in `rel`.
+    #[must_use]
+    pub fn position_at(&self, rel: &str, at: usize) -> Position {
+        LineMap::with_encoding(&self.text(rel), POSITION_ENCODING)
+            .position(at)
+            .expect("position")
+    }
+
     /// A location naming bytes `start..end` of `rel`.
     #[must_use]
     pub fn location(&self, rel: &str, start: usize, end: usize) -> Location {
@@ -249,11 +257,13 @@ pub struct ScriptedBackend {
     state: Mutex<State>,
     definitions: BTreeMap<String, Vec<Location>>,
     implementations: BTreeMap<String, Vec<Location>>,
+    signatures: BTreeMap<String, usize>,
     failure: Option<RequestFailure>,
     unsupported: bool,
     trust: ProjectExecutionTrust,
     cancel_times: u32,
     cancels_remaining: AtomicI64,
+    signature_cancels: AtomicI64,
     version: AtomicI64,
     settlings: AtomicU64,
 }
@@ -265,11 +275,13 @@ impl ScriptedBackend {
             state: Mutex::new(State::default()),
             definitions: BTreeMap::new(),
             implementations: BTreeMap::new(),
+            signatures: BTreeMap::new(),
             failure: None,
             unsupported: false,
             trust: ProjectExecutionTrust::Trusted,
             cancel_times: 0,
             cancels_remaining: AtomicI64::new(0),
+            signature_cancels: AtomicI64::new(0),
             version: AtomicI64::new(0),
             // A freshly started server settles once, before anything is
             // asked of it.
@@ -312,6 +324,15 @@ impl ScriptedBackend {
         self
     }
 
+    /// The server offers `count` signatures at `at`. Anywhere not
+    /// scripted it offers none, which is what it answers outside a
+    /// callable argument list.
+    #[must_use]
+    pub fn with_signature_help(mut self, uri: &str, at: Position, count: usize) -> Self {
+        self.signatures.insert(position_key(uri, at), count);
+        self
+    }
+
     #[must_use]
     pub fn failing(mut self, failure: RequestFailure) -> Self {
         self.failure = Some(failure);
@@ -329,6 +350,13 @@ impl ScriptedBackend {
     pub fn cancelling(mut self, times: u32) -> Self {
         self.cancel_times = times;
         self.cancels_remaining = AtomicI64::new(i64::from(times));
+        self
+    }
+
+    /// Withdraw the next `times` SignatureHelp requests, and only those.
+    #[must_use]
+    pub fn withdrawing_signature_help(self, times: i64) -> Self {
+        self.signature_cancels.store(times, Ordering::Relaxed);
         self
     }
 
@@ -453,6 +481,12 @@ impl RustQueries for ScriptedBackend {
         let loaded = state.project_loaded;
         drop(state);
 
+        if matches!(request, RustRequest::SignatureHelp { .. })
+            && self.signature_cancels.fetch_sub(1, Ordering::Relaxed) > 0
+        {
+            return Ok(RustResponse::Cancelled(request.wire().0.to_owned()));
+        }
+
         // Measured: with no Cargo project read there is no crate graph,
         // and a crate graph is what every binding needs.
         if !loaded {
@@ -471,6 +505,13 @@ impl RustQueries for ScriptedBackend {
                     .cloned()
                     .unwrap_or_default(),
             ),
+            RustRequest::SignatureHelp { uri, position } => RustResponse::SignatureHelp {
+                signatures: self
+                    .signatures
+                    .get(&position_key(uri, *position))
+                    .copied()
+                    .unwrap_or_default(),
+            },
             _ => RustResponse::Locations(Vec::new()),
         })
     }

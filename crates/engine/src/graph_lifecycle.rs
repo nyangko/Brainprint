@@ -46,12 +46,12 @@ use rusqlite::{Connection, OptionalExtension, params};
 use crate::{
     calls::{
         BindingScope, extract_call_sites, extract_import_bindings, extract_local_names,
-        resolve_calls,
+        extract_macro_call_candidates, resolve_calls,
     },
     component::{self, ComponentRow, FreshnessState, ProcessingState},
     domain::{domain_relations, extract_key_accesses},
     evidence::{EvidenceError, OccurrenceRef, RelationEvidence, replace_resource_graph},
-    gaps::{UnresolvedEvidence, call_gaps, import_gaps, key_gaps, type_gaps},
+    gaps::{UnresolvedEvidence, call_gaps, import_gaps, key_gaps, macro_call_gaps, type_gaps},
     generation::PublicationGrant,
     graph, identity,
     imports::{WorkspaceModules, extract_imports, import_relations, resolve_imports},
@@ -444,6 +444,12 @@ fn analyze(
     // Without this the access disappears at publication and a later
     // `0 USES_ENV` looks complete (#17 task 14).
     gaps.extend(key_gaps(&keys));
+    // A call-shaped token inside a macro's arguments has an Occurrence
+    // and no relation: it is unresolved until a semantic backend proves
+    // it (#47).
+    gaps.extend(macro_call_gaps(&extract_macro_call_candidates(
+        &tree, &bytes,
+    )));
     // A gap must anchor to a real Occurrence too, and never to one a
     // resolved relation already claims (#17 task 7).
     let claimed: Vec<(usize, usize)> = evidence
@@ -1167,6 +1173,70 @@ export function lone(): number {
             .map(|row| row.basis_workspace_revision)
         }
 
+        /// The byte spans of one kind of Occurrence, in source order.
+        fn occurrence_spans(&self, rel: &str, kind: &str) -> Vec<(usize, usize)> {
+            let store = self.store();
+            let mut statement = store
+                .connection()
+                .prepare(
+                    "SELECT occurrence.start_byte, occurrence.end_byte FROM occurrence \
+                     JOIN resource ON resource.id = occurrence.resource_id \
+                     WHERE resource.uid = ?1 AND occurrence.kind = ?2 \
+                     ORDER BY occurrence.start_byte",
+                )
+                .expect("statement");
+            statement
+                .query_map(
+                    params![self.resource(rel).id.to_bytes().to_vec(), kind],
+                    |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+                )
+                .expect("query")
+                .map(|row| {
+                    let (start, end) = row.expect("row");
+                    (
+                        usize::try_from(start).expect("start"),
+                        usize::try_from(end).expect("end"),
+                    )
+                })
+                .collect()
+        }
+
+        /// How many Occurrences of one kind are bound to a relation.
+        fn bound_occurrences(&self, rel: &str, kind: &str) -> i64 {
+            self.store()
+                .connection()
+                .query_row(
+                    "SELECT COUNT(*) FROM occurrence \
+                     JOIN resource ON resource.id = occurrence.resource_id \
+                     WHERE resource.uid = ?1 AND occurrence.kind = ?2 \
+                       AND occurrence.relation_id IS NOT NULL",
+                    params![self.resource(rel).id.to_bytes().to_vec(), kind],
+                    |row| row.get(0),
+                )
+                .expect("count")
+        }
+
+        /// Each open gap of one Resource as `reason:lookup_name@start`.
+        fn gap_rows(&self, rel: &str) -> Vec<String> {
+            let store = self.store();
+            let mut rows: Vec<String> =
+                list_unresolved_for_resource(store.connection(), self.resource(rel).id)
+                    .expect("gaps")
+                    .into_iter()
+                    .map(|gap| {
+                        format!(
+                            "{}:{}:{}@{}",
+                            gap.occurrence.kind,
+                            gap.reason,
+                            gap.lookup_name,
+                            gap.occurrence.start_byte
+                        )
+                    })
+                    .collect();
+            rows.sort();
+            rows
+        }
+
         fn relation_count(&self) -> i64 {
             self.store()
                 .connection()
@@ -1739,5 +1809,139 @@ export function lone(): number {
             "the gap was replaced along with the evidence"
         );
         assert!(fixture.table_count("unresolved_reference") < with_gap);
+    }
+
+    // -----------------------------------------------------------------
+    // Call candidates inside Rust macro arguments (#47)
+    // -----------------------------------------------------------------
+
+    const MACROS_RS: &str = "\
+pub fn run() -> u32 {
+    assert_eq!(target(), 7);
+    let _ = stringify!(target());
+    real()
+}
+
+pub fn target() -> u32 {
+    7
+}
+
+pub fn real() -> u32 {
+    1
+}
+";
+
+    #[test]
+    fn a_call_in_a_rust_macro_is_a_candidate_gap_and_never_an_edge() {
+        let fixture = Fixture::create("macro-candidate");
+        fixture.write("src/macros.rs", MACROS_RS);
+        fixture.baseline();
+
+        // Two call-shaped tokens, published as candidates -- not call
+        // sites: the parser sees a token tree, not a call expression.
+        let candidates = fixture.occurrence_spans("src/macros.rs", "CALL_CANDIDATE_SITE");
+        assert_eq!(candidates.len(), 2, "{candidates:?}");
+        for (start, end) in &candidates {
+            assert_eq!(&MACROS_RS[*start..*end], "target");
+        }
+        let call_sites = fixture.occurrence_spans("src/macros.rs", "CALL_SITE");
+        assert_eq!(
+            call_sites
+                .iter()
+                .map(|(start, end)| &MACROS_RS[*start..*end])
+                .collect::<Vec<_>>(),
+            ["real"],
+            "the one ordinary call is the only call site"
+        );
+        assert!(
+            call_sites.iter().all(|span| !candidates.contains(span)),
+            "a candidate never shares a span with a call site"
+        );
+
+        // Each starts unresolved, against its own Occurrence.
+        let gaps = fixture.gap_rows("src/macros.rs");
+        let expected: Vec<String> = candidates
+            .iter()
+            .map(|(start, _)| {
+                format!("CALL_CANDIDATE_SITE:MACRO_CALL_REQUIRES_SEMANTICS:target@{start}")
+            })
+            .collect();
+        assert!(
+            expected.iter().all(|row| gaps.contains(row)),
+            "{gaps:?} should hold {expected:?}"
+        );
+
+        // No structural edge, and no candidate is bound to one.
+        assert_eq!(
+            fixture.bound_occurrences("src/macros.rs", "CALL_CANDIDATE_SITE"),
+            0
+        );
+        let run = fixture.declaration("src/macros.rs", "run");
+        assert_eq!(
+            fixture.outgoing(&run, RelationKind::Calls),
+            vec![fixture.declaration("src/macros.rs", "real")],
+            "only the ordinary call is an edge; the macro's arguments are not"
+        );
+        let target = fixture.declaration("src/macros.rs", "target");
+        assert!(
+            fixture
+                .index()
+                .incoming(&target, &[RelationKind::Calls])
+                .expect("incoming")
+                .confirmed
+                .is_empty(),
+            "nothing calls `target` until a semantic backend proves it"
+        );
+    }
+
+    #[test]
+    fn an_edit_replaces_the_candidate_occurrence_and_its_gap() {
+        let fixture = Fixture::create("macro-candidate-edit");
+        fixture.write("src/macros.rs", MACROS_RS);
+        fixture.baseline();
+        assert_eq!(
+            fixture
+                .occurrence_spans("src/macros.rs", "CALL_CANDIDATE_SITE")
+                .len(),
+            2
+        );
+
+        // The macro call goes: its candidate and its gap go with it.
+        fixture.save(
+            "src/macros.rs",
+            "pub fn run() -> u32 {\n    real()\n}\n\npub fn target() -> u32 {\n    7\n}\n\npub fn real() -> u32 {\n    1\n}\n",
+        );
+        assert!(
+            fixture
+                .occurrence_spans("src/macros.rs", "CALL_CANDIDATE_SITE")
+                .is_empty()
+        );
+        assert!(
+            fixture
+                .gap_rows("src/macros.rs")
+                .iter()
+                .all(|row| !row.contains("MACRO_CALL_REQUIRES_SEMANTICS")),
+            "{:?}",
+            fixture.gap_rows("src/macros.rs")
+        );
+
+        // One appears, moved down a line: a new Occurrence and gap at
+        // the new span, still owned by the same Resource.
+        let moved = "// moved\npub fn run() -> u32 {\n    debug_assert!(target() > 0);\n    real()\n}\n\npub fn target() -> u32 {\n    7\n}\n\npub fn real() -> u32 {\n    1\n}\n";
+        fixture.save("src/macros.rs", moved);
+        let candidates = fixture.occurrence_spans("src/macros.rs", "CALL_CANDIDATE_SITE");
+        assert_eq!(candidates.len(), 1, "{candidates:?}");
+        let (start, end) = candidates[0];
+        assert_eq!(&moved[start..end], "target");
+        assert_eq!(
+            fixture
+                .gap_rows("src/macros.rs")
+                .into_iter()
+                .filter(|row| row.contains("MACRO_CALL_REQUIRES_SEMANTICS"))
+                .collect::<Vec<_>>(),
+            vec![format!(
+                "CALL_CANDIDATE_SITE:MACRO_CALL_REQUIRES_SEMANTICS:target@{start}"
+            )]
+        );
     }
 }

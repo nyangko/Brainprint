@@ -293,6 +293,17 @@ pub enum OccurrenceKind {
     /// establishes that the literal *is* the key -- a string that looks
     /// like one is not evidence.
     KeySite,
+    /// A callable token or path inside a Rust macro's argument token
+    /// tree that is directly followed by its own argument list: the
+    /// `target` in `assert!(matches!(target(..), ..))`.
+    ///
+    /// Not a [`Self::CallSite`]. The syntax tree has no call expression
+    /// there -- a macro's arguments are tokens, and whether expansion
+    /// executes them is a compiler question -- so this records only that
+    /// a bounded, call-shaped candidate is written at this span. It is
+    /// always unresolved until a semantic backend proves it, and the
+    /// structural tier never binds a relation to it.
+    CallCandidateSite,
 }
 
 impl OccurrenceKind {
@@ -305,6 +316,7 @@ impl OccurrenceKind {
             Self::ReferenceSite => "REFERENCE_SITE",
             Self::TypeSite => "TYPE_SITE",
             Self::KeySite => "KEY_SITE",
+            Self::CallCandidateSite => "CALL_CANDIDATE_SITE",
         }
     }
 
@@ -323,6 +335,7 @@ impl OccurrenceKind {
             "REFERENCE_SITE" => Ok(Self::ReferenceSite),
             "TYPE_SITE" => Ok(Self::TypeSite),
             "KEY_SITE" => Ok(Self::KeySite),
+            "CALL_CANDIDATE_SITE" => Ok(Self::CallCandidateSite),
             other => Err(SymbolError::UnknownOccurrenceKind {
                 raw: other.to_owned(),
             }),

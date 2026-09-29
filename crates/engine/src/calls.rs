@@ -43,6 +43,17 @@
 //! `save`: two spans, two edges, and no generic REFERENCES duplicating
 //! the call. Nothing infers that `register` calls `save`.
 //!
+//! ## Call candidates inside Rust macro arguments (#47)
+//!
+//! A macro's arguments are a token tree: the syntax tree has no call
+//! expression in `assert_eq!(target(), 7)`, and whether expansion
+//! executes `target()` is a compiler question. [`MacroCallCandidate`] is
+//! therefore *not* a [`CallSite`]. It records only that a callable token
+//! or path is written directly in front of its own argument list, so the
+//! Resource can say "a call may be written here" instead of silently
+//! missing it. It resolves to nothing at this tier and never becomes an
+//! edge without a semantic backend's proof.
+//!
 //! ## What this tier does not do
 //!
 //! Inheritance and type relations (#17 task 6), persisting unresolved
@@ -219,6 +230,146 @@ pub fn extract_call_sites(tree: &ParseTree, source: &[u8]) -> Vec<CallSite> {
     });
     sites.sort_by_key(|site| site.span.start_byte);
     sites
+}
+
+/// A call-shaped token sequence inside a Rust macro's argument token
+/// tree (#47).
+///
+/// The syntax says only that a callable token or path is written
+/// directly in front of an argument list. It does not say the macro
+/// executes it: `stringify!(target())` and a `macro_rules!` arm that
+/// discards its input look identical here. That is why this is a
+/// candidate, published as `CALL_CANDIDATE_SITE` with an unresolved
+/// `CALLS` gap, and never as a `CALL_SITE`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MacroCallCandidate {
+    /// The callable token or path only -- never the argument list.
+    pub span: SourceSpan,
+    /// The token or path exactly as written (`load` or `config::load`).
+    pub written: String,
+}
+
+/// Every call candidate written in the argument token trees of the
+/// macro invocations in `tree`, in source order.
+///
+/// Rust only, and only where the source is a macro invocation: a
+/// `macro_rules!` body and an attribute's arguments are token trees too,
+/// but neither is a use site. The set and the spans are this module's --
+/// the Occurrence publication and the gaps both read them from here, so
+/// neither can disagree about what counts as a candidate or where it is.
+#[must_use]
+pub fn extract_macro_call_candidates(tree: &ParseTree, source: &[u8]) -> Vec<MacroCallCandidate> {
+    if !tree.descriptor().capability.covers_whole_file() {
+        return Vec::new();
+    }
+    let dialect = tree.descriptor().dialect;
+    let mut found = Vec::new();
+    walk(tree.syntax_tree().root_node(), &mut |node| {
+        found.extend(macro_call_candidates_at(node, dialect, source));
+    });
+    found.sort_by_key(|candidate| candidate.span.start_byte);
+    found
+}
+
+/// The candidates one node contributes: everything inside a
+/// `macro_invocation`, and nothing for any other node.
+pub(crate) fn macro_call_candidates_at(
+    node: Node<'_>,
+    dialect: ParserDialect,
+    source: &[u8],
+) -> Vec<MacroCallCandidate> {
+    if dialect != ParserDialect::Rust || node.kind() != "macro_invocation" {
+        return Vec::new();
+    }
+    let mut found = Vec::new();
+    let mut cursor = node.walk();
+    for arguments in node
+        .named_children(&mut cursor)
+        .filter(|child| child.kind() == "token_tree")
+    {
+        collect_macro_call_candidates(arguments, source, &mut found);
+    }
+    found
+}
+
+/// Token kinds that, directly in front of a name and its parentheses,
+/// make it a declaration (`fn f(x)`, `struct S(u32)`) rather than a call.
+const DECLARING_TOKENS: [&str; 7] = ["fn", "struct", "enum", "union", "trait", "type", "mod"];
+
+fn collect_macro_call_candidates(
+    tree: Node<'_>,
+    source: &[u8],
+    found: &mut Vec<MacroCallCandidate>,
+) {
+    let mut cursor = tree.walk();
+    let tokens: Vec<Node<'_>> = tree.children(&mut cursor).collect();
+    for (index, token) in tokens.iter().enumerate() {
+        if token.kind() != "token_tree" {
+            continue;
+        }
+        // A nested group can hold candidates of its own, whatever its
+        // delimiter is.
+        collect_macro_call_candidates(*token, source, found);
+        if let Some(candidate) = macro_call_candidate_before(&tokens, index, source) {
+            found.push(candidate);
+        }
+    }
+}
+
+/// The candidate whose argument list is `tokens[arguments]`, if the
+/// tokens directly in front of it are exactly one supported callee
+/// shape: a bare identifier, or `receiver::member` with two plain
+/// segments.
+///
+/// Everything else is left alone rather than reinterpreted -- a method
+/// call (`.name(`), a turbofish, a longer path, a name that is itself
+/// being declared, a callee that is not adjacent to its parentheses.
+/// Missing one is an explicit gap; guessing one is a wrong claim.
+fn macro_call_candidate_before(
+    tokens: &[Node<'_>],
+    arguments: usize,
+    source: &[u8],
+) -> Option<MacroCallCandidate> {
+    let opens_arguments = tokens[arguments]
+        .child(0)
+        .is_some_and(|open| open.kind() == "(");
+    if !opens_arguments {
+        return None;
+    }
+    let kind_at = |back: usize| {
+        arguments
+            .checked_sub(back)
+            .map(|position| tokens[position].kind())
+    };
+    let callee = arguments.checked_sub(1).map(|position| tokens[position])?;
+    if callee.kind() != "identifier" {
+        return None;
+    }
+    let first = match kind_at(2) {
+        Some(".") => return None,
+        Some("::") => {
+            let receiver = arguments
+                .checked_sub(3)
+                .map(|position| tokens[position])
+                .filter(|receiver| receiver.kind() == "identifier")?;
+            if matches!(kind_at(4), Some("::" | ".")) {
+                return None;
+            }
+            receiver
+        }
+        Some(declaring) if DECLARING_TOKENS.contains(&declaring) => return None,
+        _ => callee,
+    };
+    let span = SourceSpan {
+        start_byte: first.start_byte(),
+        end_byte: callee.end_byte(),
+        start: span_of(first).start,
+        end: span_of(callee).end,
+    };
+    Some(MacroCallCandidate {
+        written: String::from_utf8_lossy(&source[span.start_byte..span.end_byte]).into_owned(),
+        span,
+    })
 }
 
 /// Every local name an `import` introduces, with what it names.
@@ -1472,5 +1623,145 @@ export function other(): number {
                 "index.db must not mirror source text ({body:?})"
             );
         }
+    }
+
+    // -----------------------------------------------------------------
+    // Call candidates inside Rust macro arguments (#47)
+    // -----------------------------------------------------------------
+
+    fn macro_candidates(source: &str) -> Vec<String> {
+        let tree = ParserRegistry::new()
+            .parse(
+                ParserDialect::Rust,
+                source.as_bytes(),
+                SourceBasis::default(),
+            )
+            .expect("parse");
+        extract_macro_call_candidates(&tree, source.as_bytes())
+            .into_iter()
+            .map(|candidate| candidate.written)
+            .collect()
+    }
+
+    #[test]
+    fn a_call_written_in_a_macros_arguments_is_a_candidate() {
+        assert_eq!(
+            macro_candidates("fn t() { assert_eq!(target(), 7); }"),
+            ["target"]
+        );
+        // Two macros deep, and the second argument group is walked too.
+        assert_eq!(
+            macro_candidates("fn t() { assert!(matches!(load(a, b), Ok(_))); }"),
+            ["load", "Ok"]
+        );
+        // A brace group nested in the arguments holds candidates of its
+        // own.
+        assert_eq!(
+            macro_candidates("fn t() { m!(if x { y(1) } else { z(2) }); }"),
+            ["y", "z"]
+        );
+        // A macro invocation outside any function is a use site too.
+        assert_eq!(macro_candidates("m! { f(1) }"), ["f"]);
+    }
+
+    #[test]
+    fn a_candidate_is_the_callable_and_never_its_argument_list() {
+        let source = "fn t() { m!(config::load (1), plain(2)); }";
+        let tree = ParserRegistry::new()
+            .parse(
+                ParserDialect::Rust,
+                source.as_bytes(),
+                SourceBasis::default(),
+            )
+            .expect("parse");
+        let found = extract_macro_call_candidates(&tree, source.as_bytes());
+        let spans: Vec<&str> = found
+            .iter()
+            .map(|candidate| &source[candidate.span.start_byte..candidate.span.end_byte])
+            .collect();
+        assert_eq!(spans, ["config::load", "plain"]);
+        assert_eq!(found[0].written, "config::load");
+        assert_eq!(found[1].span.start.column, source.find("plain").unwrap());
+    }
+
+    #[test]
+    fn only_a_bare_name_or_a_two_segment_path_is_a_candidate() {
+        for (label, source) in [
+            ("a method call", "fn t() { m!(x.f(1)); }"),
+            ("a chained method call", "fn t() { m!(a.b().c(1)); }"),
+            ("a turbofish", "fn t() { m!(Foo::<T>::new(3)); }"),
+            ("a turbofish call", "fn t() { m!(f::<T>(1)); }"),
+            ("a three-segment path", "fn t() { m!(a::b::c(1)); }"),
+            ("a crate-relative path", "fn t() { m!(crate::f(1)); }"),
+            ("a self-relative path", "fn t() { m!(self::f(1)); }"),
+            ("a call on a parenthesized callee", "fn t() { m!((f)(2)); }"),
+            (
+                "a comment between name and list",
+                "fn t() { m!(f /* c */ (1)); }",
+            ),
+        ] {
+            assert!(
+                macro_candidates(source).is_empty(),
+                "{label} is not a supported candidate shape"
+            );
+        }
+        assert_eq!(macro_candidates("fn t() { m!(a::b(1)); }"), ["a::b"]);
+    }
+
+    #[test]
+    fn syntax_that_is_not_a_use_site_is_never_a_candidate() {
+        for (label, source) in [
+            ("the macro's own name", "fn t() { m!(x); }"),
+            ("a nested macro's name", "fn t() { m!(matches!(x, _)); }"),
+            ("a bare reference", "fn t() { m!(target, other); }"),
+            ("a keyword group", "fn t() { m!(if (x) {} while (y) {}); }"),
+            ("a function declaration", "m! { fn f(x: u32) {} }"),
+            ("a struct declaration", "m! { struct S(u32); }"),
+            ("a call outside any macro", "fn t() { target(); }"),
+            (
+                "a macro_rules! body",
+                "macro_rules! m { ($x:expr) => { foo($x) }; }",
+            ),
+            (
+                "an attribute's arguments",
+                "#[cfg(all(unix, test))] fn t() {}",
+            ),
+        ] {
+            assert!(
+                macro_candidates(source).is_empty(),
+                "{label} states no call candidate"
+            );
+        }
+    }
+
+    #[test]
+    fn a_call_candidate_is_not_a_call_site() {
+        let source = "fn t() { assert_eq!(target(), 7); real(); }";
+        let tree = ParserRegistry::new()
+            .parse(
+                ParserDialect::Rust,
+                source.as_bytes(),
+                SourceBasis::default(),
+            )
+            .expect("parse");
+        let sites = extract_call_sites(&tree, source.as_bytes());
+        let names: Vec<&str> = sites
+            .iter()
+            .map(|site| &source[site.span.start_byte..site.span.end_byte])
+            .collect();
+        assert_eq!(names, ["real"], "the structural resolver never sees it");
+    }
+
+    #[test]
+    fn other_languages_have_no_macro_candidates() {
+        let source = "print(foo(1))\n";
+        let tree = ParserRegistry::new()
+            .parse(
+                ParserDialect::Python,
+                source.as_bytes(),
+                SourceBasis::default(),
+            )
+            .expect("parse");
+        assert!(extract_macro_call_candidates(&tree, source.as_bytes()).is_empty());
     }
 }
