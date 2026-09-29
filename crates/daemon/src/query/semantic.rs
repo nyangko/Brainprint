@@ -18,7 +18,7 @@
 //! surface, and reports whatever gaps remain.
 
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, btree_map::Entry},
     path::{Path, PathBuf},
     sync::{Arc, Mutex, PoisonError, Weak},
     time::{Duration, Instant},
@@ -593,10 +593,11 @@ impl WorkspaceSemantic {
             else {
                 continue;
             };
-            if !contexts.contains_key(&family) {
-                contexts.insert(family, self.context(family, &index)?);
-            }
-            let owner = SemanticOwner::new(contexts[&family].context_key(), resource);
+            let context = match contexts.entry(family) {
+                Entry::Occupied(entry) => entry.into_mut(),
+                Entry::Vacant(entry) => entry.insert(self.context(family, &index)?),
+            };
+            let owner = SemanticOwner::new(context.context_key(), resource);
             if index
                 .status(&owner)
                 .map_err(|error| error.to_string())?
