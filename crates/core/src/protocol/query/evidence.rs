@@ -88,6 +88,7 @@ pub enum CoverageLimitWire {
     IndexNotCurrent,
     SemanticConflict,
     SemanticNotCurrent,
+    UnconfirmedCallerOwners,
 }
 
 /// Mirrors `brainprint_engine::coverage::CoverageReport`.
@@ -165,6 +166,7 @@ pub enum RangeRoleWire {
     EvidenceSpan,
     ContainingDeclaration,
     AnchorDeclaration,
+    CandidateDeclaration,
 }
 
 /// Mirrors `brainprint_engine::inspect::SourceVerification`.
@@ -201,6 +203,9 @@ pub enum ProjectionGapWire {
     BlueprintApplicationNotApplied(crate::BlueprintApplicationId),
     RequiresSemantics,
     NotCurrent,
+    /// Resources still hold an unresolved use site with the target's
+    /// name that no semantic refresh confirmed (a count, never a claim).
+    UnconfirmedCallerOwners(usize),
 }
 
 /// Mirrors `brainprint_engine::projection::EvidenceItem`, variant-for-

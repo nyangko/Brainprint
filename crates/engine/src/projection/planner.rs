@@ -55,14 +55,14 @@ use crate::{
     logical_symbol::{self, LogicalSymbolError},
     parser::SourceSpan,
     paths::WorkspacePaths,
-    prepare::{PrepareError, PreparedRange, RangeRole, unavailable_from},
+    prepare::{PrepareError, PreparedRange, RangeRole, SourceUnavailable, unavailable_from},
     query::{
         Located, QueryError, QueryIndex, ResourceLocator, StructuralCoverage, SymbolCandidate,
         SymbolQuery, SymbolSelector,
     },
     registry::{GlobalRegistry, RegistryError},
     related_tests::{RelatedTestError, RelatedTests},
-    relations::{Direction, RelationError},
+    relations::{Direction, RelationError, caller_owner_candidates},
 };
 
 // ---------------------------------------------------------------- output
@@ -92,6 +92,10 @@ pub enum ProjectionGap {
     RequiresSemantics,
     /// The structural index is not current.
     NotCurrent,
+    /// Resources still hold an unresolved use site with the target's
+    /// name that no semantic refresh confirmed, so the callers shown may
+    /// be incomplete. A count of candidates, never a claim.
+    UnconfirmedCallerOwners(usize),
 }
 
 /// Whether a planned range must be read now or is a candidate for later.
@@ -368,6 +372,29 @@ impl ProjectionPlanner {
             Some(target) => self.select(target, &mut plan)?,
             None => None,
         };
+        if !matches!(
+            request.intent,
+            ProjectionIntent::Understand | ProjectionIntent::Change(_)
+        ) {
+            plan.candidates.clear();
+        }
+        // Every intent that carries the target's direct callers says how
+        // many owners still hold a same-named use site nobody confirmed.
+        if matches!(
+            request.intent,
+            ProjectionIntent::Understand
+                | ProjectionIntent::Change(_)
+                | ProjectionIntent::Impact(_)
+        ) && let Some(Selected {
+            endpoint: GraphEndpoint::Symbol(symbol),
+            ..
+        }) = &selected
+        {
+            let owners = caller_owner_candidates(self.index().connection(), *symbol)?.len();
+            if owners > 0 {
+                plan.gap(ProjectionGap::UnconfirmedCallerOwners(owners));
+            }
+        }
 
         match request.intent {
             ProjectionIntent::Locate => {}
@@ -515,6 +542,12 @@ impl ProjectionPlanner {
             endpoint,
             exact.is_some(),
         );
+        if exact.is_none()
+            && !endpoint
+            && (2..=CANDIDATE_SOURCE_MAX_CANDIDATES).contains(&located.candidates.len())
+        {
+            plan.candidates.clone_from(&located.candidates);
+        }
         Ok(exact.map(|candidate| {
             plan.items.push(EvidenceItem::Symbol(candidate.clone()));
             Selected {
@@ -934,8 +967,18 @@ struct Selected {
 
 // ------------------------------------------------------------------ plan
 
+/// How many same-named declarations an ambiguous symbol selector may
+/// bring the current source of, and how large one such declaration may
+/// be. Both are bounds on the default packet, not contracts: a larger
+/// declaration is reported unavailable, never cut.
+const CANDIDATE_SOURCE_MAX_CANDIDATES: usize = 3;
+const CANDIDATE_SOURCE_MAX_BYTES: usize = 4096;
+
 #[derive(Default)]
 struct Plan {
+    /// The ambiguous symbol candidates whose declaration source is
+    /// offered (Understand/Change only).
+    candidates: Vec<SymbolCandidate>,
     items: Vec<EvidenceItem>,
     gaps: Vec<ProjectionGap>,
     required: Vec<PlannedSourceRange>,
@@ -1105,6 +1148,33 @@ impl Plan {
                 }
             }
         }
+        // Ambiguous selector: each candidate's own declaration, so the
+        // choice needs no file read. An oversized one is reported, not cut.
+        for candidate in &self.candidates {
+            let symbol = &candidate.symbol;
+            let bytes = symbol.span.end_byte.saturating_sub(symbol.span.start_byte);
+            if bytes <= CANDIDATE_SOURCE_MAX_BYTES {
+                optional.push(PlannedSourceRange {
+                    resource: symbol.resource_id,
+                    resource_revision: symbol.resource_revision.clone(),
+                    span: symbol.span,
+                    role: RangeRole::CandidateDeclaration,
+                    requirement: SourceRequirement::Optional,
+                });
+            } else {
+                self.items.push(EvidenceItem::SourceUnavailable {
+                    resource: symbol.resource_id,
+                    span: symbol.span,
+                    reason: SourceUnavailable::NoCurrentSource {
+                        detail: format!(
+                            "declaration is {bytes} bytes, above the \
+                             {CANDIDATE_SOURCE_MAX_BYTES}-byte candidate limit; \
+                             select it exactly or read the file"
+                        ),
+                    },
+                });
+            }
+        }
         self.raw.unread(optional.len());
         optional.sort_by_key(range_key);
         let required_keys: BTreeSet<_> = self.required.iter().map(range_key).collect();
@@ -1148,7 +1218,7 @@ fn range_key(range: &PlannedSourceRange) -> RangeKey {
 const fn role_rank(role: RangeRole) -> u8 {
     match role {
         RangeRole::AnchorDeclaration => 0,
-        RangeRole::ContainingDeclaration => 1,
+        RangeRole::ContainingDeclaration | RangeRole::CandidateDeclaration => 1,
         RangeRole::EvidenceSpan => 2,
     }
 }

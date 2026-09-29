@@ -113,6 +113,10 @@ pub enum CoverageLimit {
     /// which is the whole index: structural truth can be perfectly
     /// current while this holds.
     SemanticNotCurrent,
+    /// Callers may be missing: Resources still hold an unresolved use
+    /// site with this target's name that no semantic refresh confirmed.
+    /// A candidate list, never a claim that any of them is a caller.
+    UnconfirmedCallerOwners,
 }
 
 impl CoverageLimit {
@@ -125,6 +129,7 @@ impl CoverageLimit {
             Self::UnsupportedConstruct => "UNSUPPORTED_CONSTRUCT",
             Self::CandidateTruncated => "CANDIDATE_TRUNCATED",
             Self::UnattributedGaps => "UNATTRIBUTED_GAPS",
+            Self::UnconfirmedCallerOwners => "UNCONFIRMED_CALLER_OWNERS",
             Self::ReverseScopeNotEnumerable => "REVERSE_SCOPE_NOT_ENUMERABLE",
             Self::PartialSupport => "PARTIAL_SUPPORT",
             Self::UnsupportedScope => "UNSUPPORTED_SCOPE",

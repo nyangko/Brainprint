@@ -194,6 +194,12 @@ pub struct Coverage {
     /// cannot be attributed to this target. Always zero for a forward
     /// query.
     pub unattributed: usize,
+    /// Resources that still hold an unresolved use site whose looked-up
+    /// name is this target's name: the callers this answer could not
+    /// confirm. Filled only by a top-level reverse query for one Symbol
+    /// ([`caller_owner_candidates`]); zero everywhere else, including
+    /// inside an impact traversal, which never asks.
+    pub unconfirmed_owners: usize,
     /// The queried source's own Resource state, when the query had one
     /// (a forward query from a Resource or Symbol).
     pub scope: Option<ScopeState>,
@@ -229,6 +235,10 @@ impl Coverage {
         );
         report.note_if(self.truncated > 0, CoverageLimit::CandidateTruncated);
         report.note_if(self.unattributed > 0, CoverageLimit::UnattributedGaps);
+        report.note_if(
+            self.unconfirmed_owners > 0,
+            CoverageLimit::UnconfirmedCallerOwners,
+        );
         // Two tiers confirming different targets is not a candidate set
         // and not a stale index: it is its own reason a scope is not a
         // clean answer.
@@ -550,6 +560,7 @@ impl RelationIndex {
                 .count(),
             truncated: gaps.iter().filter(|gap| gap.candidate_truncated).count(),
             unattributed,
+            unconfirmed_owners: 0,
             scope,
             semantic,
         };
@@ -944,6 +955,49 @@ fn result_order(result: &RelationResult) -> ResultOrder {
         graph::endpoint_sort_key(&result.source),
         graph::endpoint_sort_key(&result.target),
     )
+}
+
+/// Owner Resources, in path order, that still hold an unresolved use
+/// site whose looked-up name is `symbol`'s name (the bare name, or a
+/// path/receiver ending in it).
+///
+/// A candidate finder over the persisted gaps and nothing else: a name
+/// match never becomes a relation. It says which Resources a semantic
+/// refresh should be asked about, and, after that refresh, which ones
+/// still could not be confirmed. An owner whose sites the refresh
+/// resolved holds no such row any more, so it leaves the list.
+pub fn caller_owner_candidates(
+    connection: &Connection,
+    symbol: SymbolId,
+) -> Result<Vec<ResourceId>, RelationError> {
+    let name: Option<String> = connection
+        .query_row(
+            "SELECT symbol.name FROM symbol \
+             JOIN resource ON resource.id = symbol.resource_id \
+             WHERE symbol.uid = ?1 AND resource.state = 'ACTIVE'",
+            params![symbol.to_bytes().to_vec()],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(name) = name.filter(|name| !name.is_empty()) else {
+        return Ok(Vec::new());
+    };
+    let mut statement = connection.prepare(
+        "SELECT DISTINCT resource.uid FROM unresolved_reference \
+         JOIN occurrence ON occurrence.id = unresolved_reference.occurrence_id \
+         JOIN resource ON resource.id = occurrence.resource_id \
+         WHERE resource.state = 'ACTIVE' AND ( \
+               unresolved_reference.lookup_name = ?1 \
+            OR substr(unresolved_reference.lookup_name, -(length(?1) + 2)) = '::' || ?1 \
+            OR substr(unresolved_reference.lookup_name, -(length(?1) + 1)) = '.' || ?1) \
+         ORDER BY resource.path_key",
+    )?;
+    let rows = statement.query_map(params![name], |row| row.get::<_, Vec<u8>>(0))?;
+    let mut owners = Vec::new();
+    for row in rows {
+        owners.push(resource_id_of(&row?));
+    }
+    Ok(owners)
 }
 
 fn resource_id_of(uid: &[u8]) -> ResourceId {

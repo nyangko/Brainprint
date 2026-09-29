@@ -32,7 +32,7 @@ use crate::{
     reconcile::Reconcile,
     refresh::TargetedRefresh,
     related_tests::{ProjectionOutcome, RelatedTests},
-    relations::{Direction, RelationAnswer, RelationIndex},
+    relations::{Direction, RelationAnswer, RelationIndex, caller_owner_candidates},
     resolution::{Dispatch, EvidenceBasis, Freshness, Resolution, Support},
     resource::{Resource, ResourceStore},
     scan::BaselineScan,
@@ -635,6 +635,41 @@ fn reverse_unattributed_gaps_prevent_an_unsafe_negative() {
         answer.answer_state(),
         AnswerState::NoneUnderCompleteCoverage
     );
+}
+
+#[test]
+fn caller_owner_candidates_are_the_owners_of_same_named_unresolved_sites_only() {
+    // `obj.compute()` in gap.ts names no target. It makes gap.ts a
+    // *candidate* owner for a declaration called `compute`, by its looked-up
+    // name and nothing else: never a relation, never attached.
+    let fixture = Fixture::empty("caller-owners");
+    fixture.write(
+        "src/def.ts",
+        "export function compute(): number {\n  return 1\n}\n\nexport function unrelated(): number {\n  return 2\n}\n",
+    );
+    fixture.write("src/gap.ts", GAP_TS);
+    fixture.baseline();
+    let symbol = |name: &str| match fixture.declaration("src/def.ts", name) {
+        GraphEndpoint::Symbol(id) => id,
+        other => panic!("a declaration is a Symbol: {other:?}"),
+    };
+
+    let connection = fixture.index();
+    let owners = caller_owner_candidates(connection.connection(), symbol("compute"))
+        .expect("candidate owners");
+    assert_eq!(owners, vec![fixture.resource("src/gap.ts").id]);
+    assert!(
+        caller_owner_candidates(connection.connection(), symbol("unrelated"))
+            .expect("candidate owners")
+            .is_empty(),
+        "another name matches no unresolved site"
+    );
+
+    // The answer itself is untouched: nothing was confirmed by name, and
+    // the count is filled only by a top-level reverse query (the surface).
+    let answer = fixture.incoming(&GraphEndpoint::Symbol(symbol("compute")), &[]);
+    assert!(answer.confirmed.is_empty());
+    assert_eq!(answer.coverage.unconfirmed_owners, 0);
 }
 
 // =================================================================

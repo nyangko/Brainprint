@@ -1110,15 +1110,16 @@ fn inspect_delivers_the_exact_current_declaration() {
 }
 
 #[test]
-fn an_unresolved_inspect_reads_nothing() {
-    // 17
+fn an_unresolved_inspect_reads_nothing_it_cannot_honestly_attribute() {
+    // 17, as changed by #32 Task 14 (T2): an unresolved target has no
+    // anchor, so it reads no anchor source, no relation and nothing at all
+    // when nothing matched. The one exception is an ambiguous symbol name:
+    // its (at most three, size-bounded) candidate declarations come with
+    // their own current source, tagged as candidates, so the choice needs
+    // no file read. Nothing is picked and no relation is queried.
     let fixture = Fixture::standard("surface-unresolved");
     let surface = surface(&fixture);
     for (target, expected) in [
-        (
-            named(SymbolName::Name("run".to_owned())),
-            TargetResolution::MultipleCandidates,
-        ),
         (
             ProjectionTarget::Resource(ResourceTarget::Path("src/missing.ts".to_owned())),
             TargetResolution::NotFound,
@@ -1132,14 +1133,21 @@ fn an_unresolved_inspect_reads_nothing() {
         assert_eq!(answer.target, expected);
         assert!(!any_source(&answer));
     }
+    let stats = surface.planner_stats();
+    assert_eq!((stats.source_bytes, stats.relation_queries), (0, 0));
+
     let answer = inspect(
         &surface,
         &fixture,
         named(SymbolName::Name("run".to_owned())),
     );
+    assert_eq!(answer.target, TargetResolution::MultipleCandidates);
+    assert!(
+        anchor_sources(&answer).is_empty(),
+        "no candidate is the anchor"
+    );
     assert_eq!(selection_of(page(&answer)).located.candidates.len(), 2);
-    let stats = surface.planner_stats();
-    assert_eq!((stats.source_bytes, stats.relation_queries), (0, 0));
+    assert_eq!(surface.planner_stats().relation_queries, 0);
 }
 
 #[test]
@@ -2230,4 +2238,87 @@ fn schema_versions_are_unchanged() {
             .schema_version,
         10
     );
+}
+
+#[test]
+fn inspect_of_an_ambiguous_name_delivers_each_candidates_current_source() {
+    // The name matches two declarations; picking one would be a guess, but
+    // both current declarations are delivered (verified, with their
+    // revision) so the choice needs no file read.
+    let fixture = Fixture::standard("surface-ambiguous-source");
+    let surface = surface(&fixture);
+    let answer = inspect(
+        &surface,
+        &fixture,
+        named(SymbolName::Name("run".to_owned())),
+    );
+    assert_eq!(answer.target, TargetResolution::MultipleCandidates);
+    let candidates: Vec<&PreparedRange> = page(&answer)
+        .iter()
+        .filter_map(|item| match item {
+            EvidenceItem::CurrentSource(range) if range.role == RangeRole::CandidateDeclaration => {
+                Some(range)
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(candidates.len(), 2, "{:?}", page(&answer));
+    for range in candidates {
+        let text = fs::read_to_string(fixture.root.join(&range.path_rel)).expect("file");
+        assert_eq!(
+            range.source,
+            text[range.span.start_byte..range.span.end_byte]
+        );
+        assert!(range.source.contains("run"), "{}", range.source);
+        assert!(!range.resource_revision.is_empty());
+    }
+    assert!(
+        anchor_sources(&answer).is_empty(),
+        "no candidate is the anchor"
+    );
+}
+
+#[test]
+fn a_top_level_reverse_query_counts_the_owners_it_could_not_confirm() {
+    let fixture = Fixture::with_files(
+        "surface-unconfirmed-owners",
+        &[
+            (
+                "src/def.ts",
+                "export function compute(): number {\n  return 1\n}\n",
+            ),
+            (
+                "src/gap.ts",
+                "export function gapped(obj: Widget): number {\n  obj.compute()\n  return 1\n}\n",
+            ),
+        ],
+    );
+    let surface = surface(&fixture);
+    let target = named(SymbolName::Name("compute".to_owned()));
+    let incoming = relations_of(
+        &surface,
+        &fixture,
+        target.clone(),
+        RelationDirection::Incoming,
+        Vec::new(),
+    );
+    let answer = incoming.answers.first().expect("an answer");
+    assert_eq!(answer.coverage.unconfirmed_owners, 1);
+    assert!(
+        answer
+            .coverage
+            .limits()
+            .has(crate::coverage::CoverageLimit::UnconfirmedCallerOwners)
+    );
+    assert!(answer.confirmed.is_empty(), "a name match confirms nothing");
+
+    // A forward question has no callers to miss.
+    let outgoing = relations_of(
+        &surface,
+        &fixture,
+        target,
+        RelationDirection::Outgoing,
+        Vec::new(),
+    );
+    assert_eq!(outgoing.answers[0].coverage.unconfirmed_owners, 0);
 }

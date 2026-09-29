@@ -114,6 +114,9 @@ pub struct CoverageWire {
     pub unsupported_construct: usize,
     pub truncated: usize,
     pub unattributed: usize,
+    /// Additive: absent in an older peer's answer.
+    #[serde(default)]
+    pub unconfirmed_owners: usize,
     pub scope: Option<ScopeStateWire>,
     pub semantic: SemanticScopeWire,
 }

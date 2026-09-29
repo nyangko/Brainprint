@@ -774,6 +774,10 @@ impl Canonical for ProjectionGap {
             }
             Self::RequiresSemantics => out.tag(8),
             Self::NotCurrent => out.tag(9),
+            Self::UnconfirmedCallerOwners(owners) => {
+                out.tag(10);
+                owners.encode(out);
+            }
         }
     }
 }

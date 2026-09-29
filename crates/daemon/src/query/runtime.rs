@@ -27,7 +27,7 @@ use brainprint_core::{
 use brainprint_engine::{
     paths::GlobalPaths,
     projection::planner::{DeliveryLedger, DeliveryReceipt, LedgerLimits},
-    query_surface::{ContextPurpose, CoreQuerySurface},
+    query_surface::{ContextPurpose, CoreQuerySurface, RelationDirection},
 };
 use tokio::sync::oneshot;
 
@@ -517,8 +517,21 @@ fn run_query(
             },
             _ => None,
         };
+        // The callers' owners are re-checked only for an operation whose
+        // point is the callers: an incoming-only relations query, an impact
+        // or a change context. An inspect or a two-way relations query
+        // still reports how many owners it could not confirm, but starts
+        // nothing for them (#39: structural queries start no backend).
+        let callers = match &converted {
+            convert_in::ConvertedOperation::Relations(request) => {
+                matches!(request.direction, RelationDirection::Incoming)
+            }
+            convert_in::ConvertedOperation::Impact(_)
+            | convert_in::ConvertedOperation::Context(_) => true,
+            _ => false,
+        };
         if let Some(target) = target {
-            semantic.enrich(surface, target);
+            semantic.enrich(surface, target, callers);
         }
     }
 

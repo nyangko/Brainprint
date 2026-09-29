@@ -45,7 +45,7 @@ use crate::{
     },
     query::{Currentness, DEFAULT_CANDIDATE_LIMIT, FileListing, FileQuery, QueryError},
     registry::{GlobalRegistry, RegistryError},
-    relations::{RelationAnswer, RelationError},
+    relations::{RelationAnswer, RelationError, caller_owner_candidates},
     resource::{ResourceKind, ResourceLanguage, ResourceRole},
     search::{
         FallbackReason, SearchBudget, SearchError, TextPattern, TextSearch, TextSearchResult,
@@ -769,11 +769,18 @@ impl CoreQuerySurface {
                 self.count(|stats| stats.relation_queries += 1);
             }
             if incoming {
-                answers.push(
-                    index
-                        .incoming(anchor, &request.kinds)
-                        .map_err(CoreError::Relation)?,
-                );
+                let mut answer = index
+                    .incoming(anchor, &request.kinds)
+                    .map_err(CoreError::Relation)?;
+                // A top-level reverse query says which owners it could not
+                // confirm; an impact traversal never asks (one scan each).
+                if let GraphEndpoint::Symbol(symbol) = anchor {
+                    answer.coverage.unconfirmed_owners =
+                        caller_owner_candidates(index.connection(), *symbol)
+                            .map_err(CoreError::Relation)?
+                            .len();
+                }
+                answers.push(answer);
                 self.count(|stats| stats.relation_queries += 1);
             }
         }

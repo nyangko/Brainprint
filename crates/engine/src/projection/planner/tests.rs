@@ -743,6 +743,140 @@ fn two_same_named_symbols_stop_every_target_dependent_step() {
 }
 
 #[test]
+fn an_ambiguous_symbol_plans_each_candidates_own_declaration_source() {
+    // The candidates' current source is offered so the choice needs no
+    // file read; it is optional (the delivery budget decides), tagged as a
+    // candidate, and nothing is read while planning.
+    let fixture = Fixture::standard("ambiguous-candidate-source");
+    let planner = fixture.planner();
+    let projection = planner
+        .plan(&fixture.request(
+            ProjectionIntent::Understand,
+            symbol(SymbolName::Name("run".to_owned())),
+        ))
+        .expect("plan");
+    assert!(projection.gaps.contains(&ProjectionGap::TargetAmbiguous));
+    let candidates: Vec<_> = projection
+        .source_plan
+        .iter()
+        .filter(|range| range.role == RangeRole::CandidateDeclaration)
+        .collect();
+    assert_eq!(candidates.len(), 2, "{:?}", projection.source_plan);
+    assert!(
+        candidates
+            .iter()
+            .all(|range| range.requirement == SourceRequirement::Optional)
+    );
+    assert!(
+        sources(&projection).is_empty(),
+        "nothing is read at plan time"
+    );
+    assert_eq!(planner.stats().source_file_reads, 0);
+
+    // Locate never carries them, and neither does a selector with more
+    // candidates than the bound.
+    let locate = planner
+        .plan(&fixture.request(
+            ProjectionIntent::Locate,
+            symbol(SymbolName::Name("run".to_owned())),
+        ))
+        .expect("plan");
+    assert!(
+        locate
+            .source_plan
+            .iter()
+            .all(|range| range.role != RangeRole::CandidateDeclaration)
+    );
+}
+
+#[test]
+fn an_oversized_ambiguous_candidate_is_reported_never_cut() {
+    let big = format!(
+        "export function big(): number {{\n{}  return 1\n}}\n",
+        "  // padding padding padding padding padding padding\n".repeat(120)
+    );
+    let fixture = Fixture::with_files(
+        "ambiguous-oversized",
+        &[
+            ("src/a.ts", &big),
+            (
+                "src/b.ts",
+                "export function big(): number {\n  return 2\n}\n",
+            ),
+        ],
+    );
+    let planner = fixture.planner();
+    let projection = planner
+        .plan(&fixture.request(
+            ProjectionIntent::Understand,
+            symbol(SymbolName::Name("big".to_owned())),
+        ))
+        .expect("plan");
+    let offered: Vec<_> = projection
+        .source_plan
+        .iter()
+        .filter(|range| range.role == RangeRole::CandidateDeclaration)
+        .collect();
+    assert_eq!(offered.len(), 1, "only the small declaration is offered");
+    let reported: Vec<_> = projection
+        .evidence
+        .iter()
+        .filter_map(|item| match item {
+            EvidenceItem::SourceUnavailable {
+                reason: SourceUnavailable::NoCurrentSource { detail },
+                ..
+            } => Some(detail.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(reported.len(), 1, "{:?}", projection.evidence);
+    assert!(reported[0].contains("candidate limit"), "{}", reported[0]);
+}
+
+#[test]
+fn a_target_with_same_named_unresolved_sites_reports_their_owners_as_unconfirmed() {
+    let fixture = Fixture::with_files(
+        "unconfirmed-callers",
+        &[
+            (
+                "src/def.ts",
+                "export function compute(): number {\n  return 1\n}\n",
+            ),
+            (
+                "src/gap.ts",
+                "export function gapped(obj: Widget): number {\n  obj.compute()\n  return 1\n}\n",
+            ),
+        ],
+    );
+    let planner = fixture.planner();
+    for intent in [ProjectionIntent::Understand, ProjectionIntent::Change(None)] {
+        let projection = planner
+            .plan(&fixture.request(intent, symbol(SymbolName::Name("compute".to_owned()))))
+            .expect("plan");
+        assert!(
+            projection
+                .gaps
+                .contains(&ProjectionGap::UnconfirmedCallerOwners(1)),
+            "{intent:?}: {:?}",
+            projection.gaps
+        );
+    }
+    // A target no unresolved site is named after says nothing.
+    let quiet = planner
+        .plan(&fixture.request(
+            ProjectionIntent::Understand,
+            symbol(SymbolName::Name("gapped".to_owned())),
+        ))
+        .expect("plan");
+    assert!(
+        !quiet
+            .gaps
+            .iter()
+            .any(|gap| matches!(gap, ProjectionGap::UnconfirmedCallerOwners(_)))
+    );
+}
+
+#[test]
 fn a_search_matching_once_is_not_promoted_to_an_identity() {
     let fixture = Fixture::standard("not-exact");
     let planner = fixture.planner();

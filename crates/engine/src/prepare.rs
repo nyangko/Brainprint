@@ -85,6 +85,9 @@ pub enum RangeRole {
     ContainingDeclaration,
     /// The query anchor's own current declaration.
     AnchorDeclaration,
+    /// One of several declarations a symbol selector could not choose
+    /// between: its current source, so the choice needs no file read.
+    CandidateDeclaration,
 }
 
 /// One verified slice of current source, read once and shared by

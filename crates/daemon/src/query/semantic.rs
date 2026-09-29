@@ -21,16 +21,17 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
     sync::{Arc, Mutex, PoisonError, Weak},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
-use brainprint_core::{ResourceId, WorkspaceId};
+use brainprint_core::{ResourceId, SymbolId, WorkspaceId};
 use brainprint_engine::{
     config::{
         ExecutableLocator, InstallRootLocator, NodeBackendLocator, SemanticBackendLocators,
         WorkspaceConfig, load_global_config,
     },
     csharp_semantic::{self as csharp, CSharpHost, CSharpInstall, CSharpLauncher},
+    graph::GraphEndpoint,
     merge,
     paths::GlobalPaths,
     projection::ProjectionTarget,
@@ -39,6 +40,7 @@ use brainprint_engine::{
     query_surface::{
         CoreQuerySurface, QueryContext, RelationDirection, RelationsRequest, TargetResolution,
     },
+    relations::caller_owner_candidates,
     resolution::{Resolution, Support},
     resource::{ResourceLanguage, ResourceStore},
     runtime::{
@@ -62,6 +64,15 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 const CSHARP_LOAD_TIMEOUT: Duration = Duration::from_secs(180);
 const RUST_SETTLE_TIMEOUT: Duration = Duration::from_secs(240);
 
+/// Bounds on the caller-owner re-check of one reverse query: how many
+/// not-current owners it may refresh, how long it may keep starting new
+/// batches, and how many owners one batch holds. Tuning values, not
+/// contracts: whatever is left over stays an explicit, counted gap in the
+/// answer (`UnconfirmedCallerOwners`).
+const CALLER_OWNER_LIMIT: usize = 16;
+const CALLER_OWNER_BUDGET: Duration = Duration::from_secs(30);
+const CALLER_OWNER_BATCH: usize = 4;
+
 /// Snapshot-invalidation retries per owner refresh, as I4 acceptance uses.
 const PYTHON_BATCH_ATTEMPTS: u32 = 12;
 
@@ -83,6 +94,12 @@ pub struct SemanticStats {
     /// one servable, not-current owner.
     pub demands: u64,
     pub owners_refreshed: u64,
+    /// Owners a reverse query found holding a same-named unresolved use
+    /// site with no current semantic publication, and how many of those
+    /// it refreshed / left for the answer to report as unconfirmed.
+    pub caller_owners_demanded: u64,
+    pub caller_owners_refreshed: u64,
+    pub caller_owners_deferred: u64,
     pub owner_failures: u64,
     /// Lease acquisitions refused (backend failed, backoff, degraded).
     pub start_failures: u64,
@@ -452,14 +469,23 @@ impl WorkspaceSemantic {
     /// Enrich the owners the target's canonical gaps prove need semantic
     /// resolution, then return; the caller runs the original operation.
     ///
+    /// `callers` is set for an operation whose answer carries the
+    /// target's incoming relations. The call sites of a caller live in
+    /// the caller's own Resource, not on the target, so the target's gaps
+    /// never name them; the owners are found from the persisted unresolved
+    /// sites that carry the target's name and each is refreshed on its
+    /// own, within a bound.
+    ///
     /// Every failure is absorbed: the structural answer and its explicit
     /// gaps are what the query reports then, never a false zero.
-    pub fn enrich(&mut self, surface: &CoreQuerySurface, target: &ProjectionTarget) {
+    pub fn enrich(&mut self, surface: &CoreQuerySurface, target: &ProjectionTarget, callers: bool) {
         if self.backends.is_empty() {
             return;
         }
         self.stats.probes += 1;
-        let owners = match self.demanded_owners(surface, target) {
+        let started = Instant::now();
+        let mut symbol = None;
+        let owners = match self.demanded_owners(surface, target, &mut symbol) {
             Ok(owners) => owners,
             Err(error) => {
                 eprintln!(
@@ -469,22 +495,118 @@ impl WorkspaceSemantic {
                 return;
             }
         };
-        if owners.values().all(BTreeSet::is_empty) {
+        if owners.values().any(|owners| !owners.is_empty()) {
+            self.stats.demands += 1;
+            for (family, owners) in owners {
+                if owners.is_empty() {
+                    continue;
+                }
+                if let Err(error) = self.refresh(family, &owners) {
+                    eprintln!(
+                        "brainprintd: workspace {} {} semantic refresh failed: {error}",
+                        self.workspace,
+                        self.backends[family].name()
+                    );
+                }
+            }
+        }
+        if let (true, Some(symbol)) = (callers, symbol) {
+            self.enrich_callers(symbol, started);
+        }
+    }
+
+    /// Refresh, owner by owner and batch by batch, the owners that still
+    /// hold an unresolved use site named like `symbol`. The refresh is the
+    /// owner's own (its sites resolve through the existing owner-local
+    /// merge); nothing here publishes on another Resource's behalf. Stops
+    /// at the owner or time bound and leaves the rest to the answer's
+    /// `UnconfirmedCallerOwners` count.
+    fn enrich_callers(&mut self, symbol: SymbolId, started: Instant) {
+        let demanded = match self.caller_owners(symbol) {
+            Ok(demanded) => demanded,
+            Err(error) => {
+                eprintln!(
+                    "brainprintd: workspace {} caller owner probe failed: {error}",
+                    self.workspace
+                );
+                return;
+            }
+        };
+        let total: usize = demanded.values().map(Vec::len).sum();
+        if total == 0 {
             return;
         }
-        self.stats.demands += 1;
-        for (family, owners) in owners {
-            if owners.is_empty() {
-                continue;
-            }
-            if let Err(error) = self.refresh(family, &owners) {
-                eprintln!(
-                    "brainprintd: workspace {} {} semantic refresh failed: {error}",
-                    self.workspace,
-                    self.backends[family].name()
-                );
+        self.stats.caller_owners_demanded += total as u64;
+        let mut budget = CALLER_OWNER_LIMIT;
+        let mut refreshed = 0;
+        'families: for (family, owners) in demanded {
+            for batch in owners.chunks(CALLER_OWNER_BATCH) {
+                if budget == 0 || started.elapsed() >= CALLER_OWNER_BUDGET {
+                    break 'families;
+                }
+                let batch = &batch[..batch.len().min(budget)];
+                budget -= batch.len();
+                let set: BTreeSet<ResourceId> = batch.iter().copied().collect();
+                match self.refresh(family, &set) {
+                    Ok(()) => refreshed += batch.len(),
+                    Err(error) => {
+                        eprintln!(
+                            "brainprintd: workspace {} {} caller owner refresh failed: {error}",
+                            self.workspace,
+                            self.backends[family].name()
+                        );
+                        // A backend that refused to start will refuse the
+                        // next batch too; the supervisor bounds restarts.
+                        break;
+                    }
+                }
             }
         }
+        self.stats.caller_owners_refreshed += refreshed as u64;
+        self.stats.caller_owners_deferred += (total - refreshed) as u64;
+    }
+
+    /// The not-current owners, grouped by registered family and in path
+    /// order, whose persisted unresolved sites carry `symbol`'s name.
+    fn caller_owners(&self, symbol: SymbolId) -> Result<BTreeMap<usize, Vec<ResourceId>>, String> {
+        let index = SemanticIndex::open(&self.index_db).map_err(|error| error.to_string())?;
+        let candidates = caller_owner_candidates(index.connection(), symbol)
+            .map_err(|error| error.to_string())?;
+        if candidates.is_empty() {
+            return Ok(BTreeMap::new());
+        }
+        let store = ResourceStore::open(&self.index_db).map_err(|error| error.to_string())?;
+        let mut contexts: BTreeMap<usize, AnalysisContext> = BTreeMap::new();
+        let mut demanded: BTreeMap<usize, Vec<ResourceId>> = BTreeMap::new();
+        for resource in candidates {
+            let Some(language) = store
+                .get_by_id(resource)
+                .map_err(|error| error.to_string())?
+                .and_then(|resource| resource.language)
+            else {
+                continue;
+            };
+            let Some(family) = self
+                .backends
+                .iter()
+                .position(|backend| backend.serves(language))
+            else {
+                continue;
+            };
+            if !contexts.contains_key(&family) {
+                contexts.insert(family, self.context(family, &index)?);
+            }
+            let owner = SemanticOwner::new(contexts[&family].context_key(), resource);
+            if index
+                .status(&owner)
+                .map_err(|error| error.to_string())?
+                .state
+                != SemanticState::Current
+            {
+                demanded.entry(family).or_default().push(resource);
+            }
+        }
+        Ok(demanded)
     }
 
     /// Owner Resources, grouped by registered family, whose persisted
@@ -494,6 +616,7 @@ impl WorkspaceSemantic {
         &self,
         surface: &CoreQuerySurface,
         target: &ProjectionTarget,
+        symbol: &mut Option<SymbolId>,
     ) -> Result<BTreeMap<usize, BTreeSet<ResourceId>>, String> {
         let probe = surface
             .relations(RelationsRequest {
@@ -512,6 +635,9 @@ impl WorkspaceSemantic {
             || probe.currentness != Currentness::Current
         {
             return Ok(BTreeMap::new());
+        }
+        if let TargetResolution::Resolved(GraphEndpoint::Symbol(id)) = &probe.target {
+            *symbol = Some(*id);
         }
         let mut resources = BTreeSet::new();
         for answer in &probe.answers {

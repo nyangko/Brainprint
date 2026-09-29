@@ -1446,25 +1446,17 @@ async fn brainprints_own_macro_calls_resolve_through_the_product_path() {
         Some(config_rs),
     )
     .await;
-    // An owner is demanded by its own gaps -- here, by asking about the
-    // file. rust-analyzer's `cargo metadata` at load raises a watcher
+    // Every owner is demanded by the incoming query itself (#32 Task 14).
+    // rust-analyzer's `cargo metadata` at load raises a watcher
     // event on Cargo.lock (bytes unchanged) that withdraws the owner
     // once, and the next question about the file re-proves it on the same
     // process (the settling #39's other Rust case waits out too). Ask
     // until both macro calls are proven, never longer than a minute.
-    let about_the_file =
-        ProjectionTargetWire::Resource(ResourceTargetWire::Path(config_rs.to_owned()));
     let started = Instant::now();
     let mut asked = 0;
     let (answer, after) = loop {
         asked += 1;
-        daemon
-            .relations(
-                workspace,
-                about_the_file.clone(),
-                RelationDirectionWire::Outgoing,
-            )
-            .await;
+        // Only the incoming query for the target: no file is asked about.
         let result = daemon
             .relations(workspace, target.clone(), RelationDirectionWire::Incoming)
             .await;
@@ -1558,32 +1550,26 @@ async fn brainprints_own_macro_calls_resolve_through_the_product_path() {
     assert_eq!(stats.backend_starts, 1);
     assert_eq!(stats.backend_requests, requests, "current: no request");
 
-    // Each owner proves its own sites: a caller in another file appears
-    // once that file is asked about, and only then -- nothing is
-    // published here for a Resource this refresh did not own. With
-    // #47's macro candidates and #48's sibling-crate import, the known
-    // inventory is complete.
-    let mut previous = call_sites(&again);
-    let mut answer = answer;
-    for other in ["crates/engine/src/query_surface.rs", lifecycle_rs] {
-        daemon
-            .relations(
-                workspace,
-                ProjectionTargetWire::Resource(ResourceTargetWire::Path(other.to_owned())),
-                RelationDirectionWire::Outgoing,
-            )
-            .await;
-        let result = daemon
-            .relations(workspace, target.clone(), RelationDirectionWire::Incoming)
-            .await;
-        answer = result.answers.into_iter().next().expect("one answer");
-        println!(
-            "call sites after asking about {other}: {}",
-            call_sites(&answer)
-        );
-        assert_eq!(call_sites(&answer), previous + 1, "{other} joined");
-        previous = call_sites(&answer);
-    }
+    // The incoming query itself asks each caller's owner, within a bound
+    // (#32 Task 14): no caller's file has to be asked about first. Each
+    // owner still proves only its own sites -- nothing is published here
+    // for a Resource this refresh did not own -- and the known inventory
+    // is complete once the owners were re-checked.
+    assert_eq!(
+        call_sites(&answer),
+        8,
+        "the reverse query confirmed every known caller without a per-file question"
+    );
+    assert_eq!(
+        answer.coverage.unconfirmed_owners, 0,
+        "no owner is left holding an unconfirmed same-named site: {:?}",
+        answer.coverage
+    );
+    let stats = daemon.semantic(workspace).await;
+    assert!(
+        stats.caller_owners_refreshed >= 2 && stats.caller_owners_deferred == 0,
+        "{stats:?}"
+    );
     let found: std::collections::BTreeSet<String> = answer
         .confirmed
         .iter()

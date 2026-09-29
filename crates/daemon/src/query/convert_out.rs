@@ -501,6 +501,7 @@ fn coverage_wire(coverage: Coverage) -> CoverageWire {
         unsupported_construct: coverage.unsupported_construct,
         truncated: coverage.truncated,
         unattributed: coverage.unattributed,
+        unconfirmed_owners: coverage.unconfirmed_owners,
         scope: coverage.scope.map(scope_state_wire),
         semantic: semantic_scope_wire(coverage.semantic),
     }
@@ -1223,6 +1224,7 @@ fn coverage_limit_wire(limit: CoverageLimit) -> CoverageLimitWire {
         CoverageLimit::IndexNotCurrent => CoverageLimitWire::IndexNotCurrent,
         CoverageLimit::SemanticConflict => CoverageLimitWire::SemanticConflict,
         CoverageLimit::SemanticNotCurrent => CoverageLimitWire::SemanticNotCurrent,
+        CoverageLimit::UnconfirmedCallerOwners => CoverageLimitWire::UnconfirmedCallerOwners,
     }
 }
 
@@ -1317,6 +1319,7 @@ fn range_role_wire(role: RangeRole) -> RangeRoleWire {
         RangeRole::EvidenceSpan => RangeRoleWire::EvidenceSpan,
         RangeRole::ContainingDeclaration => RangeRoleWire::ContainingDeclaration,
         RangeRole::AnchorDeclaration => RangeRoleWire::AnchorDeclaration,
+        RangeRole::CandidateDeclaration => RangeRoleWire::CandidateDeclaration,
     }
 }
 
@@ -1360,6 +1363,9 @@ fn projection_gap_wire(gap: ProjectionGap) -> ProjectionGapWire {
         }
         ProjectionGap::RequiresSemantics => ProjectionGapWire::RequiresSemantics,
         ProjectionGap::NotCurrent => ProjectionGapWire::NotCurrent,
+        ProjectionGap::UnconfirmedCallerOwners(owners) => {
+            ProjectionGapWire::UnconfirmedCallerOwners(owners)
+        }
     }
 }
 
