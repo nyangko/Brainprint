@@ -1385,15 +1385,25 @@ async fn brainprints_own_macro_calls_resolve_through_the_product_path() {
         Some(config_rs),
     )
     .await;
-    // rust-analyzer's own `cargo metadata` at load raises a watcher event
-    // on Cargo.lock (bytes unchanged); the next barrier's existing
-    // withdraw-before-refresh then re-proves the owner once, on the same
-    // process (the same settling #39's other Rust case waits out). Ask
+    // An owner is demanded by its own gaps -- here, by asking about the
+    // file. rust-analyzer's `cargo metadata` at load raises a watcher
+    // event on Cargo.lock (bytes unchanged) that withdraws the owner
+    // once, and the next question about the file re-proves it on the same
+    // process (the settling #39's other Rust case waits out too). Ask
     // until both macro calls are proven, never longer than a minute.
+    let about_the_file =
+        ProjectionTargetWire::Resource(ResourceTargetWire::Path(config_rs.to_owned()));
     let started = Instant::now();
     let mut asked = 0;
     let (answer, after) = loop {
         asked += 1;
+        daemon
+            .relations(
+                workspace,
+                about_the_file.clone(),
+                RelationDirectionWire::Outgoing,
+            )
+            .await;
         let result = daemon
             .relations(workspace, target.clone(), RelationDirectionWire::Incoming)
             .await;
@@ -1479,13 +1489,40 @@ async fn brainprints_own_macro_calls_resolve_through_the_product_path() {
     // Warm: the same process, nothing re-requested.
     let requests = stats.backend_requests;
     let again = daemon
-        .relations(workspace, target, RelationDirectionWire::Incoming)
+        .relations(workspace, target.clone(), RelationDirectionWire::Incoming)
         .await;
     let again = again.answers.into_iter().next().expect("one answer");
     assert_eq!(call_sites(&again), call_sites(&answer));
     let stats = daemon.semantic(workspace).await;
     assert_eq!(stats.backend_starts, 1);
     assert_eq!(stats.backend_requests, requests, "current: no request");
+
+    // Each owner proves its own sites: a caller in another file appears
+    // once that file is asked about, and only then -- nothing published
+    // here for a Resource this refresh did not own. (The last known
+    // caller, in `crates/daemon/src/query/lifecycle.rs`, needs a sibling
+    // crate's import resolved and is #48's.)
+    let other = "crates/engine/src/query_surface.rs";
+    daemon
+        .relations(
+            workspace,
+            ProjectionTargetWire::Resource(ResourceTargetWire::Path(other.to_owned())),
+            RelationDirectionWire::Outgoing,
+        )
+        .await;
+    let result = daemon
+        .relations(workspace, target, RelationDirectionWire::Incoming)
+        .await;
+    let answer = result.answers.into_iter().next().expect("one answer");
+    println!(
+        "call sites after asking about {other}: {}",
+        call_sites(&answer)
+    );
+    assert_eq!(
+        call_sites(&answer),
+        call_sites(&again) + 1,
+        "{other} joined"
+    );
 
     daemon.stop().await;
 }
