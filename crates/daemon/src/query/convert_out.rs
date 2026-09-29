@@ -445,6 +445,9 @@ fn unresolved_reason_wire(reason: UnresolvedReason) -> UnresolvedReasonWire {
         UnresolvedReason::MacroCallRequiresSemantics => {
             UnresolvedReasonWire::MacroCallRequiresSemantics
         }
+        UnresolvedReason::RustWorkspaceCrateRequiresSemantics => {
+            UnresolvedReasonWire::RustWorkspaceCrateRequiresSemantics
+        }
     }
 }
 

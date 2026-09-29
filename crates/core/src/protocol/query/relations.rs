@@ -64,6 +64,7 @@ pub enum UnresolvedReasonWire {
     OverrideTargetRequiresSemantics,
     DynamicKeyExpression,
     MacroCallRequiresSemantics,
+    RustWorkspaceCrateRequiresSemantics,
 }
 
 /// Mirrors `brainprint_engine::relations::RelationGap`.

@@ -152,6 +152,17 @@ macros, bare references, tuple-struct and enum-variant constructors (also
 spelled as patterns), dependency items and modules all stay explicit gaps.
 Asserted by `macro_call_candidates_are_calls_only_when_the_server_proves_them`.
 
+An absolute `use` whose first segment could name a crate from this
+Workspace's own Cargo manifests (a `[package]`/`[lib]` name in `_`
+spelling, or a dependency alias with a local `path`, a local `package`,
+or a workspace-inherited local entry) is a candidate, not a proven
+External package (#48): an unresolved `RUST_WORKSPACE_CRATE_REQUIRES_SEMANTICS`
+import gap owned by the importer, which wakes the semantic tier and is
+resolved by that owner's own refresh. An ordinary crate (and `std`) stays
+External. A manifest that cannot be read guesses no name and leaves the
+files it owns `CONFIG_DEPENDENT_SPECIFIER`. Asserted by
+`a_sibling_workspace_crate_import_is_resolved_by_its_owners_refresh`.
+
 ## Lifecycle
 
 | # | case | verdict | evidence |

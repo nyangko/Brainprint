@@ -48,6 +48,7 @@ use crate::{
         BindingScope, extract_call_sites, extract_import_bindings, extract_local_names,
         extract_macro_call_candidates, resolve_calls,
     },
+    cargo_crates::{self, LocalCrateNames, ManifestSource},
     component::{self, ComponentRow, FreshnessState, ProcessingState},
     domain::{domain_relations, extract_key_accesses},
     evidence::{EvidenceError, OccurrenceRef, RelationEvidence, replace_resource_graph},
@@ -57,7 +58,7 @@ use crate::{
     imports::{WorkspaceModules, extract_imports, import_relations, resolve_imports},
     parser::{self, ParserRegistry, SourceBasis, StructuralCapability},
     resolution::EvidenceBasis,
-    resource::{self, Resource, ResourceKind, ResourceState},
+    resource::{self, Resource, ResourceKind, ResourceLanguage, ResourceState},
     scan::ScanError,
     structural::{self, StructuralState},
     symbol::{self, OccurrenceKind, Symbol},
@@ -138,7 +139,7 @@ pub(crate) fn publish_relations(
         ..RelationPublication::default()
     };
 
-    let inventory = Inventory::read(connection)?;
+    let inventory = Inventory::read(connection, workspace_root)?;
 
     for resource_id in &plan.changed {
         if publish_one(
@@ -491,7 +492,7 @@ struct Inventory {
 }
 
 impl Inventory {
-    fn read(connection: &Connection) -> Result<Self, ScanError> {
+    fn read(connection: &Connection, workspace_root: &Path) -> Result<Self, ScanError> {
         let active = active_resources(connection)?;
         let mut symbols = HashMap::new();
         for resource in &active {
@@ -501,7 +502,8 @@ impl Inventory {
             );
         }
         Ok(Self {
-            modules: WorkspaceModules::from_resources(&active),
+            modules: WorkspaceModules::from_resources(&active)
+                .with_rust_crates(rust_crate_names(&active, workspace_root)),
             symbols,
         })
     }
@@ -509,6 +511,45 @@ impl Inventory {
     fn symbols_of(&self, resource: ResourceId) -> Option<&Vec<Symbol>> {
         self.symbols.get(&resource)
     }
+}
+
+/// The Rust import names the indexed Cargo manifests could give a local
+/// crate (#48).
+///
+/// Read only when there is Rust to resolve, and only from the bytes the
+/// index describes: a manifest whose current bytes are not the indexed
+/// ones is treated as unreadable, never as empty. No Cargo command runs.
+fn rust_crate_names(active: &[Resource], workspace_root: &Path) -> LocalCrateNames {
+    if !active
+        .iter()
+        .any(|resource| resource.language == Some(ResourceLanguage::Rust))
+    {
+        return LocalCrateNames::default();
+    }
+    let texts: Vec<(&str, Option<String>)> = active
+        .iter()
+        .filter(|resource| {
+            resource.kind == ResourceKind::File && cargo_crates::is_manifest(&resource.path_key)
+        })
+        .map(|resource| {
+            let text = fs::read(workspace_root.join(&resource.path_rel))
+                .ok()
+                .filter(|bytes| {
+                    resource.content_hash.as_deref()
+                        == Some(identity::content_hash_of(bytes).as_str())
+                })
+                .and_then(|bytes| String::from_utf8(bytes).ok());
+            (resource.path_key.as_str(), text)
+        })
+        .collect();
+    let sources: Vec<ManifestSource<'_>> = texts
+        .iter()
+        .map(|(path_key, text)| ManifestSource {
+            path_key,
+            text: text.as_deref(),
+        })
+        .collect();
+    LocalCrateNames::from_manifests(&sources)
 }
 
 /// The Resource inventory as resolution sees it: which stable ids
@@ -591,6 +632,29 @@ pub fn dependents_of(
         )?;
     }
 
+    // A Cargo manifest decides which Rust import names could be a crate
+    // from this Workspace (#48), so an edit to one re-resolves the Rust
+    // Resources that state an import -- through the same replacement as
+    // any other revalidation, each owner replacing only its own gaps and
+    // evidence. Bounded by the imports already stored.
+    if touched_a_cargo_manifest(connection, touched)? {
+        let mut statement = connection
+            .prepare(
+                "SELECT DISTINCT owner.uid \
+                 FROM occurrence \
+                 JOIN resource owner ON owner.id = occurrence.resource_id \
+                 WHERE owner.state = 'ACTIVE' AND owner.language = 'RUST' \
+                   AND occurrence.kind = 'IMPORT_SITE'",
+            )
+            .map_err(resource::ResourceError::from)?;
+        let rows = statement
+            .query_map([], |row| row.get::<_, Vec<u8>>(0))
+            .map_err(resource::ResourceError::from)?;
+        for row in rows {
+            push_unique(&mut found, row.map_err(resource::ResourceError::from)?);
+        }
+    }
+
     if inventory_changed {
         let mut statement = connection
             .prepare(
@@ -613,6 +677,26 @@ pub fn dependents_of(
     // Deterministic order, over stable identity.
     found.sort_by_key(|id| id.to_bytes());
     Ok(found)
+}
+
+fn touched_a_cargo_manifest(
+    connection: &Connection,
+    touched: &[ResourceId],
+) -> Result<bool, ScanError> {
+    for resource_id in touched {
+        let path_key: Option<String> = connection
+            .query_row(
+                "SELECT path_key FROM resource WHERE uid = ?1",
+                params![resource_id.to_bytes().to_vec()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(resource::ResourceError::from)?;
+        if path_key.is_some_and(|path_key| cargo_crates::is_manifest(&path_key)) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn collect(
@@ -1943,5 +2027,177 @@ pub fn real() -> u32 {
                 "CALL_CANDIDATE_SITE:MACRO_CALL_REQUIRES_SEMANTICS:target@{start}"
             )]
         );
+    }
+
+    // -----------------------------------------------------------------
+    // Rust absolute imports and local Cargo crates (#48)
+    // -----------------------------------------------------------------
+
+    const WS_MANIFEST: &str = "[workspace]\nmembers = [\"crates/my-engine\", \"crates/app\"]\n";
+    const ENGINE_MANIFEST: &str = "[package]\nname = \"my-engine\"\n";
+    const APP_MANIFEST: &str = "[package]\nname = \"app\"\n\
+        [dependencies]\nmy-engine = { path = \"../my-engine\" }\nserde = \"1\"\n";
+    const ENGINE_LIB: &str = "pub fn load() -> u32 {\n    1\n}\n";
+    const APP_MAIN: &str = "\
+use my_engine::load;
+use serde::Serialize;
+use std::fmt;
+
+pub fn run() -> u32 {
+    load()
+}
+";
+    const MAIN_RS: &str = "crates/app/src/main.rs";
+
+    /// A Cargo workspace of two packages, indexed.
+    fn cargo_fixture(label: &str) -> Fixture {
+        let fixture = Fixture::create(label);
+        for (rel, contents) in [
+            ("Cargo.toml", WS_MANIFEST),
+            ("crates/my-engine/Cargo.toml", ENGINE_MANIFEST),
+            ("crates/my-engine/src/lib.rs", ENGINE_LIB),
+            ("crates/app/Cargo.toml", APP_MANIFEST),
+            (MAIN_RS, APP_MAIN),
+        ] {
+            let path = fixture.path(rel);
+            std::fs::create_dir_all(path.parent().expect("parent")).expect("dirs");
+            fixture.write(rel, contents);
+        }
+        fixture.baseline();
+        fixture
+    }
+
+    fn import_gap_reasons(fixture: &Fixture) -> Vec<String> {
+        fixture
+            .gap_rows(MAIN_RS)
+            .into_iter()
+            .filter(|row| row.starts_with("IMPORT_SITE:"))
+            .map(|row| row.split('@').next().unwrap_or_default().to_owned())
+            .collect()
+    }
+
+    fn external_packages(fixture: &Fixture) -> Vec<String> {
+        let mut found: Vec<String> = fixture
+            .outgoing(&fixture.file(MAIN_RS), RelationKind::Imports)
+            .into_iter()
+            .filter_map(|target| match target {
+                GraphEndpoint::External(external) => Some(external.package_identity),
+                _ => None,
+            })
+            .collect();
+        found.sort();
+        found
+    }
+
+    #[test]
+    fn a_sibling_crate_import_is_a_semantic_candidate_and_an_ordinary_one_is_not() {
+        let fixture = cargo_fixture("rust-local-crate");
+
+        assert_eq!(
+            import_gap_reasons(&fixture),
+            ["IMPORT_SITE:RUST_WORKSPACE_CRATE_REQUIRES_SEMANTICS:my_engine::load"],
+            "the sibling crate's import is the only import gap"
+        );
+        assert!(
+            crate::gaps::UnresolvedReason::RustWorkspaceCrateRequiresSemantics.requires_semantics(),
+            "it wakes the semantic tier"
+        );
+        assert_eq!(
+            external_packages(&fixture),
+            ["serde", "std"],
+            "ordinary crates stay proven external, and the sibling is not one of them"
+        );
+        let run = fixture.declaration(MAIN_RS, "run");
+        assert!(
+            fixture.outgoing(&run, RelationKind::Calls).is_empty(),
+            "a candidate import creates no CALLS edge"
+        );
+        assert!(
+            fixture
+                .outgoing(&fixture.file(MAIN_RS), RelationKind::Imports)
+                .iter()
+                .all(|target| !matches!(target, GraphEndpoint::Resource(_))),
+            "and no structural claim about which Resource it reaches"
+        );
+    }
+
+    #[test]
+    fn a_manifest_edit_re_resolves_the_imports_that_depend_on_it() {
+        let fixture = cargo_fixture("rust-local-crate-edit");
+        assert_eq!(import_gap_reasons(&fixture).len(), 1);
+
+        // Renaming the package alone changes nothing: the app's own
+        // dependency key still names a local `path`.
+        fixture.save(
+            "crates/my-engine/Cargo.toml",
+            "[package]\nname = \"my-engine-renamed\"\n",
+        );
+        assert_eq!(import_gap_reasons(&fixture).len(), 1);
+
+        // Dropping that dependency leaves `my_engine` an ordinary name,
+        // and the import is proven external without main.rs changing.
+        fixture.save(
+            "crates/app/Cargo.toml",
+            "[package]\nname = \"app\"\n[dependencies]\nserde = \"1\"\n",
+        );
+        assert!(import_gap_reasons(&fixture).is_empty(), "no candidate left");
+        assert_eq!(external_packages(&fixture), ["my_engine", "serde", "std"]);
+
+        // And back: the candidate returns, again without touching main.rs.
+        fixture.save("crates/my-engine/Cargo.toml", ENGINE_MANIFEST);
+        fixture.save("crates/app/Cargo.toml", APP_MANIFEST);
+        assert_eq!(import_gap_reasons(&fixture).len(), 1);
+        assert_eq!(external_packages(&fixture), ["serde", "std"]);
+    }
+
+    #[test]
+    fn an_unreadable_manifest_leaves_its_imports_explicitly_incomplete() {
+        let fixture = cargo_fixture("rust-local-crate-broken");
+
+        fixture.save("crates/app/Cargo.toml", "[package\nname = ");
+        let reasons = import_gap_reasons(&fixture);
+        assert!(
+            reasons
+                .iter()
+                .any(|row| row.contains("CONFIG_DEPENDENT_SPECIFIER:serde::Serialize")),
+            "{reasons:?}"
+        );
+        assert!(
+            !reasons.iter().any(|row| row.contains("std::fmt")),
+            "the language's own crates are never in question: {reasons:?}"
+        );
+        assert_eq!(external_packages(&fixture), ["std"]);
+
+        // Repaired, it is exactly as it was.
+        fixture.save("crates/app/Cargo.toml", APP_MANIFEST);
+        assert_eq!(import_gap_reasons(&fixture).len(), 1);
+        assert_eq!(external_packages(&fixture), ["serde", "std"]);
+    }
+
+    #[test]
+    fn an_explicit_lib_name_and_a_dependency_alias_are_candidates_too() {
+        let fixture = cargo_fixture("rust-local-crate-names");
+        fixture.save(
+            "crates/my-engine/Cargo.toml",
+            "[package]\nname = \"my-engine\"\n[lib]\nname = \"engine_lib\"\n",
+        );
+        fixture.save(
+            "crates/app/Cargo.toml",
+            "[package]\nname = \"app\"\n[dependencies]\n\
+             eng = { package = \"my-engine\", path = \"../my-engine\" }\n",
+        );
+        fixture.save(
+            MAIN_RS,
+            "use engine_lib::a;\nuse eng::b;\nuse my_engine::c;\nuse other::d;\n\npub fn run() {}\n",
+        );
+        assert_eq!(
+            import_gap_reasons(&fixture),
+            [
+                "IMPORT_SITE:RUST_WORKSPACE_CRATE_REQUIRES_SEMANTICS:eng::b",
+                "IMPORT_SITE:RUST_WORKSPACE_CRATE_REQUIRES_SEMANTICS:engine_lib::a",
+                "IMPORT_SITE:RUST_WORKSPACE_CRATE_REQUIRES_SEMANTICS:my_engine::c",
+            ]
+        );
+        assert_eq!(external_packages(&fixture), ["other"]);
     }
 }

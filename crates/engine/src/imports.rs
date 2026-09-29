@@ -53,6 +53,7 @@ use brainprint_core::ResourceId;
 use tree_sitter::Node;
 
 use crate::{
+    cargo_crates::LocalCrateNames,
     extract::{children_by_field, span_of},
     graph::{ExternalEntity, GraphEndpoint, Relation, RelationKind},
     parser::{ParseTree, ParserDialect, SourceSpan},
@@ -131,6 +132,11 @@ pub enum UnresolvedImport {
     /// A specifier whose meaning depends on build configuration this
     /// tier does not read (a root-absolute path, a path alias).
     ConfigDependentSpecifier,
+    /// A Rust absolute `use` whose first segment could name a crate from
+    /// this Workspace's own Cargo manifests (#48). It is neither proven
+    /// external nor resolved to a Resource: Cargo decides which crate
+    /// the name reaches, so a semantic backend has to.
+    RustWorkspaceCrate,
     /// A grouped or glob `use`/import whose module set is not one
     /// specifier.
     CompoundSpecifier,
@@ -151,6 +157,9 @@ pub struct ResolvedImport {
 #[derive(Debug, Clone, Default)]
 pub struct WorkspaceModules {
     by_path: HashMap<String, ResourceId>,
+    /// The Rust import names this Workspace's manifests could give a
+    /// local crate (#48). Empty unless the caller read the manifests.
+    rust_crates: LocalCrateNames,
 }
 
 impl WorkspaceModules {
@@ -162,7 +171,17 @@ impl WorkspaceModules {
                 .filter(|resource| resource.state == ResourceState::Active)
                 .map(|resource| (resource.path_key.clone(), resource.id))
                 .collect(),
+            rust_crates: LocalCrateNames::default(),
         }
+    }
+
+    /// The same inventory, told which Rust import names could be a crate
+    /// from this Workspace. Read from the indexed Cargo manifests by the
+    /// caller, because this resolver is pure and reads no file.
+    #[must_use]
+    pub fn with_rust_crates(mut self, rust_crates: LocalCrateNames) -> Self {
+        self.rust_crates = rust_crates;
+        self
     }
 
     fn get(&self, path: &str) -> Option<ResourceId> {
@@ -424,7 +443,7 @@ fn resolve(
         | ParserDialect::Jsx
         | ParserDialect::TypeScript
         | ParserDialect::Tsx => resolve_js_ts(owner, modules, statement),
-        ParserDialect::Rust => resolve_rust(statement),
+        ParserDialect::Rust => resolve_rust(owner, modules, statement),
         // A `using` names a namespace. Nothing in the syntax says which
         // file or assembly provides it.
         ParserDialect::CSharp => ImportOutcome::Unresolved(UnresolvedImport::CSharpNamespace),
@@ -548,7 +567,11 @@ fn js_candidates(path: &str) -> Vec<String> {
     candidates
 }
 
-fn resolve_rust(statement: &ImportStatement) -> ImportOutcome {
+fn resolve_rust(
+    owner: &Resource,
+    modules: &WorkspaceModules,
+    statement: &ImportStatement,
+) -> ImportOutcome {
     if statement.specifier.contains('{') || statement.specifier.contains('*') {
         return ImportOutcome::Unresolved(UnresolvedImport::CompoundSpecifier);
     }
@@ -559,8 +582,23 @@ fn resolve_rust(statement: &ImportStatement) -> ImportOutcome {
     if crate_name.is_empty() {
         return ImportOutcome::Unresolved(UnresolvedImport::CompoundSpecifier);
     }
-    // The first segment of a non-relative `use` is a crate. Which item
-    // inside it the path ends at is not something this tier claims.
+    // The first segment of a non-relative `use` is a crate -- unless a
+    // Cargo manifest in this Workspace could give a local crate that name
+    // (#48). Then it is a candidate rather than a proven package, and
+    // never a structural claim about which crate Cargo picked.
+    if modules.rust_crates.could_name(crate_name) {
+        return ImportOutcome::Unresolved(UnresolvedImport::RustWorkspaceCrate);
+    }
+    // The manifest that would say could not be read: not knowing is not
+    // "external".
+    if modules
+        .rust_crates
+        .is_incomplete_for(&owner.path_key, crate_name)
+    {
+        return ImportOutcome::Unresolved(UnresolvedImport::ConfigDependentSpecifier);
+    }
+    // Which item inside it the path ends at is not something this tier
+    // claims.
     ImportOutcome::External(external_module(crate_name, &statement.specifier, "::"))
 }
 
@@ -767,6 +805,21 @@ mod tests {
             }
         }
 
+        /// The same inventory, having read these Cargo manifests.
+        fn with_manifests(mut self, manifests: &[(&str, &str)]) -> Self {
+            let sources: Vec<crate::cargo_crates::ManifestSource<'_>> = manifests
+                .iter()
+                .map(|(path_key, text)| crate::cargo_crates::ManifestSource {
+                    path_key,
+                    text: Some(text),
+                })
+                .collect();
+            self.modules = self
+                .modules
+                .with_rust_crates(LocalCrateNames::from_manifests(&sources));
+            self
+        }
+
         fn id(&self, path: &str) -> ResourceId {
             self.ids
                 .iter()
@@ -934,6 +987,164 @@ mod tests {
         assert_eq!(
             resolved[0].1,
             ImportOutcome::Unresolved(UnresolvedImport::ConfigDependentSpecifier)
+        );
+    }
+
+    const LOCAL_MANIFESTS: [(&str, &str); 2] = [
+        (
+            "crates/my-engine/Cargo.toml",
+            "[package]\nname = \"my-engine\"\n",
+        ),
+        (
+            "crates/app/Cargo.toml",
+            "[package]\nname = \"app\"\n[dependencies]\n\
+             eng = { package = \"my-engine\", path = \"../my-engine\" }\n\
+             serde = \"1\"\n",
+        ),
+    ];
+
+    #[test]
+    fn a_rust_import_that_could_name_a_local_crate_is_a_candidate_not_a_package() {
+        let scenario =
+            Scenario::new("crates/app/src/main.rs", &[]).with_manifests(&LOCAL_MANIFESTS);
+        let resolved = scenario.resolve(
+            "use my_engine::config::load;\nuse eng::other;\nuse serde::Serialize;\nuse std::fmt;\n",
+        );
+        let outcome = |specifier: &str| {
+            &resolved
+                .iter()
+                .find(|(written, _)| written == specifier)
+                .unwrap_or_else(|| panic!("{specifier}"))
+                .1
+        };
+
+        // A package name in crate spelling, and a dependency alias: both
+        // could be a local crate, and neither is decided here.
+        for local in ["my_engine::config::load", "eng::other"] {
+            assert_eq!(
+                outcome(local),
+                &ImportOutcome::Unresolved(UnresolvedImport::RustWorkspaceCrate),
+                "{local} is neither External nor a Resource"
+            );
+        }
+        // An ordinary crate, and the language's own, stay proven external.
+        for external in ["serde::Serialize", "std::fmt"] {
+            assert!(
+                matches!(outcome(external), ImportOutcome::External(_)),
+                "{external}"
+            );
+        }
+    }
+
+    #[test]
+    fn each_grouped_use_leaf_is_classified_on_its_own() {
+        let scenario =
+            Scenario::new("crates/app/src/main.rs", &[]).with_manifests(&LOCAL_MANIFESTS);
+        let resolved = scenario.resolve("use {my_engine::a, serde::b, my_engine::{c, d}};\n");
+        let kinds: Vec<(&str, bool)> = resolved
+            .iter()
+            .map(|(specifier, outcome)| {
+                (
+                    specifier.as_str(),
+                    matches!(
+                        outcome,
+                        ImportOutcome::Unresolved(UnresolvedImport::RustWorkspaceCrate)
+                    ),
+                )
+            })
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                ("my_engine::a", true),
+                ("serde::b", false),
+                ("my_engine::c", true),
+                ("my_engine::d", true)
+            ]
+        );
+    }
+
+    #[test]
+    fn a_name_collision_never_chooses_a_target() {
+        // A local package called `serde` and a registry `serde` are one
+        // name. Nothing here says which Cargo picked.
+        let scenario = Scenario::new("crates/app/src/main.rs", &["crates/serde/src/lib.rs"])
+            .with_manifests(&[
+                ("crates/serde/Cargo.toml", "[package]\nname = \"serde\"\n"),
+                (
+                    "crates/app/Cargo.toml",
+                    "[package]\nname = \"app\"\n[dependencies]\nserde = \"1\"\n",
+                ),
+            ]);
+        let resolved = scenario.resolve("use serde::Serialize;\n");
+        assert_eq!(
+            resolved[0].1,
+            ImportOutcome::Unresolved(UnresolvedImport::RustWorkspaceCrate),
+            "neither the sibling Resource nor a proven package"
+        );
+    }
+
+    #[test]
+    fn an_unreadable_manifest_guesses_no_crate_and_marks_only_the_files_it_owns() {
+        let sources = [
+            crate::cargo_crates::ManifestSource {
+                path_key: "crates/app/Cargo.toml",
+                text: Some("[package\nname ="),
+            },
+            crate::cargo_crates::ManifestSource {
+                path_key: "crates/other/Cargo.toml",
+                text: Some("[package]\nname = \"other\"\n"),
+            },
+        ];
+        let names = LocalCrateNames::from_manifests(&sources);
+        let inside = Scenario::new("crates/app/src/main.rs", &[]);
+        let inside = Scenario {
+            modules: inside.modules.clone().with_rust_crates(names.clone()),
+            ..inside
+        };
+        let resolved = inside.resolve("use serde::Serialize;\nuse std::fmt;\nuse app::x;\n");
+        assert_eq!(
+            resolved[0].1,
+            ImportOutcome::Unresolved(UnresolvedImport::ConfigDependentSpecifier),
+            "whether `serde` is local is not known, so it is not called external"
+        );
+        assert!(
+            matches!(resolved[1].1, ImportOutcome::External(_)),
+            "the language's own crates never are in question"
+        );
+        assert_eq!(
+            resolved[2].1,
+            ImportOutcome::Unresolved(UnresolvedImport::ConfigDependentSpecifier),
+            "and no package name is guessed from the manifest that could not be read"
+        );
+
+        let elsewhere = Scenario::new("crates/other/src/lib.rs", &[]);
+        let elsewhere = Scenario {
+            modules: elsewhere.modules.clone().with_rust_crates(names),
+            ..elsewhere
+        };
+        assert!(matches!(
+            elsewhere.resolve("use serde::Serialize;\n")[0].1,
+            ImportOutcome::External(_)
+        ));
+    }
+
+    #[test]
+    fn module_tree_paths_and_globs_are_unchanged_by_local_crate_names() {
+        let scenario =
+            Scenario::new("crates/app/src/main.rs", &[]).with_manifests(&LOCAL_MANIFESTS);
+        let resolved = scenario.resolve("use crate::a;\nuse self::b;\nuse my_engine::*;\n");
+        assert_eq!(
+            resolved[0].1,
+            ImportOutcome::Unresolved(UnresolvedImport::RustModuleTree)
+        );
+        assert_eq!(
+            resolved[1].1,
+            ImportOutcome::Unresolved(UnresolvedImport::RustModuleTree)
+        );
+        assert_eq!(
+            resolved[2].1,
+            ImportOutcome::Unresolved(UnresolvedImport::CompoundSpecifier)
         );
     }
 

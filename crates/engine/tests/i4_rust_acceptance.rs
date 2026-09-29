@@ -497,6 +497,48 @@ impl Slice {
             .collect()
     }
 
+    /// Every open import gap one Resource holds, as `reason:lookup`.
+    fn import_gaps(&self, rel: &str) -> Vec<String> {
+        let connection = Connection::open(&self.db_path).expect("index.db");
+        let mut statement = connection
+            .prepare(
+                "SELECT u.reason || ':' || u.lookup_name \
+                 FROM unresolved_reference u \
+                 JOIN occurrence o ON o.id = u.occurrence_id \
+                 JOIN resource r ON r.id = o.resource_id \
+                 WHERE r.uid = ?1 AND u.intended_relation_kind = 'IMPORTS' \
+                 ORDER BY o.start_byte",
+            )
+            .expect("statement");
+        statement
+            .query_map(
+                rusqlite::params![self.resource(rel).id.to_bytes().to_vec()],
+                |row| row.get::<_, String>(0),
+            )
+            .expect("query")
+            .map(|row| row.expect("row"))
+            .collect()
+    }
+
+    /// The packages one Resource's imports are proven to name, as
+    /// canonical External identities.
+    fn external_imports(&self, rel: &str) -> Vec<String> {
+        let mut found: Vec<String> = self
+            .outgoing(
+                &GraphEndpoint::Resource(self.resource(rel).id),
+                &[RelationKind::Imports],
+            )
+            .into_iter()
+            .filter_map(|target| match target {
+                GraphEndpoint::External(external) => Some(external.package_identity),
+                _ => None,
+            })
+            .collect();
+        found.sort();
+        found.dedup();
+        found
+    }
+
     /// The candidate for `name` written right after `anchor`.
     fn candidate(&self, rel: &str, anchor: &str, name: &str) -> Candidate {
         let start = self.offset_of(rel, anchor, 0) + anchor.find(name).expect("inside");
@@ -1712,5 +1754,116 @@ fn an_untrusted_workspace_keeps_every_macro_candidate_as_a_gap() {
             .all(|candidate| candidate.open_gap && !candidate.bound),
         "no backend, so no proof"
     );
+    slice.assert_nothing_executed();
+}
+
+// ---------------------------------------------------------------------
+// Sibling workspace crate imports (#48)
+// ---------------------------------------------------------------------
+
+const SIBLING_CRATE_GAP: &str = "RUST_WORKSPACE_CRATE_REQUIRES_SEMANTICS";
+
+/// `use bp_core::...` names a crate from this very Workspace. Structure
+/// cannot say which crate Cargo picked, so each such import is a
+/// candidate gap owned by its importer -- and the importer's own refresh
+/// is what lets rust-analyzer resolve it, with nothing published for any
+/// other Resource. An ordinary crate stays a proven External.
+#[test]
+#[ignore = "needs an installed rust-analyzer"]
+fn a_sibling_workspace_crate_import_is_resolved_by_its_owners_refresh() {
+    let Some(install) = install_or_skip() else {
+        return;
+    };
+    let slice = Slice::open(
+        "sibling-crate",
+        74,
+        &install,
+        ProjectExecutionTrust::Trusted,
+    );
+
+    // Structurally: every `bp_*` import is a candidate, none is External,
+    // and the standard library is still proven without any semantics.
+    let before = slice.import_gaps(MAIN);
+    assert!(
+        before.len() >= 10
+            && before
+                .iter()
+                .all(|gap| gap.starts_with(&format!("{SIBLING_CRATE_GAP}:bp_"))),
+        "{before:?}"
+    );
+    assert!(
+        slice.external_imports(MAIN).is_empty(),
+        "a sibling crate is not a proven external package: {:?}",
+        slice.external_imports(MAIN)
+    );
+    let build_script = "crates/core/build.rs";
+    assert!(slice.import_gaps(build_script).is_empty());
+    assert_eq!(slice.external_imports(build_script), ["std"]);
+
+    slice.with_host(|queries| {
+        // Only the importer is refreshed.
+        slice.refresh(queries, MAIN);
+
+        let after = slice.import_gaps(MAIN);
+        assert!(
+            after.is_empty(),
+            "the owner's refresh resolved them: {after:?}"
+        );
+        assert!(
+            !slice.import_gaps(RUNNER).is_empty(),
+            "another importer's gaps are its own, and untouched"
+        );
+
+        // The call the import backs is bound in the same refresh.
+        let target = slice.only("crates/core/src/target_probe.rs", "target_probe");
+        let call = slice.offset_of(MAIN, "let _cross_crate = target_probe()", 0)
+            + "let _cross_crate = ".len();
+        assert_eq!(
+            slice.target_at(MAIN, call, call + "target_probe".len()),
+            Some(GraphEndpoint::Symbol(target.id)),
+            "the cross-crate call resolves through the owner refresh"
+        );
+        // And the import that names it is now an edge to the declaration,
+        // not to a package.
+        let import = slice.offset_of(MAIN, "bp_core::target_probe::target_probe", 0);
+        assert_eq!(
+            slice.target_at(
+                MAIN,
+                import,
+                import + "bp_core::target_probe::target_probe".len()
+            ),
+            Some(GraphEndpoint::Symbol(target.id))
+        );
+        assert!(
+            slice.external_imports(MAIN).is_empty(),
+            "and still nothing is claimed to be an external package"
+        );
+        slice.assert_nothing_executed();
+    });
+}
+
+/// Untrusted, or no backend at all: the candidate imports stay explicit
+/// gaps; nothing is called external and nothing is resolved.
+#[test]
+#[ignore = "needs an installed rust-analyzer"]
+fn an_untrusted_workspace_keeps_sibling_crate_imports_as_explicit_gaps() {
+    let Some(install) = install_or_skip() else {
+        return;
+    };
+    let slice = Slice::open(
+        "sibling-untrusted",
+        76,
+        &install,
+        ProjectExecutionTrust::Untrusted,
+    );
+    let gaps = slice.import_gaps(MAIN);
+    assert!(
+        gaps.len() >= 10
+            && gaps
+                .iter()
+                .all(|gap| gap.starts_with(&format!("{SIBLING_CRATE_GAP}:bp_"))),
+        "{gaps:?}"
+    );
+    assert!(slice.external_imports(MAIN).is_empty());
     slice.assert_nothing_executed();
 }

@@ -952,6 +952,36 @@ async fn target_for(
     target
 }
 
+/// A symbol target pinned to one Resource by reading the index directly.
+///
+/// Pinning through [`target_for`] is itself a relations query, and asking
+/// about a Resource that holds a requires-semantics gap (a sibling-crate
+/// import, #48) is exactly what wakes a backend. A structural-only step
+/// must not do that.
+fn structural_target_for(
+    root: &Path,
+    name: &str,
+    language: ResourceLanguageWire,
+    within: Option<&str>,
+) -> ProjectionTargetWire {
+    let mut target = symbol(name, language);
+    if let (Some(path), ProjectionTargetWire::Symbol(symbol)) = (within, &mut target) {
+        let index = SemanticIndex::open(&WorkspacePaths::from_root(root).index_db).expect("index");
+        let uid: Vec<u8> = index
+            .connection()
+            .query_row(
+                "SELECT uid FROM resource WHERE path_key = ?1",
+                [path],
+                |row| row.get(0),
+            )
+            .expect("the Resource is indexed");
+        symbol.resource = Some(brainprint_core::ResourceId::from_bytes(
+            uid.as_slice().try_into().expect("a 16-byte uid"),
+        ));
+    }
+    target
+}
+
 async fn outgoing_within(
     daemon: &Daemon,
     workspace: WorkspaceId,
@@ -1110,8 +1140,7 @@ async fn csharp_and_rust_enrich_only_under_explicit_workspace_trust() {
             .query(
                 workspace,
                 QueryOperationWire::Find(FindQueryWire::Target {
-                    target: target_for(&daemon, workspace, case.name, case.language, case.within)
-                        .await,
+                    target: structural_target_for(&root, case.name, case.language, case.within),
                     delivery: delivery(),
                 }),
             )
@@ -1373,6 +1402,38 @@ async fn brainprints_own_macro_calls_resolve_through_the_product_path() {
         "the two macro-nested calls: {before:?}"
     );
     assert!(calls_before.iter().all(|(_, bound, gap)| !bound && *gap));
+    // #48: the daemon's import of a sibling crate is a candidate that
+    // requires semantics -- not a proven external package.
+    let lifecycle_rs = "crates/daemon/src/query/lifecycle.rs";
+    {
+        let index = SemanticIndex::open(&WorkspacePaths::from_root(&root).index_db).expect("index");
+        let count = |sql: &str| -> i64 {
+            index
+                .connection()
+                .query_row(sql, [lifecycle_rs], |row| row.get(0))
+                .expect("count")
+        };
+        let candidates = count(
+            "SELECT COUNT(*) FROM unresolved_reference u \
+             JOIN occurrence o ON o.id = u.occurrence_id \
+             JOIN resource r ON r.id = o.resource_id \
+             WHERE r.path_key = ?1 AND u.intended_relation_kind = 'IMPORTS' \
+               AND u.reason = 'RUST_WORKSPACE_CRATE_REQUIRES_SEMANTICS' \
+               AND u.lookup_name LIKE 'brainprint_engine::%'",
+        );
+        let external = count(
+            "SELECT COUNT(*) FROM occurrence o \
+             JOIN resource r ON r.id = o.resource_id \
+             JOIN relation rel ON rel.id = o.relation_id \
+             JOIN graph_entity g ON g.id = rel.target_entity_id \
+             JOIN external_entity e ON e.id = g.external_entity_id \
+             WHERE r.path_key = ?1 AND rel.kind = 'IMPORTS' \
+               AND e.package_identity = 'brainprint_engine'",
+        );
+        println!("lifecycle.rs: {candidates} sibling-crate import candidates, {external} External");
+        assert!(candidates >= 1, "the import creates semantic demand");
+        assert_eq!(external, 0, "and is no longer a proven External package");
+    }
     let stats = daemon.semantic(workspace).await;
     assert_eq!(stats.backend_starts, 0, "structure alone starts nothing");
 
@@ -1498,30 +1559,63 @@ async fn brainprints_own_macro_calls_resolve_through_the_product_path() {
     assert_eq!(stats.backend_requests, requests, "current: no request");
 
     // Each owner proves its own sites: a caller in another file appears
-    // once that file is asked about, and only then -- nothing published
-    // here for a Resource this refresh did not own. (The last known
-    // caller, in `crates/daemon/src/query/lifecycle.rs`, needs a sibling
-    // crate's import resolved and is #48's.)
-    let other = "crates/engine/src/query_surface.rs";
-    daemon
-        .relations(
-            workspace,
-            ProjectionTargetWire::Resource(ResourceTargetWire::Path(other.to_owned())),
-            RelationDirectionWire::Outgoing,
-        )
-        .await;
-    let result = daemon
-        .relations(workspace, target, RelationDirectionWire::Incoming)
-        .await;
-    let answer = result.answers.into_iter().next().expect("one answer");
-    println!(
-        "call sites after asking about {other}: {}",
-        call_sites(&answer)
-    );
+    // once that file is asked about, and only then -- nothing is
+    // published here for a Resource this refresh did not own. With
+    // #47's macro candidates and #48's sibling-crate import, the known
+    // inventory is complete.
+    let mut previous = call_sites(&again);
+    let mut answer = answer;
+    for other in ["crates/engine/src/query_surface.rs", lifecycle_rs] {
+        daemon
+            .relations(
+                workspace,
+                ProjectionTargetWire::Resource(ResourceTargetWire::Path(other.to_owned())),
+                RelationDirectionWire::Outgoing,
+            )
+            .await;
+        let result = daemon
+            .relations(workspace, target.clone(), RelationDirectionWire::Incoming)
+            .await;
+        answer = result.answers.into_iter().next().expect("one answer");
+        println!(
+            "call sites after asking about {other}: {}",
+            call_sites(&answer)
+        );
+        assert_eq!(call_sites(&answer), previous + 1, "{other} joined");
+        previous = call_sites(&answer);
+    }
+    let found: std::collections::BTreeSet<String> = answer
+        .confirmed
+        .iter()
+        .filter(|relation| relation.kind == RelationKindWire::Calls)
+        .flat_map(|relation| {
+            relation.evidence.iter().map(|site| {
+                format!(
+                    "{}:{}",
+                    paths
+                        .get(site.resource.to_bytes().as_slice())
+                        .map_or("?", String::as_str),
+                    site.span.start.line + 1
+                )
+            })
+        })
+        .collect();
+    let expected: std::collections::BTreeSet<String> = [
+        "crates/daemon/src/query/lifecycle.rs:115",
+        "crates/engine/src/config.rs:446",
+        "crates/engine/src/config.rs:462",
+        "crates/engine/src/config.rs:472",
+        "crates/engine/src/config.rs:525",
+        "crates/engine/src/config.rs:538",
+        "crates/engine/src/config.rs:550",
+        "crates/engine/src/query_surface.rs:543",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect();
     assert_eq!(
-        call_sites(&answer),
-        call_sites(&again) + 1,
-        "{other} joined"
+        found, expected,
+        "the grep-verified callers, and no false one"
     );
 
     daemon.stop().await;

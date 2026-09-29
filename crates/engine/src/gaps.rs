@@ -157,6 +157,11 @@ pub enum UnresolvedReason {
     /// expansion executes it is a compiler question: the site is a
     /// candidate, not a finding, until a semantic backend proves it.
     MacroCallRequiresSemantics,
+    /// A Rust absolute import whose first segment could name a crate from
+    /// this Workspace's own Cargo manifests (#48). Whether it does is
+    /// Cargo's decision, so it is a candidate until a semantic backend
+    /// resolves it.
+    RustWorkspaceCrateRequiresSemantics,
 }
 
 impl UnresolvedReason {
@@ -180,6 +185,7 @@ impl UnresolvedReason {
             Self::OverrideTargetRequiresSemantics => "OVERRIDE_TARGET_REQUIRES_SEMANTICS",
             Self::DynamicKeyExpression => "DYNAMIC_KEY_EXPRESSION",
             Self::MacroCallRequiresSemantics => "MACRO_CALL_REQUIRES_SEMANTICS",
+            Self::RustWorkspaceCrateRequiresSemantics => "RUST_WORKSPACE_CRATE_REQUIRES_SEMANTICS",
         }
     }
 
@@ -202,6 +208,7 @@ impl UnresolvedReason {
             "OVERRIDE_TARGET_REQUIRES_SEMANTICS" => Self::OverrideTargetRequiresSemantics,
             "DYNAMIC_KEY_EXPRESSION" => Self::DynamicKeyExpression,
             "MACRO_CALL_REQUIRES_SEMANTICS" => Self::MacroCallRequiresSemantics,
+            "RUST_WORKSPACE_CRATE_REQUIRES_SEMANTICS" => Self::RustWorkspaceCrateRequiresSemantics,
             other => {
                 return Err(GapError::UnknownReason {
                     raw: other.to_owned(),
@@ -224,6 +231,7 @@ impl UnresolvedReason {
                 | Self::OverrideTargetRequiresSemantics
                 | Self::ConfigDependentSpecifier
                 | Self::MacroCallRequiresSemantics
+                | Self::RustWorkspaceCrateRequiresSemantics
         )
     }
 
@@ -373,6 +381,9 @@ const fn reason_of_import(reason: UnresolvedImport) -> UnresolvedReason {
         UnresolvedImport::RustModuleTree => UnresolvedReason::ModuleTreeRequiresSemantics,
         UnresolvedImport::CSharpNamespace => UnresolvedReason::NamespaceRequiresSemantics,
         UnresolvedImport::ConfigDependentSpecifier => UnresolvedReason::ConfigDependentSpecifier,
+        UnresolvedImport::RustWorkspaceCrate => {
+            UnresolvedReason::RustWorkspaceCrateRequiresSemantics
+        }
         UnresolvedImport::CompoundSpecifier => UnresolvedReason::CompoundSpecifier,
     }
 }
