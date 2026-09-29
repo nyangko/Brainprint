@@ -3,9 +3,13 @@
 Execution contract: issue #32. This directory holds the compact, reproducible
 artifact of the rerun. No raw transcripts or model reasoning are stored.
 
-- `ab_summary.json` — per-run metrics of the Claude Code A/B (10 runs), the
+- `ab_summary_r1_278f4cb.json` — per-run metrics of the first Claude Code A/B (10 runs, base `278f4cb`), the
   first-route/adoption/economy counters, the hook telemetry aggregates and the
   answer grades. The final answers themselves are not kept.
+- `ab_summary_r2_4e270fc.json` — the same A/B rerun, same harness, after the T1/T2 fixes
+  (`4e270fc`, lint fix `f1bd8e6`). One A run (`T2-A-r2`) lists one Brainprint call:
+  the agent ran `which brainprint` and the analyzer classified it; the A arm has no
+  Brainprint tool.
 - `harness/` — the scripts that produced every number. Absolute paths are
   templated as `@T14_ROOT@`; instantiate with
   `sed -i '' "s#@T14_ROOT@#$T14_ROOT#g" harness/*` (GNU sed: drop the `''`).
@@ -45,3 +49,11 @@ artifact of the rerun. No raw transcripts or model reasoning are stored.
 - All runs shared one machine that also ran unrelated work; wall-time and RSS
   are observations, not thresholds. No target number is LOCKED, so none is
   asserted.
+- Rerun 2 (`4e270fc`): the isolated `HOME` must start with a fresh Brainprint
+  registry when worktree paths repeat (`brainprint init` refuses a path whose
+  registry entry points at a deleted project home). Keep the global
+  `config.toml`, delete the rest of `~/.brainprint`, `install`, then `init`.
+- Analyzer counts: `sequence` lists tool calls in order; `readAfterBP` counts a
+  native Read of a path that appeared in earlier Brainprint output, whether or
+  not Brainprint delivered that file's content (a location-only `find text`
+  hit counts).
