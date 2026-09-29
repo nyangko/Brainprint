@@ -339,9 +339,7 @@ fn freshness_barrier(
             if let Err(error) = lifecycle.ensure_current() {
                 // Not fatal to the query: recovery failure leaves the
                 // index DIRTY, and the query reports NOT_CURRENT.
-                eprintln!(
-                    "brainprintd: workspace {workspace} freshness recovery failed: {error}"
-                );
+                eprintln!("brainprintd: workspace {workspace} freshness recovery failed: {error}");
             }
             Ok(())
         }
@@ -645,7 +643,6 @@ fn run_query(
     });
     Ok((result_wire, ack_token))
 }
-
 
 #[cfg(test)]
 mod tests {
