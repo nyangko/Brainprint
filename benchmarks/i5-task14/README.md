@@ -102,3 +102,28 @@ Instruction only, no product change. `harness/instr.md` is appended to the B1 wo
   answer a structural query; (5) a run must never be started twice (macOS has no `setsid`; use
   `start_new_session`).
 
+
+## Multi-task session experiment (base `4b20e91`)
+
+Harness/measurement only; no product code, packet contract or earlier result changed.
+
+- **C1 as B's default execution instruction (B1).** The text of `harness/instr.md` (unchanged from the
+  `ed2abd0` experiment) is appended to the *measured B worktree's* `CLAUDE.md` by `harness/run_multi.sh`.
+  It is not written to the shipped `integrations/brainprint/SKILL.md` or to the repository `CLAUDE.md`
+  (putting it into the shipped skill/bootstrap is a separate product decision). Correctness/freshness rules are
+  kept in the text ("keep judging every answer by its currentness and coverage/limits, fall back to native tools").
+- `harness/session.py` — one Claude Code process (`-p --input-format stream-json`), six user turns sent one after
+  the other, each after the previous `result`; samples RSS of the Brainprint processes every 0.5 s.
+  `harness/run_multi.sh` (one session in a fresh worktree at `4b20e91`, `benchmarks/i5-task14/` removed for A and B),
+  `run_multi_all.sh` (8 sessions), `multi_compare.py` (per-turn cost split, grading, pairing).
+- Tasks T1..T6 (`prompts.json`, ground truth in `gt.md`); orders `O1 = T1..T6` and `O2 = T6..T1`.
+  Sessions: A and B1 x O1/O2 x 2 rounds (ABBA over the two rounds) = 4 sessions per condition.
+- `analysis/multi_task_session_4b20e91.json` (+ `_summary.txt`) — per session and per turn: cost, tokens by type, cost split
+  (BASE/SETUP/BP_RESULT/NATIVE_RESULT/OTHER/OUTPUT), ToolSearch calls/tokens, Brainprint/native calls and bytes, latency, RSS, grade.
+- Measurement notes: `total_cost_usd` in the stream is *cumulative over the session*, `usage` is per turn (the turn cost is the
+  difference; checked against tokens x fitted prices, residual < 0.01 USD). The grader attributes a bare `:NNN` to the last
+  file named before it and was fixed once after the first A session showed false negatives (answers correct, grader too strict);
+  `false_calls` (look-alike sites cited anywhere) is informational and was read by hand. Harness defects: a first attempt of
+  session `B1-O1-r2` was discarded (a turn hit the 900 s limit while the machine slept: T6 never returned); its rerun aborted once
+  on the stale-registry guard (defect 3 above) and was then run with a reset registry. Both are excluded; the numbers are from the
+  completed rerun.

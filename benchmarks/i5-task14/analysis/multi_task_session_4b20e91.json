@@ -1,0 +1,3937 @@
+{
+ "price_per_million_usd": {
+  "input_tokens": 4.0,
+  "cache_creation_input_tokens": 8.0,
+  "cache_read_input_tokens": 0.2,
+  "output_tokens": 20.0
+ },
+ "sessions": [
+  {
+   "session": "A-O1-r1",
+   "cond": "A",
+   "order": "O1",
+   "round": "r1",
+   "cache_class": "STATIC",
+   "req0_cache_write": 4239,
+   "req0_cache_read": 11875,
+   "extended_cache_hits": 0,
+   "degraded": false,
+   "complete": true,
+   "total_usd": 0.7722,
+   "turns": [
+    {
+     "task": "T1",
+     "pos": 1,
+     "cost_usd": 0.1993934,
+     "cost_split_usd": {
+      "BASE": 0.05568,
+      "SETUP": 0.0,
+      "BP_RESULT": 0.0,
+      "NATIVE_RESULT": 0.06559,
+      "OTHER": 0.0,
+      "OUTPUT": 0.07812
+     },
+     "split_check_usd": -3e-06,
+     "price_residual": 0.0,
+     "tokens": {
+      "input": 14,
+      "output": 3906,
+      "cache_write": 11974,
+      "cache_read": 127127
+     },
+     "usd_by_token_type": {
+      "input": 6e-05,
+      "output": 0.07812,
+      "cache_write": 0.09579,
+      "cache_read": 0.02543
+     },
+     "api_requests": 7,
+     "req0_cache_write": 4239,
+     "req0_cache_read": 11875,
+     "toolsearch_calls": 0,
+     "toolsearch_tokens": 0,
+     "toolsearch_queries": [],
+     "bp_calls": 0,
+     "bp_kinds": [],
+     "bp_bytes": 0,
+     "bp_latency_s": {
+      "n": 0,
+      "p50": null,
+      "max": null
+     },
+     "native_calls": 6,
+     "native_bytes": 12564,
+     "native_by_tool": {
+      "Grep": 1,
+      "Bash": 5
+     },
+     "native_read_calls": 0,
+     "native_read_after_bp": 0,
+     "wall_s": 41.27,
+     "num_turns": 7,
+     "t1_sites_from_change_pages": null,
+     "t1_unconfirmed_caller_owners": null,
+     "grade": {
+      "sites_found": 8,
+      "sites_expected": 8,
+      "missing": [],
+      "unexplained_line_numbers_in_call_site_section": [
+       437,
+       452,
+       468,
+       516,
+       531
+      ],
+      "signature": true,
+      "pass": true
+     }
+    },
+    {
+     "task": "T2",
+     "pos": 2,
+     "cost_usd": 0.17031260000000004,
+     "cost_split_usd": {
+      "BASE": 0.02262,
+      "SETUP": 0.0,
+      "BP_RESULT": 0.0,
+      "NATIVE_RESULT": 0.08173,
+      "OTHER": 0.01577,
+      "OUTPUT": 0.0502
+     },
+     "split_check_usd": 7e-06,
+     "price_residual": 0.0,
+     "tokens": {
+      "input": 14,
+      "output": 2510,
+      "cache_write": 9934,
+      "cache_read": 202923
+     },
+     "usd_by_token_type": {
+      "input": 6e-05,
+      "output": 0.0502,
+      "cache_write": 0.07947,
+      "cache_read": 0.04058
+     },
+     "api_requests": 7,
+     "req0_cache_write": 1714,
+     "req0_cache_read": 23849,
+     "toolsearch_calls": 0,
+     "toolsearch_tokens": 0,
+     "toolsearch_queries": [],
+     "bp_calls": 0,
+     "bp_kinds": [],
+     "bp_bytes": 0,
+     "bp_latency_s": {
+      "n": 0,
+      "p50": null,
+      "max": null
+     },
+     "native_calls": 6,
+     "native_bytes": 15577,
+     "native_by_tool": {
+      "Grep": 2,
+      "Bash": 3,
+      "Read": 1
+     },
+     "native_read_calls": 1,
+     "native_read_after_bp": 0,
+     "wall_s": 25.78,
+     "num_turns": 7,
+     "t1_sites_from_change_pages": null,
+     "t1_unconfirmed_caller_owners": null,
+     "grade": {
+      "env_var": true,
+      "append_fn": true,
+      "jsonl": true,
+      "fields_found": 19,
+      "emitters_event_bridge": true,
+      "pass": true
+     }
+    },
+    {
+     "task": "T3",
+     "pos": 3,
+     "cost_usd": 0.112701,
+     "cost_split_usd": {
+      "BASE": 0.01292,
+      "SETUP": 0.0,
+      "BP_RESULT": 0.0,
+      "NATIVE_RESULT": 0.03998,
+      "OTHER": 0.01296,
+      "OUTPUT": 0.04684
+     },
+     "split_check_usd": -1e-06,
+     "price_residual": 0.0,
+     "tokens": {
+      "input": 8,
+      "output": 2342,
+      "cache_write": 4685,
+      "cache_read": 141745
+     },
+     "usd_by_token_type": {
+      "input": 3e-05,
+      "output": 0.04684,
+      "cache_write": 0.03748,
+      "cache_read": 0.02835
+     },
+     "api_requests": 4,
+     "req0_cache_write": 1347,
+     "req0_cache_read": 33783,
+     "toolsearch_calls": 0,
+     "toolsearch_tokens": 0,
+     "toolsearch_queries": [],
+     "bp_calls": 0,
+     "bp_kinds": [],
+     "bp_bytes": 0,
+     "bp_latency_s": {
+      "n": 0,
+      "p50": null,
+      "max": null
+     },
+     "native_calls": 3,
+     "native_bytes": 4727,
+     "native_by_tool": {
+      "Grep": 1,
+      "Bash": 2
+     },
+     "native_read_calls": 0,
+     "native_read_after_bp": 0,
+     "wall_s": 23.69,
+     "num_turns": 4,
+     "t1_sites_from_change_pages": null,
+     "t1_unconfirmed_caller_owners": null,
+     "grade": {
+      "signature": true,
+      "def": true,
+      "sites": true,
+      "false_calls": [],
+      "pass_recall": true,
+      "pass": true
+     }
+    },
+    {
+     "task": "T4",
+     "pos": 4,
+     "cost_usd": 0.07294519999999993,
+     "cost_split_usd": {
+      "BASE": 0.00969,
+      "SETUP": 0.0,
+      "BP_RESULT": 0.0,
+      "NATIVE_RESULT": 0.0257,
+      "OTHER": 0.01285,
+      "OUTPUT": 0.0247
+     },
+     "split_check_usd": -5e-06,
+     "price_residual": 0.0,
+     "tokens": {
+      "input": 6,
+      "output": 1235,
+      "cache_write": 3058,
+      "cache_read": 118786
+     },
+     "usd_by_token_type": {
+      "input": 2e-05,
+      "output": 0.0247,
+      "cache_write": 0.02446,
+      "cache_read": 0.02376
+     },
+     "api_requests": 3,
+     "req0_cache_write": 1311,
+     "req0_cache_read": 38468,
+     "toolsearch_calls": 0,
+     "toolsearch_tokens": 0,
+     "toolsearch_queries": [],
+     "bp_calls": 0,
+     "bp_kinds": [],
+     "bp_bytes": 0,
+     "bp_latency_s": {
+      "n": 0,
+      "p50": null,
+      "max": null
+     },
+     "native_calls": 2,
+     "native_bytes": 1816,
+     "native_by_tool": {
+      "Bash": 2
+     },
+     "native_read_calls": 0,
+     "native_read_after_bp": 0,
+     "wall_s": 13.15,
+     "num_turns": 3,
+     "t1_sites_from_change_pages": null,
+     "t1_unconfirmed_caller_owners": null,
+     "grade": {
+      "signature": true,
+      "def": true,
+      "sites": true,
+      "false_calls": [],
+      "pass_recall": true,
+      "pass": true
+     }
+    },
+    {
+     "task": "T5",
+     "pos": 5,
+     "cost_usd": 0.083341,
+     "cost_split_usd": {
+      "BASE": 0.00646,
+      "SETUP": 0.0,
+      "BP_RESULT": 0.0,
+      "NATIVE_RESULT": 0.04643,
+      "OTHER": 0.00891,
+      "OUTPUT": 0.02154
+     },
+     "split_check_usd": -1e-06,
+     "price_residual": 0.0,
+     "tokens": {
+      "input": 4,
+      "output": 1077,
+      "cache_write": 5625,
+      "cache_read": 83925
+     },
+     "usd_by_token_type": {
+      "input": 2e-05,
+      "output": 0.02154,
+      "cache_write": 0.045,
+      "cache_read": 0.01678
+     },
+     "api_requests": 2,
+     "req0_cache_write": 873,
+     "req0_cache_read": 41526,
+     "toolsearch_calls": 0,
+     "toolsearch_tokens": 0,
+     "toolsearch_queries": [],
+     "bp_calls": 0,
+     "bp_kinds": [],
+     "bp_bytes": 0,
+     "bp_latency_s": {
+      "n": 0,
+      "p50": null,
+      "max": null
+     },
+     "native_calls": 1,
+     "native_bytes": 10854,
+     "native_by_tool": {
+      "Read": 1
+     },
+     "native_read_calls": 1,
+     "native_read_after_bp": 0,
+     "wall_s": 10.62,
+     "num_turns": 2,
+     "t1_sites_from_change_pages": null,
+     "t1_unconfirmed_caller_owners": null,
+     "grade": {
+      "signature": true,
+      "def": true,
+      "sites": true,
+      "false_calls": [],
+      "pass_recall": true,
+      "pass": true
+     }
+    },
+    {
+     "task": "T6",
+     "pos": 6,
+     "cost_usd": 0.13350259999999992,
+     "cost_split_usd": {
+      "BASE": 0.01292,
+      "SETUP": 0.0,
+      "BP_RESULT": 0.0,
+      "NATIVE_RESULT": 0.06063,
+      "OTHER": 0.01357,
+      "OUTPUT": 0.04638
+     },
+     "split_check_usd": -3e-06,
+     "price_residual": 0.0,
+     "tokens": {
+      "input": 8,
+      "output": 2319,
+      "cache_write": 5951,
+      "cache_read": 197413
+     },
+     "usd_by_token_type": {
+      "input": 3e-05,
+      "output": 0.04638,
+      "cache_write": 0.04761,
+      "cache_read": 0.03948
+     },
+     "api_requests": 4,
+     "req0_cache_write": 1090,
+     "req0_cache_read": 47151,
+     "toolsearch_calls": 0,
+     "toolsearch_tokens": 0,
+     "toolsearch_queries": [],
+     "bp_calls": 0,
+     "bp_kinds": [],
+     "bp_bytes": 0,
+     "bp_latency_s": {
+      "n": 0,
+      "p50": null,
+      "max": null
+     },
+     "native_calls": 3,
+     "native_bytes": 7143,
+     "native_by_tool": {
+      "Bash": 3
+     },
+     "native_read_calls": 0,
+     "native_read_after_bp": 0,
+     "wall_s": 25.42,
+     "num_turns": 4,
+     "t1_sites_from_change_pages": null,
+     "t1_unconfirmed_caller_owners": null,
+     "grade": {
+      "signature": true,
+      "def": true,
+      "sites": true,
+      "false_calls": [
+       "gateway.rs:431",
+       "gateway.rs:486",
+       "gateway.rs:558"
+      ],
+      "pass_recall": true,
+      "pass": true
+     }
+    }
+   ],
+   "toolsearch_calls": 0,
+   "toolsearch_tokens": 0,
+   "schema_load_turns": [],
+   "duplicate_file_reads": 0,
+   "peak_rss_kib": {
+    "claude": 247904,
+    "brainprint_total": 0
+   },
+   "end_of_turn_rss_kib": [
+    {
+     "task": "T1",
+     "rss_kib": {
+      "claude": 159792,
+      "brainprint_total": 0
+     }
+    },
+    {
+     "task": "T2",
+     "rss_kib": {
+      "claude": 157872,
+      "brainprint_total": 0
+     }
+    },
+    {
+     "task": "T3",
+     "rss_kib": {
+      "claude": 146720,
+      "brainprint_total": 0
+     }
+    },
+    {
+     "task": "T4",
+     "rss_kib": {
+      "claude": 158704,
+      "brainprint_total": 0
+     }
+    },
+    {
+     "task": "T5",
+     "rss_kib": {
+      "claude": 148704,
+      "brainprint_total": 0
+     }
+    },
+    {
+     "task": "T6",
+     "rss_kib": {
+      "claude": 182464,
+      "brainprint_total": 0
+     }
+    }
+   ],
+   "hook_events": 0,
+   "hook_latency_us_p50": null,
+   "hook_latency_us_max": null,
+   "wall_s_total": 139.9
+  },
+  {
+   "session": "A-O1-r2",
+   "cond": "A",
+   "order": "O1",
+   "round": "r2",
+   "cache_class": "STATIC",
+   "req0_cache_write": 5971,
+   "req0_cache_read": 10140,
+   "extended_cache_hits": 0,
+   "degraded": false,
+   "complete": true,
+   "total_usd": 0.83776,
+   "turns": [
+    {
+     "task": "T1",
+     "pos": 1,
+     "cost_usd": 0.20047900000000002,
+     "cost_split_usd": {
+      "BASE": 0.06919,
+      "SETUP": 0.0,
+      "BP_RESULT": 0.0,
+      "NATIVE_RESULT": 0.05197,
+      "OTHER": 0.0,
+      "OUTPUT": 0.07932
+     },
+     "split_check_usd": 1e-06,
+     "price_residual": 0.0,
+     "tokens": {
+      "input": 14,
+      "output": 3966,
+      "cache_write": 12057,
+      "cache_read": 123235
+     },
+     "usd_by_token_type": {
+      "input": 6e-05,
+      "output": 0.07932,
+      "cache_write": 0.09646,
+      "cache_read": 0.02465
+     },
+     "api_requests": 7,
+     "req0_cache_write": 5971,
+     "req0_cache_read": 10140,
+     "toolsearch_calls": 0,
+     "toolsearch_tokens": 0,
+     "toolsearch_queries": [],
+     "bp_calls": 0,
+     "bp_kinds": [],
+     "bp_bytes": 0,
+     "bp_latency_s": {
+      "n": 0,
+      "p50": null,
+      "max": null
+     },
+     "native_calls": 6,
+     "native_bytes": 8609,
+     "native_by_tool": {
+      "Grep": 1,
+      "Bash": 5
+     },
+     "native_read_calls": 0,
+     "native_read_after_bp": 0,
+     "wall_s": 46.04,
+     "num_turns": 7,
+     "t1_sites_from_change_pages": null,
+     "t1_unconfirmed_caller_owners": null,
+     "grade": {
+      "sites_found": 8,
+      "sites_expected": 8,
+      "missing": [],
+      "unexplained_line_numbers_in_call_site_section": [],
+      "signature": true,
+      "pass": true
+     }
+    },
+    {
+     "task": "T2",
+     "pos": 2,
+     "cost_usd": 0.17037979999999997,
+     "cost_split_usd": {
+      "BASE": 0.02261,
+      "SETUP": 0.0,
+      "BP_RESULT": 0.0,
+      "NATIVE_RESULT": 0.08045,
+      "OTHER": 0.01605,
+      "OUTPUT": 0.05126
+     },
+     "split_check_usd": -1e-05,
+     "price_residual": 0.0,
+     "tokens": {
+      "input": 14,
+      "output": 2563,
+      "cache_write": 10085,
+      "cache_read": 191919
+     },
+     "usd_by_token_type": {
+      "input": 6e-05,
+      "output": 0.05126,
+      "cache_write": 0.08068,
+      "cache_read": 0.03838
+     },
+     "api_requests": 7,
+     "req0_cache_write": 1745,
+     "req0_cache_read": 22197,
+     "toolsearch_calls": 0,
+     "toolsearch_tokens": 0,
+     "toolsearch_queries": [],
+     "bp_calls": 0,
+     "bp_kinds": [],
+     "bp_bytes": 0,
+     "bp_latency_s": {
+      "n": 0,
+      "p50": null,
+      "max": null
+     },
+     "native_calls": 6,
+     "native_bytes": 15784,
+     "native_by_tool": {
+      "Grep": 2,
+      "Bash": 4
+     },
+     "native_read_calls": 0,
+     "native_read_after_bp": 0,
+     "wall_s": 27.55,
+     "num_turns": 7,
+     "t1_sites_from_change_pages": null,
+     "t1_unconfirmed_caller_owners": null,
+     "grade": {
+      "env_var": true,
+      "append_fn": true,
+      "jsonl": true,
+      "fields_found": 19,
+      "emitters_event_bridge": true,
+      "pass": true
+     }
+    },
+    {
+     "task": "T3",
+     "pos": 3,
+     "cost_usd": 0.14988339999999994,
+     "cost_split_usd": {
+      "BASE": 0.02261,
+      "SETUP": 0.0,
+      "BP_RESULT": 0.0,
+      "NATIVE_RESULT": 0.05551,
+      "OTHER": 0.01428,
+      "OUTPUT": 0.05748
+     },
+     "split_check_usd": -3e-06,
+     "price_residual": 0.0,
+     "tokens": {
+      "input": 14,
+      "output": 2874,
+      "cache_write": 5476,
+      "cache_read": 242697
+     },
+     "usd_by_token_type": {
+      "input": 6e-05,
+      "output": 0.05748,
+      "cache_write": 0.04381,
+      "cache_read": 0.04854
+     },
+     "api_requests": 7,
+     "req0_cache_write": 1287,
+     "req0_cache_read": 32282,
+     "toolsearch_calls": 0,
+     "toolsearch_tokens": 0,
+     "toolsearch_queries": [],
+     "bp_calls": 0,
+     "bp_kinds": [],
+     "bp_bytes": 0,
+     "bp_latency_s": {
+      "n": 0,
+      "p50": null,
+      "max": null
+     },
+     "native_calls": 6,
+     "native_bytes": 3661,
+     "native_by_tool": {
+      "Grep": 1,
+      "Bash": 5
+     },
+     "native_read_calls": 0,
+     "native_read_after_bp": 0,
+     "wall_s": 31.09,
+     "num_turns": 7,
+     "t1_sites_from_change_pages": null,
+     "t1_unconfirmed_caller_owners": null,
+     "grade": {
+      "signature": true,
+      "def": true,
+      "sites": true,
+      "false_calls": [],
+      "pass_recall": true,
+      "pass": true
+     }
+    },
+    {
+     "task": "T4",
+     "pos": 4,
+     "cost_usd": 0.07016559999999994,
+     "cost_split_usd": {
+      "BASE": 0.00969,
+      "SETUP": 0.0,
+      "BP_RESULT": 0.0,
+      "NATIVE_RESULT": 0.02676,
+      "OTHER": 0.01145,
+      "OUTPUT": 0.02226
+     },
+     "split_check_usd": -6e-06,
+     "price_residual": 0.0,
+     "tokens": {
+      "input": 6,
+      "output": 1113,
+      "cache_write": 3067,
+      "cache_read": 116728
+     },
+     "usd_by_token_type": {
+      "input": 2e-05,
+      "output": 0.02226,
+      "cache_write": 0.02454,
+      "cache_read": 0.02335
+     },
+     "api_requests": 3,
+     "req0_cache_write": 1147,
+     "req0_cache_read": 37758,
+     "toolsearch_calls": 0,
+     "toolsearch_tokens": 0,
+     "toolsearch_queries": [],
+     "bp_calls": 0,
+     "bp_kinds": [],
+     "bp_bytes": 0,
+     "bp_latency_s": {
+      "n": 0,
+      "p50": null,
+      "max": null
+     },
+     "native_calls": 2,
+     "native_bytes": 2165,
+     "native_by_tool": {
+      "Grep": 1,
+      "Bash": 1
+     },
+     "native_read_calls": 0,
+     "native_read_after_bp": 0,
+     "wall_s": 11.69,
+     "num_turns": 3,
+     "t1_sites_from_change_pages": null,
+     "t1_unconfirmed_caller_owners": null,
+     "grade": {
+      "signature": true,
+      "def": true,
+      "sites": true,
+      "false_calls": [],
+      "pass_recall": true,
+      "pass": true
+     }
+    },
+    {
+     "task": "T5",
+     "pos": 5,
+     "cost_usd": 0.08211339999999989,
+     "cost_split_usd": {
+      "BASE": 0.00646,
+      "SETUP": 0.0,
+      "BP_RESULT": 0.0,
+      "NATIVE_RESULT": 0.04623,
+      "OTHER": 0.00804,
+      "OUTPUT": 0.02138
+     },
+     "split_check_usd": -3e-06,
+     "price_residual": 0.0,
+     "tokens": {
+      "input": 4,
+      "output": 1069,
+      "cache_write": 5529,
+      "cache_read": 82427
+     },
+     "usd_by_token_type": {
+      "input": 2e-05,
+      "output": 0.02138,
+      "cache_write": 0.04423,
+      "cache_read": 0.01649
+     },
+     "api_requests": 2,
+     "req0_cache_write": 777,
+     "req0_cache_read": 40825,
+     "toolsearch_calls": 0,
+     "toolsearch_tokens": 0,
+     "toolsearch_queries": [],
+     "bp_calls": 0,
+     "bp_kinds": [],
+     "bp_bytes": 0,
+     "bp_latency_s": {
+      "n": 0,
+      "p50": null,
+      "max": null
+     },
+     "native_calls": 1,
+     "native_bytes": 10854,
+     "native_by_tool": {
+      "Read": 1
+     },
+     "native_read_calls": 1,
+     "native_read_after_bp": 0,
+     "wall_s": 10.42,
+     "num_turns": 2,
+     "t1_sites_from_change_pages": null,
+     "t1_unconfirmed_caller_owners": null,
+     "grade": {
+      "signature": true,
+      "def": true,
+      "sites": true,
+      "false_calls": [],
+      "pass_recall": true,
+      "pass": true
+     }
+    },
+    {
+     "task": "T6",
+     "pos": 6,
+     "cost_usd": 0.1647432000000001,
+     "cost_split_usd": {
+      "BASE": 0.01615,
+      "SETUP": 0.0,
+      "BP_RESULT": 0.0,
+      "NATIVE_RESULT": 0.07789,
+      "OTHER": 0.01448,
+      "OUTPUT": 0.05622
+     },
+     "split_check_usd": -3e-06,
+     "price_residual": 0.0,
+     "tokens": {
+      "input": 10,
+      "output": 2811,
+      "cache_write": 7381,
+      "cache_read": 247176
+     },
+     "usd_by_token_type": {
+      "input": 4e-05,
+      "output": 0.05622,
+      "cache_write": 0.05905,
+      "cache_read": 0.04944
+     },
+     "api_requests": 5,
+     "req0_cache_write": 1082,
+     "req0_cache_read": 46354,
+     "toolsearch_calls": 0,
+     "toolsearch_tokens": 0,
+     "toolsearch_queries": [],
+     "bp_calls": 0,
+     "bp_kinds": [],
+     "bp_bytes": 0,
+     "bp_latency_s": {
+      "n": 0,
+      "p50": null,
+      "max": null
+     },
+     "native_calls": 4,
+     "native_bytes": 8613,
+     "native_by_tool": {
+      "Grep": 1,
+      "Bash": 3
+     },
+     "native_read_calls": 0,
+     "native_read_after_bp": 0,
+     "wall_s": 32.48,
+     "num_turns": 5,
+     "t1_sites_from_change_pages": null,
+     "t1_unconfirmed_caller_owners": null,
+     "grade": {
+      "signature": true,
+      "def": true,
+      "sites": true,
+      "false_calls": [],
+      "pass_recall": true,
+      "pass": true
+     }
+    }
+   ],
+   "toolsearch_calls": 0,
+   "toolsearch_tokens": 0,
+   "schema_load_turns": [],
+   "duplicate_file_reads": 0,
+   "peak_rss_kib": {
+    "claude": 271152,
+    "brainprint_total": 0
+   },
+   "end_of_turn_rss_kib": [
+    {
+     "task": "T1",
+     "rss_kib": {
+      "claude": 152480,
+      "brainprint_total": 0
+     }
+    },
+    {
+     "task": "T2",
+     "rss_kib": {
+      "claude": 193488,
+      "brainprint_total": 0
+     }
+    },
+    {
+     "task": "T3",
+     "rss_kib": {
+      "claude": 147120,
+      "brainprint_total": 0
+     }
+    },
+    {
+     "task": "T4",
+     "rss_kib": {
+      "claude": 146384,
+      "brainprint_total": 0
+     }
+    },
+    {
+     "task": "T5",
+     "rss_kib": {
+      "claude": 165872,
+      "brainprint_total": 0
+     }
+    },
+    {
+     "task": "T6",
+     "rss_kib": {
+      "claude": 170608,
+      "brainprint_total": 0
+     }
+    }
+   ],
+   "hook_events": 0,
+   "hook_latency_us_p50": null,
+   "hook_latency_us_max": null,
+   "wall_s_total": 159.3
+  },
+  {
+   "session": "A-O2-r1",
+   "cond": "A",
+   "order": "O2",
+   "round": "r1",
+   "cache_class": "STATIC",
+   "req0_cache_write": 5987,
+   "req0_cache_read": 10140,
+   "extended_cache_hits": 0,
+   "degraded": false,
+   "complete": true,
+   "total_usd": 0.89082,
+   "turns": [
+    {
+     "task": "T6",
+     "pos": 1,
+     "cost_usd": 0.256614,
+     "cost_split_usd": {
+      "BASE": 0.06933,
+      "SETUP": 0.0,
+      "BP_RESULT": 0.0,
+      "NATIVE_RESULT": 0.12148,
+      "OTHER": 0.0,
+      "OUTPUT": 0.0658
+     },
+     "split_check_usd": -4e-06,
+     "price_residual": 0.0,
+     "tokens": {
+      "input": 14,
+      "output": 3290,
+      "cache_write": 20345,
+      "cache_read": 139990
+     },
+     "usd_by_token_type": {
+      "input": 6e-05,
+      "output": 0.0658,
+      "cache_write": 0.16276,
+      "cache_read": 0.028
+     },
+     "api_requests": 7,
+     "req0_cache_write": 5987,
+     "req0_cache_read": 10140,
+     "toolsearch_calls": 0,
+     "toolsearch_tokens": 0,
+     "toolsearch_queries": [],
+     "bp_calls": 0,
+     "bp_kinds": [],
+     "bp_bytes": 0,
+     "bp_latency_s": {
+      "n": 0,
+      "p50": null,
+      "max": null
+     },
+     "native_calls": 6,
+     "native_bytes": 27091,
+     "native_by_tool": {
+      "Grep": 1,
+      "Bash": 5
+     },
+     "native_read_calls": 0,
+     "native_read_after_bp": 0,
+     "wall_s": 40.75,
+     "num_turns": 7,
+     "t1_sites_from_change_pages": null,
+     "t1_unconfirmed_caller_owners": null,
+     "grade": {
+      "signature": true,
+      "def": true,
+      "sites": true,
+      "false_calls": [
+       "gateway.rs:431",
+       "gateway.rs:486",
+       "gateway.rs:558",
+       "gateway.rs:599"
+      ],
+      "pass_recall": true,
+      "pass": true
+     }
+    },
+    {
+     "task": "T5",
+     "pos": 2,
+     "cost_usd": 0.092451,
+     "cost_split_usd": {
+      "BASE": 0.0097,
+      "SETUP": 0.0,
+      "BP_RESULT": 0.0,
+      "NATIVE_RESULT": 0.04495,
+      "OTHER": 0.01122,
+      "OUTPUT": 0.02658
+     },
+     "split_check_usd": -1e-06,
+     "price_residual": 0.0,
+     "tokens": {
+      "input": 6,
+      "output": 1329,
+      "cache_write": 5833,
+      "cache_read": 95915
+     },
+     "usd_by_token_type": {
+      "input": 2e-05,
+      "output": 0.02658,
+      "cache_write": 0.04666,
+      "cache_read": 0.01918
+     },
+     "api_requests": 3,
+     "req0_cache_write": 1336,
+     "req0_cache_read": 30485,
+     "toolsearch_calls": 0,
+     "toolsearch_tokens": 0,
+     "toolsearch_queries": [],
+     "bp_calls": 0,
+     "bp_kinds": [],
+     "bp_bytes": 0,
+     "bp_latency_s": {
+      "n": 0,
+      "p50": null,
+      "max": null
+     },
+     "native_calls": 2,
+     "native_bytes": 9570,
+     "native_by_tool": {
+      "Read": 1,
+      "Bash": 1
+     },
+     "native_read_calls": 1,
+     "native_read_after_bp": 0,
+     "wall_s": 13.52,
+     "num_turns": 3,
+     "t1_sites_from_change_pages": null,
+     "t1_unconfirmed_caller_owners": null,
+     "grade": {
+      "signature": true,
+      "def": true,
+      "sites": true,
+      "false_calls": [],
+      "pass_recall": true,
+      "pass": true
+     }
+    },
+    {
+     "task": "T4",
+     "pos": 3,
+     "cost_usd": 0.0674594,
+     "cost_split_usd": {
+      "BASE": 0.0097,
+      "SETUP": 0.0,
+      "BP_RESULT": 0.0,
+      "NATIVE_RESULT": 0.01985,
+      "OTHER": 0.00969,
+      "OUTPUT": 0.02822
+     },
+     "split_check_usd": 1e-06,
+     "price_residual": 0.0,
+     "tokens": {
+      "input": 6,
+      "output": 1411,
+      "cache_write": 2109,
+      "cache_read": 111717
+     },
+     "usd_by_token_type": {
+      "input": 2e-05,
+      "output": 0.02822,
+      "cache_write": 0.01687,
+      "cache_read": 0.02234
+     },
+     "api_requests": 3,
+     "req0_cache_write": 1058,
+     "req0_cache_read": 36318,
+     "toolsearch_calls": 0,
+     "toolsearch_tokens": 0,
+     "toolsearch_queries": [],
+     "bp_calls": 0,
+     "bp_kinds": [],
+     "bp_bytes": 0,
+     "bp_latency_s": {
+      "n": 0,
+      "p50": null,
+      "max": null
+     },
+     "native_calls": 2,
+     "native_bytes": 934,
+     "native_by_tool": {
+      "Bash": 2
+     },
+     "native_read_calls": 0,
+     "native_read_after_bp": 0,
+     "wall_s": 13.8,
+     "num_turns": 3,
+     "t1_sites_from_change_pages": null,
+     "t1_unconfirmed_caller_owners": null,
+     "grade": {
+      "signature": true,
+      "def": true,
+      "sites": true,
+      "false_calls": [],
+      "pass_recall": true,
+      "pass": true
+     }
+    },
+    {
+     "task": "T3",
+     "pos": 4,
+     "cost_usd": 0.1484432000000001,
+     "cost_split_usd": {
+      "BASE": 0.01617,
+      "SETUP": 0.0,
+      "BP_RESULT": 0.0,
+      "NATIVE_RESULT": 0.0568,
+      "OTHER": 0.01099,
+      "OUTPUT": 0.06448
+     },
+     "split_check_usd": -3e-06,
+     "price_residual": 0.0,
+     "tokens": {
+      "input": 10,
+      "output": 3224,
+      "cache_write": 5435,
+      "cache_read": 202216
+     },
+     "usd_by_token_type": {
+      "input": 4e-05,
+      "output": 0.06448,
+      "cache_write": 0.04348,
+      "cache_read": 0.04044
+     },
+     "api_requests": 5,
+     "req0_cache_write": 977,
+     "req0_cache_read": 38427,
+     "toolsearch_calls": 0,
+     "toolsearch_tokens": 0,
+     "toolsearch_queries": [],
+     "bp_calls": 0,
+     "bp_kinds": [],
+     "bp_bytes": 0,
+     "bp_latency_s": {
+      "n": 0,
+      "p50": null,
+      "max": null
+     },
+     "native_calls": 4,
+     "native_bytes": 5427,
+     "native_by_tool": {
+      "Bash": 4
+     },
+     "native_read_calls": 0,
+     "native_read_after_bp": 0,
+     "wall_s": 33.85,
+     "num_turns": 5,
+     "t1_sites_from_change_pages": null,
+     "t1_unconfirmed_caller_owners": null,
+     "grade": {
+      "signature": true,
+      "def": true,
+      "sites": true,
+      "false_calls": [],
+      "pass_recall": true,
+      "pass": true
+     }
+    },
+    {
+     "task": "T2",
+     "pos": 5,
+     "cost_usd": 0.17293140000000007,
+     "cost_split_usd": {
+      "BASE": 0.0194,
+      "SETUP": 0.0,
+      "BP_RESULT": 0.0,
+      "NATIVE_RESULT": 0.089,
+      "OTHER": 0.01721,
+      "OUTPUT": 0.04732
+     },
+     "split_check_usd": -1e-06,
+     "price_residual": 0.0,
+     "tokens": {
+      "input": 12,
+      "output": 2366,
+      "cache_write": 8412,
+      "cache_read": 291337
+     },
+     "usd_by_token_type": {
+      "input": 5e-05,
+      "output": 0.04732,
+      "cache_write": 0.0673,
+      "cache_read": 0.05827
+     },
+     "api_requests": 6,
+     "req0_cache_write": 1463,
+     "req0_cache_read": 43862,
+     "toolsearch_calls": 0,
+     "toolsearch_tokens": 0,
+     "toolsearch_queries": [],
+     "bp_calls": 0,
+     "bp_kinds": [],
+     "bp_bytes": 0,
+     "bp_latency_s": {
+      "n": 0,
+      "p50": null,
+      "max": null
+     },
+     "native_calls": 5,
+     "native_bytes": 13617,
+     "native_by_tool": {
+      "Read": 1,
+      "Bash": 4
+     },
+     "native_read_calls": 1,
+     "native_read_after_bp": 0,
+     "wall_s": 29.3,
+     "num_turns": 6,
+     "t1_sites_from_change_pages": null,
+     "t1_unconfirmed_caller_owners": null,
+     "grade": {
+      "env_var": true,
+      "append_fn": true,
+      "jsonl": true,
+      "fields_found": 19,
+      "emitters_event_bridge": true,
+      "pass": true
+     }
+    },
+    {
+     "task": "T1",
+     "pos": 6,
+     "cost_usd": 0.15291639999999995,
+     "cost_split_usd": {
+      "BASE": 0.01293,
+      "SETUP": 0.0,
+      "BP_RESULT": 0.0,
+      "NATIVE_RESULT": 0.06099,
+      "OTHER": 0.01542,
+      "OUTPUT": 0.06358
+     },
+     "split_check_usd": 4e-06,
+     "price_residual": 0.0,
+     "tokens": {
+      "input": 8,
+      "output": 3179,
+      "cache_write": 5724,
+      "cache_read": 217562
+     },
+     "usd_by_token_type": {
+      "input": 3e-05,
+      "output": 0.06358,
+      "cache_write": 0.04579,
+      "cache_read": 0.04351
+     },
+     "api_requests": 4,
+     "req0_cache_write": 1343,
+     "req0_cache_read": 52274,
+     "toolsearch_calls": 0,
+     "toolsearch_tokens": 0,
+     "toolsearch_queries": [],
+     "bp_calls": 0,
+     "bp_kinds": [],
+     "bp_bytes": 0,
+     "bp_latency_s": {
+      "n": 0,
+      "p50": null,
+      "max": null
+     },
+     "native_calls": 3,
+     "native_bytes": 6438,
+     "native_by_tool": {
+      "Bash": 3
+     },
+     "native_read_calls": 0,
+     "native_read_after_bp": 0,
+     "wall_s": 33.59,
+     "num_turns": 4,
+     "t1_sites_from_change_pages": null,
+     "t1_unconfirmed_caller_owners": null,
+     "grade": {
+      "sites_found": 8,
+      "sites_expected": 8,
+      "missing": [],
+      "unexplained_line_numbers_in_call_site_section": [
+       282,
+       437,
+       452,
+       468,
+       516,
+       531
+      ],
+      "signature": true,
+      "pass": true
+     }
+    }
+   ],
+   "toolsearch_calls": 0,
+   "toolsearch_tokens": 0,
+   "schema_load_turns": [],
+   "duplicate_file_reads": 0,
+   "peak_rss_kib": {
+    "claude": 229808,
+    "brainprint_total": 0
+   },
+   "end_of_turn_rss_kib": [
+    {
+     "task": "T6",
+     "rss_kib": {
+      "claude": 171296,
+      "brainprint_total": 0
+     }
+    },
+    {
+     "task": "T5",
+     "rss_kib": {
+      "claude": 134624,
+      "brainprint_total": 0
+     }
+    },
+    {
+     "task": "T4",
+     "rss_kib": {
+      "claude": 237600,
+      "brainprint_total": 0
+     }
+    },
+    {
+     "task": "T3",
+     "rss_kib": {
+      "claude": 115376,
+      "brainprint_total": 0
+     }
+    },
+    {
+     "task": "T2",
+     "rss_kib": {
+      "claude": 140096,
+      "brainprint_total": 0
+     }
+    },
+    {
+     "task": "T1",
+     "rss_kib": {
+      "claude": 157808,
+      "brainprint_total": 0
+     }
+    }
+   ],
+   "hook_events": 0,
+   "hook_latency_us_p50": null,
+   "hook_latency_us_max": null,
+   "wall_s_total": 164.8
+  },
+  {
+   "session": "A-O2-r2",
+   "cond": "A",
+   "order": "O2",
+   "round": "r2",
+   "cache_class": "STATIC",
+   "req0_cache_write": 5988,
+   "req0_cache_read": 10140,
+   "extended_cache_hits": 0,
+   "degraded": false,
+   "complete": true,
+   "total_usd": 0.7992,
+   "turns": [
+    {
+     "task": "T6",
+     "pos": 1,
+     "cost_usd": 0.1672616,
+     "cost_split_usd": {
+      "BASE": 0.06611,
+      "SETUP": 0.0,
+      "BP_RESULT": 0.0,
+      "NATIVE_RESULT": 0.05101,
+      "OTHER": 0.0,
+      "OUTPUT": 0.05014
+     },
+     "split_check_usd": -2e-06,
+     "price_residual": 0.0,
+     "tokens": {
+      "input": 12,
+      "output": 2507,
+      "cache_write": 12032,
+      "cache_read": 104088
+     },
+     "usd_by_token_type": {
+      "input": 5e-05,
+      "output": 0.05014,
+      "cache_write": 0.09626,
+      "cache_read": 0.02082
+     },
+     "api_requests": 6,
+     "req0_cache_write": 5988,
+     "req0_cache_read": 10140,
+     "toolsearch_calls": 0,
+     "toolsearch_tokens": 0,
+     "toolsearch_queries": [],
+     "bp_calls": 0,
+     "bp_kinds": [],
+     "bp_bytes": 0,
+     "bp_latency_s": {
+      "n": 0,
+      "p50": null,
+      "max": null
+     },
+     "native_calls": 6,
+     "native_bytes": 9404,
+     "native_by_tool": {
+      "Grep": 3,
+      "Bash": 3
+     },
+     "native_read_calls": 0,
+     "native_read_after_bp": 0,
+     "wall_s": 30.59,
+     "num_turns": 7,
+     "t1_sites_from_change_pages": null,
+     "t1_unconfirmed_caller_owners": null,
+     "grade": {
+      "signature": true,
+      "def": true,
+      "sites": true,
+      "false_calls": [],
+      "pass_recall": true,
+      "pass": true
+     }
+    },
+    {
+     "task": "T5",
+     "pos": 2,
+     "cost_usd": 0.08633519999999995,
+     "cost_split_usd": {
+      "BASE": 0.0097,
+      "SETUP": 0.0,
+      "BP_RESULT": 0.0,
+      "NATIVE_RESULT": 0.03892,
+      "OTHER": 0.00972,
+      "OUTPUT": 0.028
+     },
+     "split_check_usd": 5e-06,
+     "price_residual": 0.0,
+     "tokens": {
+      "input": 6,
+      "output": 1400,
+      "cache_write": 5527,
+      "cache_read": 70476
+     },
+     "usd_by_token_type": {
+      "input": 2e-05,
+      "output": 0.028,
+      "cache_write": 0.04422,
+      "cache_read": 0.0141
+     },
+     "api_requests": 3,
+     "req0_cache_write": 1157,
+     "req0_cache_read": 22172,
+     "toolsearch_calls": 0,
+     "toolsearch_tokens": 0,
+     "toolsearch_queries": [],
+     "bp_calls": 0,
+     "bp_kinds": [],
+     "bp_bytes": 0,
+     "bp_latency_s": {
+      "n": 0,
+      "p50": null,
+      "max": null
+     },
+     "native_calls": 2,
+     "native_bytes": 9334,
+     "native_by_tool": {
+      "Read": 1,
+      "Bash": 1
+     },
+     "native_read_calls": 1,
+     "native_read_after_bp": 0,
+     "wall_s": 14.26,
+     "num_turns": 3,
+     "t1_sites_from_change_pages": null,
+     "t1_unconfirmed_caller_owners": null,
+     "grade": {
+      "signature": true,
+      "def": true,
+      "sites": true,
+      "false_calls": [],
+      "pass_recall": true,
+      "pass": true
+     }
+    },
+    {
+     "task": "T4",
+     "pos": 3,
+     "cost_usd": 0.07557979999999997,
+     "cost_split_usd": {
+      "BASE": 0.01293,
+      "SETUP": 0.0,
+      "BP_RESULT": 0.0,
+      "NATIVE_RESULT": 0.02212,
+      "OTHER": 0.01057,
+      "OUTPUT": 0.02996
+     },
+     "split_check_usd": 0.0,
+     "price_residual": 0.0,
+     "tokens": {
+      "input": 8,
+      "output": 1498,
+      "cache_write": 2813,
+      "cache_read": 115419
+     },
+     "usd_by_token_type": {
+      "input": 3e-05,
+      "output": 0.02996,
+      "cache_write": 0.0225,
+      "cache_read": 0.02308
+     },
+     "api_requests": 4,
+     "req0_cache_write": 1121,
+     "req0_cache_read": 27699,
+     "toolsearch_calls": 0,
+     "toolsearch_tokens": 0,
+     "toolsearch_queries": [],
+     "bp_calls": 0,
+     "bp_kinds": [],
+     "bp_bytes": 0,
+     "bp_latency_s": {
+      "n": 0,
+      "p50": null,
+      "max": null
+     },
+     "native_calls": 3,
+     "native_bytes": 1536,
+     "native_by_tool": {
+      "Bash": 3
+     },
+     "native_read_calls": 0,
+     "native_read_after_bp": 0,
+     "wall_s": 19.36,
+     "num_turns": 4,
+     "t1_sites_from_change_pages": null,
+     "t1_unconfirmed_caller_owners": null,
+     "grade": {
+      "signature": true,
+      "def": true,
+      "sites": true,
+      "false_calls": [],
+      "pass_recall": true,
+      "pass": true
+     }
+    },
+    {
+     "task": "T3",
+     "pos": 4,
+     "cost_usd": 0.16482839999999999,
+     "cost_split_usd": {
+      "BASE": 0.0194,
+      "SETUP": 0.0,
+      "BP_RESULT": 0.0,
+      "NATIVE_RESULT": 0.07484,
+      "OTHER": 0.00937,
+      "OUTPUT": 0.06122
+     },
+     "split_check_usd": 2e-06,
+     "price_residual": 0.0,
+     "tokens": {
+      "input": 12,
+      "output": 3061,
+      "cache_write": 7907,
+      "cache_read": 201522
+     },
+     "usd_by_token_type": {
+      "input": 5e-05,
+      "output": 0.06122,
+      "cache_write": 0.06326,
+      "cache_read": 0.0403
+     },
+     "api_requests": 6,
+     "req0_cache_write": 737,
+     "req0_cache_read": 30512,
+     "toolsearch_calls": 0,
+     "toolsearch_tokens": 0,
+     "toolsearch_queries": [],
+     "bp_calls": 0,
+     "bp_kinds": [],
+     "bp_bytes": 0,
+     "bp_latency_s": {
+      "n": 0,
+      "p50": null,
+      "max": null
+     },
+     "native_calls": 5,
+     "native_bytes": 10951,
+     "native_by_tool": {
+      "Bash": 5
+     },
+     "native_read_calls": 0,
+     "native_read_after_bp": 0,
+     "wall_s": 34.56,
+     "num_turns": 6,
+     "t1_sites_from_change_pages": null,
+     "t1_unconfirmed_caller_owners": null,
+     "grade": {
+      "signature": true,
+      "def": true,
+      "sites": true,
+      "false_calls": [],
+      "pass_recall": true,
+      "pass": true
+     }
+    },
+    {
+     "task": "T2",
+     "pos": 5,
+     "cost_usd": 0.1141163999999999,
+     "cost_split_usd": {
+      "BASE": 0.0097,
+      "SETUP": 0.0,
+      "BP_RESULT": 0.0,
+      "NATIVE_RESULT": 0.05374,
+      "OTHER": 0.01171,
+      "OUTPUT": 0.03896
+     },
+     "split_check_usd": -6e-06,
+     "price_residual": 0.0,
+     "tokens": {
+      "input": 6,
+      "output": 1948,
+      "cache_write": 6339,
+      "cache_read": 122102
+     },
+     "usd_by_token_type": {
+      "input": 2e-05,
+      "output": 0.03896,
+      "cache_write": 0.05071,
+      "cache_read": 0.02442
+     },
+     "api_requests": 3,
+     "req0_cache_write": 1179,
+     "req0_cache_read": 38419,
+     "toolsearch_calls": 0,
+     "toolsearch_tokens": 0,
+     "toolsearch_queries": [],
+     "bp_calls": 0,
+     "bp_kinds": [],
+     "bp_bytes": 0,
+     "bp_latency_s": {
+      "n": 0,
+      "p50": null,
+      "max": null
+     },
+     "native_calls": 2,
+     "native_bytes": 10854,
+     "native_by_tool": {
+      "Bash": 2
+     },
+     "native_read_calls": 0,
+     "native_read_after_bp": 0,
+     "wall_s": 19.56,
+     "num_turns": 3,
+     "t1_sites_from_change_pages": null,
+     "t1_unconfirmed_caller_owners": null,
+     "grade": {
+      "env_var": true,
+      "append_fn": true,
+      "jsonl": true,
+      "fields_found": 19,
+      "emitters_event_bridge": true,
+      "pass": true
+     }
+    },
+    {
+     "task": "T1",
+     "pos": 6,
+     "cost_usd": 0.19108199999999986,
+     "cost_split_usd": {
+      "BASE": 0.01617,
+      "SETUP": 0.0,
+      "BP_RESULT": 0.0,
+      "NATIVE_RESULT": 0.08617,
+      "OTHER": 0.01676,
+      "OUTPUT": 0.07198
+     },
+     "split_check_usd": -2e-06,
+     "price_residual": 0.0,
+     "tokens": {
+      "input": 10,
+      "output": 3599,
+      "cache_write": 8884,
+      "cache_read": 239950
+     },
+     "usd_by_token_type": {
+      "input": 4e-05,
+      "output": 0.07198,
+      "cache_write": 0.07107,
+      "cache_read": 0.04799
+     },
+     "api_requests": 5,
+     "req0_cache_write": 1428,
+     "req0_cache_read": 44758,
+     "toolsearch_calls": 0,
+     "toolsearch_tokens": 0,
+     "toolsearch_queries": [],
+     "bp_calls": 0,
+     "bp_kinds": [],
+     "bp_bytes": 0,
+     "bp_latency_s": {
+      "n": 0,
+      "p50": null,
+      "max": null
+     },
+     "native_calls": 4,
+     "native_bytes": 12156,
+     "native_by_tool": {
+      "Bash": 4
+     },
+     "native_read_calls": 0,
+     "native_read_after_bp": 0,
+     "wall_s": 37.61,
+     "num_turns": 5,
+     "t1_sites_from_change_pages": null,
+     "t1_unconfirmed_caller_owners": null,
+     "grade": {
+      "sites_found": 8,
+      "sites_expected": 8,
+      "missing": [],
+      "unexplained_line_numbers_in_call_site_section": [
+       531
+      ],
+      "signature": true,
+      "pass": true
+     }
+    }
+   ],
+   "toolsearch_calls": 0,
+   "toolsearch_tokens": 0,
+   "schema_load_turns": [],
+   "duplicate_file_reads": 0,
+   "peak_rss_kib": {
+    "claude": 248976,
+    "brainprint_total": 0
+   },
+   "end_of_turn_rss_kib": [
+    {
+     "task": "T6",
+     "rss_kib": {
+      "claude": 152560,
+      "brainprint_total": 0
+     }
+    },
+    {
+     "task": "T5",
+     "rss_kib": {
+      "claude": 135024,
+      "brainprint_total": 0
+     }
+    },
+    {
+     "task": "T4",
+     "rss_kib": {
+      "claude": 138192,
+      "brainprint_total": 0
+     }
+    },
+    {
+     "task": "T3",
+     "rss_kib": {
+      "claude": 178096,
+      "brainprint_total": 0
+     }
+    },
+    {
+     "task": "T2",
+     "rss_kib": {
+      "claude": 143088,
+      "brainprint_total": 0
+     }
+    },
+    {
+     "task": "T1",
+     "rss_kib": {
+      "claude": 168736,
+      "brainprint_total": 0
+     }
+    }
+   ],
+   "hook_events": 0,
+   "hook_latency_us_p50": null,
+   "hook_latency_us_max": null,
+   "wall_s_total": 155.9
+  },
+  {
+   "session": "B1-O1-r1",
+   "cond": "B1",
+   "order": "O1",
+   "round": "r1",
+   "cache_class": "STATIC",
+   "req0_cache_write": 6780,
+   "req0_cache_read": 10140,
+   "extended_cache_hits": 0,
+   "degraded": false,
+   "complete": true,
+   "total_usd": 1.50534,
+   "turns": [
+    {
+     "task": "T1",
+     "pos": 1,
+     "cost_usd": 0.2673442,
+     "cost_split_usd": {
+      "BASE": 0.07663,
+      "SETUP": 0.03915,
+      "BP_RESULT": 0.05752,
+      "NATIVE_RESULT": 0.02591,
+      "OTHER": 0.0,
+      "OUTPUT": 0.06814
+     },
+     "split_check_usd": 6e-06,
+     "price_residual": 0.0,
+     "tokens": {
+      "input": 14,
+      "output": 3407,
+      "cache_write": 20832,
+      "cache_read": 162461
+     },
+     "usd_by_token_type": {
+      "input": 6e-05,
+      "output": 0.06814,
+      "cache_write": 0.16666,
+      "cache_read": 0.03249
+     },
+     "api_requests": 7,
+     "req0_cache_write": 6780,
+     "req0_cache_read": 10140,
+     "toolsearch_calls": 1,
+     "toolsearch_tokens": 4350,
+     "toolsearch_queries": [
+      "select:mcp__brainprint__brainprint_context"
+     ],
+     "bp_calls": 3,
+     "bp_kinds": [
+      "BP:context:change",
+      "BP:context:change",
+      "BP:context:rules"
+     ],
+     "bp_bytes": 10978,
+     "bp_latency_s": {
+      "n": 3,
+      "p50": 0.47,
+      "max": 8.38
+     },
+     "native_calls": 3,
+     "native_bytes": 3872,
+     "native_by_tool": {
+      "Grep": 1,
+      "Bash": 2
+     },
+     "native_read_calls": 0,
+     "native_read_after_bp": 0,
+     "wall_s": 45.32,
+     "num_turns": 8,
+     "t1_sites_from_change_pages": 3,
+     "t1_unconfirmed_caller_owners": 0,
+     "grade": {
+      "sites_found": 8,
+      "sites_expected": 8,
+      "missing": [],
+      "unexplained_line_numbers_in_call_site_section": [
+       531
+      ],
+      "signature": true,
+      "pass": true
+     }
+    },
+    {
+     "task": "T2",
+     "pos": 2,
+     "cost_usd": 0.37772220000000006,
+     "cost_split_usd": {
+      "BASE": 0.02374,
+      "SETUP": 0.05105,
+      "BP_RESULT": 0.20348,
+      "NATIVE_RESULT": 0.02801,
+      "OTHER": 0.01301,
+      "OUTPUT": 0.05844
+     },
+     "split_check_usd": 8e-06,
+     "price_residual": 0.0,
+     "tokens": {
+      "input": 14,
+      "output": 2922,
+      "cache_write": 32178,
+      "cache_read": 309011
+     },
+     "usd_by_token_type": {
+      "input": 6e-05,
+      "output": 0.05844,
+      "cache_write": 0.25742,
+      "cache_read": 0.0618
+     },
+     "api_requests": 7,
+     "req0_cache_write": 1414,
+     "req0_cache_read": 30972,
+     "toolsearch_calls": 2,
+     "toolsearch_tokens": 5096,
+     "toolsearch_queries": [
+      "select:mcp__brainprint__brainprint_find",
+      "select:mcp__brainprint__brainprint_inspect"
+     ],
+     "bp_calls": 4,
+     "bp_kinds": [
+      "BP:find:text",
+      "BP:inspect",
+      "BP:inspect",
+      "BP:inspect"
+     ],
+     "bp_bytes": 44044,
+     "bp_latency_s": {
+      "n": 4,
+      "p50": 0.17,
+      "max": 0.44
+     },
+     "native_calls": 2,
+     "native_bytes": 4946,
+     "native_by_tool": {
+      "Bash": 2
+     },
+     "native_read_calls": 0,
+     "native_read_after_bp": 0,
+     "wall_s": 31.51,
+     "num_turns": 9,
+     "t1_sites_from_change_pages": null,
+     "t1_unconfirmed_caller_owners": null,
+     "grade": {
+      "env_var": true,
+      "append_fn": true,
+      "jsonl": true,
+      "fields_found": 19,
+      "emitters_event_bridge": true,
+      "pass": true
+     }
+    },
+    {
+     "task": "T3",
+     "pos": 3,
+     "cost_usd": 0.1935656,
+     "cost_split_usd": {
+      "BASE": 0.01696,
+      "SETUP": 0.00945,
+      "BP_RESULT": 0.08454,
+      "NATIVE_RESULT": 0.02447,
+      "OTHER": 0.01317,
+      "OUTPUT": 0.04498
+     },
+     "split_check_usd": 4e-06,
+     "price_residual": 0.0,
+     "tokens": {
+      "input": 10,
+      "output": 2249,
+      "cache_write": 9993,
+      "cache_read": 343008
+     },
+     "usd_by_token_type": {
+      "input": 4e-05,
+      "output": 0.04498,
+      "cache_write": 0.07994,
+      "cache_read": 0.0686
+     },
+     "api_requests": 5,
+     "req0_cache_write": 1336,
+     "req0_cache_read": 63150,
+     "toolsearch_calls": 0,
+     "toolsearch_tokens": 0,
+     "toolsearch_queries": [],
+     "bp_calls": 1,
+     "bp_kinds": [
+      "BP:context:change"
+     ],
+     "bp_bytes": 11959,
+     "bp_latency_s": {
+      "n": 1,
+      "p50": 0.41,
+      "max": 0.41
+     },
+     "native_calls": 4,
+     "native_bytes": 1910,
+     "native_by_tool": {
+      "Grep": 1,
+      "Bash": 3
+     },
+     "native_read_calls": 0,
+     "native_read_after_bp": 0,
+     "wall_s": 26.05,
+     "num_turns": 6,
+     "t1_sites_from_change_pages": null,
+     "t1_unconfirmed_caller_owners": null,
+     "grade": {
+      "signature": true,
+      "def": true,
+      "sites": true,
+      "false_calls": [],
+      "pass_recall": true,
+      "pass": true
+     }
+    },
+    {
+     "task": "T4",
+     "pos": 4,
+     "cost_usd": 0.17181040000000003,
+     "cost_split_usd": {
+      "BASE": 0.01696,
+      "SETUP": 0.00945,
+      "BP_RESULT": 0.04354,
+      "NATIVE_RESULT": 0.0437,
+      "OTHER": 0.01149,
+      "OUTPUT": 0.04668
+     },
+     "split_check_usd": 1e-05,
+     "price_residual": 0.0,
+     "tokens": {
+      "input": 10,
+      "output": 2334,
+      "cache_write": 6231,
+      "cache_read": 376212
+     },
+     "usd_by_token_type": {
+      "input": 4e-05,
+      "output": 0.04668,
+      "cache_write": 0.04985,
+      "cache_read": 0.07524
+     },
+     "api_requests": 5,
+     "req0_cache_write": 993,
+     "req0_cache_read": 73143,
+     "toolsearch_calls": 0,
+     "toolsearch_tokens": 0,
+     "toolsearch_queries": [],
+     "bp_calls": 1,
+     "bp_kinds": [
+      "BP:context:change"
+     ],
+     "bp_bytes": 1646,
+     "bp_latency_s": {
+      "n": 1,
+      "p50": 1.27,
+      "max": 1.27
+     },
+     "native_calls": 3,
+     "native_bytes": 5690,
+     "native_by_tool": {
+      "Bash": 3
+     },
+     "native_read_calls": 0,
+     "native_read_after_bp": 0,
+     "wall_s": 25.44,
+     "num_turns": 5,
+     "t1_sites_from_change_pages": null,
+     "t1_unconfirmed_caller_owners": null,
+     "grade": {
+      "signature": true,
+      "def": true,
+      "sites": true,
+      "false_calls": [],
+      "pass_recall": true,
+      "pass": true
+     }
+    },
+    {
+     "task": "T5",
+     "pos": 5,
+     "cost_usd": 0.18139220000000011,
+     "cost_split_usd": {
+      "BASE": 0.01018,
+      "SETUP": 0.00567,
+      "BP_RESULT": 0.09834,
+      "NATIVE_RESULT": 0.02331,
+      "OTHER": 0.00992,
+      "OUTPUT": 0.03398
+     },
+     "split_check_usd": 8e-06,
+     "price_residual": 0.0,
+     "tokens": {
+      "input": 6,
+      "output": 1699,
+      "cache_write": 12192,
+      "cache_read": 249261
+     },
+     "usd_by_token_type": {
+      "input": 2e-05,
+      "output": 0.03398,
+      "cache_write": 0.09754,
+      "cache_read": 0.04985
+     },
+     "api_requests": 3,
+     "req0_cache_write": 914,
+     "req0_cache_read": 79374,
+     "toolsearch_calls": 0,
+     "toolsearch_tokens": 0,
+     "toolsearch_queries": [],
+     "bp_calls": 2,
+     "bp_kinds": [
+      "BP:inspect",
+      "BP:inspect"
+     ],
+     "bp_bytes": 17449,
+     "bp_latency_s": {
+      "n": 2,
+      "p50": 0.15,
+      "max": 0.15
+     },
+     "native_calls": 1,
+     "native_bytes": 3649,
+     "native_by_tool": {
+      "Bash": 1
+     },
+     "native_read_calls": 0,
+     "native_read_after_bp": 0,
+     "wall_s": 17.44,
+     "num_turns": 4,
+     "t1_sites_from_change_pages": null,
+     "t1_unconfirmed_caller_owners": null,
+     "grade": {
+      "signature": true,
+      "def": true,
+      "sites": true,
+      "false_calls": [],
+      "pass_recall": true,
+      "pass": true
+     }
+    },
+    {
+     "task": "T6",
+     "pos": 6,
+     "cost_usd": 0.3135030000000001,
+     "cost_split_usd": {
+      "BASE": 0.01357,
+      "SETUP": 0.00756,
+      "BP_RESULT": 0.15173,
+      "NATIVE_RESULT": 0.07342,
+      "OTHER": 0.01295,
+      "OUTPUT": 0.05428
+     },
+     "split_check_usd": 7e-06,
+     "price_residual": 0.0,
+     "tokens": {
+      "input": 8,
+      "output": 2714,
+      "cache_write": 22338,
+      "cache_read": 402435
+     },
+     "usd_by_token_type": {
+      "input": 3e-05,
+      "output": 0.05428,
+      "cache_write": 0.1787,
+      "cache_read": 0.08049
+     },
+     "api_requests": 4,
+     "req0_cache_write": 1073,
+     "req0_cache_read": 91566,
+     "toolsearch_calls": 0,
+     "toolsearch_tokens": 0,
+     "toolsearch_queries": [],
+     "bp_calls": 1,
+     "bp_kinds": [
+      "BP:context:change"
+     ],
+     "bp_bytes": 25925,
+     "bp_latency_s": {
+      "n": 1,
+      "p50": 2.87,
+      "max": 2.87
+     },
+     "native_calls": 2,
+     "native_bytes": 13388,
+     "native_by_tool": {
+      "Bash": 2
+     },
+     "native_read_calls": 0,
+     "native_read_after_bp": 0,
+     "wall_s": 30.7,
+     "num_turns": 4,
+     "t1_sites_from_change_pages": null,
+     "t1_unconfirmed_caller_owners": null,
+     "grade": {
+      "signature": true,
+      "def": true,
+      "sites": true,
+      "false_calls": [
+       "gateway.rs:431",
+       "gateway.rs:486",
+       "gateway.rs:558"
+      ],
+      "pass_recall": true,
+      "pass": true
+     }
+    }
+   ],
+   "toolsearch_calls": 3,
+   "toolsearch_tokens": 9446,
+   "schema_load_turns": [
+    1,
+    2
+   ],
+   "duplicate_file_reads": 0,
+   "peak_rss_kib": {
+    "claude": 276688,
+    "brainprintd": 34640,
+    "brainprint_total": 1039952,
+    "brainprint-mcp": 6416,
+    "rust-analyzer": 1020992
+   },
+   "end_of_turn_rss_kib": [
+    {
+     "task": "T1",
+     "rss_kib": {
+      "brainprint-mcp": 3376,
+      "rust-analyzer": 37216,
+      "claude": 165888,
+      "brainprintd": 11984,
+      "brainprint_total": 52576
+     }
+    },
+    {
+     "task": "T2",
+     "rss_kib": {
+      "brainprint-mcp": 3360,
+      "rust-analyzer": 37168,
+      "claude": 160208,
+      "brainprintd": 12512,
+      "brainprint_total": 53040
+     }
+    },
+    {
+     "task": "T3",
+     "rss_kib": {
+      "brainprint-mcp": 3312,
+      "rust-analyzer": 16544,
+      "claude": 151376,
+      "brainprintd": 11760,
+      "brainprint_total": 31616
+     }
+    },
+    {
+     "task": "T4",
+     "rss_kib": {
+      "brainprint-mcp": 3296,
+      "rust-analyzer": 15504,
+      "claude": 175744,
+      "brainprintd": 11856,
+      "brainprint_total": 30656
+     }
+    },
+    {
+     "task": "T5",
+     "rss_kib": {
+      "brainprint-mcp": 4432,
+      "rust-analyzer": 15504,
+      "claude": 174448,
+      "brainprintd": 21104,
+      "brainprint_total": 41040
+     }
+    },
+    {
+     "task": "T6",
+     "rss_kib": {
+      "brainprint-mcp": 3152,
+      "rust-analyzer": 16720,
+      "claude": 166176,
+      "brainprintd": 11776,
+      "brainprint_total": 31648
+     }
+    }
+   ],
+   "hook_events": 48,
+   "hook_latency_us_p50": 1308,
+   "hook_latency_us_max": 126818,
+   "wall_s_total": 176.5
+  },
+  {
+   "session": "B1-O1-r2",
+   "cond": "B1",
+   "order": "O1",
+   "round": "r2",
+   "cache_class": "STATIC",
+   "req0_cache_write": 6731,
+   "req0_cache_read": 10140,
+   "extended_cache_hits": 0,
+   "degraded": false,
+   "complete": true,
+   "total_usd": 1.06008,
+   "turns": [
+    {
+     "task": "T1",
+     "pos": 1,
+     "cost_usd": 0.283989,
+     "cost_split_usd": {
+      "BASE": 0.07619,
+      "SETUP": 0.03892,
+      "BP_RESULT": 0.07151,
+      "NATIVE_RESULT": 0.03152,
+      "OTHER": 0.0,
+      "OUTPUT": 0.06584
+     },
+     "split_check_usd": -9e-06,
+     "price_residual": 0.0,
+     "tokens": {
+      "input": 16,
+      "output": 3292,
+      "cache_write": 23049,
+      "cache_read": 168465
+     },
+     "usd_by_token_type": {
+      "input": 6e-05,
+      "output": 0.06584,
+      "cache_write": 0.18439,
+      "cache_read": 0.03369
+     },
+     "api_requests": 7,
+     "req0_cache_write": 6731,
+     "req0_cache_read": 10140,
+     "toolsearch_calls": 1,
+     "toolsearch_tokens": 4325,
+     "toolsearch_queries": [
+      "select:mcp__brainprint__brainprint_context"
+     ],
+     "bp_calls": 3,
+     "bp_kinds": [
+      "BP:context:change",
+      "BP:context:change",
+      "BP:context:rules"
+     ],
+     "bp_bytes": 14106,
+     "bp_latency_s": {
+      "n": 3,
+      "p50": 0.54,
+      "max": 14.1
+     },
+     "native_calls": 3,
+     "native_bytes": 5436,
+     "native_by_tool": {
+      "Bash": 3
+     },
+     "native_read_calls": 0,
+     "native_read_after_bp": 0,
+     "wall_s": 56.14,
+     "num_turns": 8,
+     "t1_sites_from_change_pages": 8,
+     "t1_unconfirmed_caller_owners": 0,
+     "grade": {
+      "sites_found": 8,
+      "sites_expected": 8,
+      "missing": [],
+      "unexplained_line_numbers_in_call_site_section": [],
+      "signature": true,
+      "pass": true
+     }
+    },
+    {
+     "task": "T2",
+     "pos": 2,
+     "cost_usd": 0.22270039999999997,
+     "cost_split_usd": {
+      "BASE": 0.01693,
+      "SETUP": 0.02843,
+      "BP_RESULT": 0.07343,
+      "NATIVE_RESULT": 0.05221,
+      "OTHER": 0.01088,
+      "OUTPUT": 0.04082
+     },
+     "split_check_usd": -0.0,
+     "price_residual": 0.0,
+     "tokens": {
+      "input": 14,
+      "output": 2041,
+      "cache_write": 17723,
+      "cache_read": 200202
+     },
+     "usd_by_token_type": {
+      "input": 6e-05,
+      "output": 0.04082,
+      "cache_write": 0.14178,
+      "cache_read": 0.04004
+     },
+     "api_requests": 5,
+     "req0_cache_write": 1236,
+     "req0_cache_read": 33189,
+     "toolsearch_calls": 1,
+     "toolsearch_tokens": 2803,
+     "toolsearch_queries": [
+      "select:mcp__brainprint__brainprint_find"
+     ],
+     "bp_calls": 1,
+     "bp_kinds": [
+      "BP:find:text"
+     ],
+     "bp_bytes": 15607,
+     "bp_latency_s": {
+      "n": 1,
+      "p50": 0.09,
+      "max": 0.09
+     },
+     "native_calls": 2,
+     "native_bytes": 12604,
+     "native_by_tool": {
+      "Bash": 2
+     },
+     "native_read_calls": 0,
+     "native_read_after_bp": 0,
+     "wall_s": 23.94,
+     "num_turns": 5,
+     "t1_sites_from_change_pages": null,
+     "t1_unconfirmed_caller_owners": null,
+     "grade": {
+      "env_var": true,
+      "append_fn": true,
+      "jsonl": true,
+      "fields_found": 19,
+      "emitters_event_bridge": true,
+      "pass": true
+     }
+    },
+    {
+     "task": "T3",
+     "pos": 3,
+     "cost_usd": 0.13328319999999994,
+     "cost_split_usd": {
+      "BASE": 0.01354,
+      "SETUP": 0.0057,
+      "BP_RESULT": 0.04266,
+      "NATIVE_RESULT": 0.02361,
+      "OTHER": 0.01285,
+      "OUTPUT": 0.03492
+     },
+     "split_check_usd": -3e-06,
+     "price_residual": 0.0,
+     "tokens": {
+      "input": 10,
+      "output": 1746,
+      "cache_write": 6886,
+      "cache_read": 216176
+     },
+     "usd_by_token_type": {
+      "input": 4e-05,
+      "output": 0.03492,
+      "cache_write": 0.05509,
+      "cache_read": 0.04324
+     },
+     "api_requests": 4,
+     "req0_cache_write": 1379,
+     "req0_cache_read": 50912,
+     "toolsearch_calls": 0,
+     "toolsearch_tokens": 0,
+     "toolsearch_queries": [],
+     "bp_calls": 1,
+     "bp_kinds": [
+      "BP:context:change"
+     ],
+     "bp_bytes": 6178,
+     "bp_latency_s": {
+      "n": 1,
+      "p50": 0.81,
+      "max": 0.81
+     },
+     "native_calls": 2,
+     "native_bytes": 2309,
+     "native_by_tool": {
+      "Bash": 2
+     },
+     "native_read_calls": 0,
+     "native_read_after_bp": 0,
+     "wall_s": 20.7,
+     "num_turns": 4,
+     "t1_sites_from_change_pages": null,
+     "t1_unconfirmed_caller_owners": null,
+     "grade": {
+      "signature": true,
+      "def": true,
+      "sites": true,
+      "false_calls": [],
+      "pass_recall": true,
+      "pass": true
+     }
+    },
+    {
+     "task": "T4",
+     "pos": 4,
+     "cost_usd": 0.17320519999999995,
+     "cost_split_usd": {
+      "BASE": 0.01692,
+      "SETUP": 0.00713,
+      "BP_RESULT": 0.02733,
+      "NATIVE_RESULT": 0.06781,
+      "OTHER": 0.01069,
+      "OUTPUT": 0.04332
+     },
+     "split_check_usd": -5e-06,
+     "price_residual": 0.0,
+     "tokens": {
+      "input": 12,
+      "output": 2166,
+      "cache_write": 8558,
+      "cache_read": 306866
+     },
+     "usd_by_token_type": {
+      "input": 5e-05,
+      "output": 0.04332,
+      "cache_write": 0.06846,
+      "cache_read": 0.06137
+     },
+     "api_requests": 5,
+     "req0_cache_write": 918,
+     "req0_cache_read": 57798,
+     "toolsearch_calls": 0,
+     "toolsearch_tokens": 0,
+     "toolsearch_queries": [],
+     "bp_calls": 1,
+     "bp_kinds": [
+      "BP:context:change"
+     ],
+     "bp_bytes": 1646,
+     "bp_latency_s": {
+      "n": 1,
+      "p50": 2.08,
+      "max": 2.08
+     },
+     "native_calls": 3,
+     "native_bytes": 8727,
+     "native_by_tool": {
+      "Bash": 3
+     },
+     "native_read_calls": 0,
+     "native_read_after_bp": 0,
+     "wall_s": 26.03,
+     "num_turns": 5,
+     "t1_sites_from_change_pages": null,
+     "t1_unconfirmed_caller_owners": null,
+     "grade": {
+      "signature": true,
+      "def": true,
+      "sites": true,
+      "false_calls": [],
+      "pass_recall": true,
+      "pass": true
+     }
+    },
+    {
+     "task": "T5",
+     "pos": 5,
+     "cost_usd": 0.12380059999999993,
+     "cost_split_usd": {
+      "BASE": 0.01354,
+      "SETUP": 0.0057,
+      "BP_RESULT": 0.01634,
+      "NATIVE_RESULT": 0.04515,
+      "OTHER": 0.00953,
+      "OUTPUT": 0.03354
+     },
+     "split_check_usd": -1e-06,
+     "price_residual": 0.0,
+     "tokens": {
+      "input": 10,
+      "output": 1677,
+      "cache_write": 4440,
+      "cache_read": 273503
+     },
+     "usd_by_token_type": {
+      "input": 4e-05,
+      "output": 0.03354,
+      "cache_write": 0.03552,
+      "cache_read": 0.0547
+     },
+     "api_requests": 4,
+     "req0_cache_write": 779,
+     "req0_cache_read": 66356,
+     "toolsearch_calls": 0,
+     "toolsearch_tokens": 0,
+     "toolsearch_queries": [],
+     "bp_calls": 0,
+     "bp_kinds": [],
+     "bp_bytes": 0,
+     "bp_latency_s": {
+      "n": 0,
+      "p50": null,
+      "max": null
+     },
+     "native_calls": 3,
+     "native_bytes": 6690,
+     "native_by_tool": {
+      "Bash": 3
+     },
+     "native_read_calls": 0,
+     "native_read_after_bp": 0,
+     "wall_s": 19.03,
+     "num_turns": 4,
+     "t1_sites_from_change_pages": null,
+     "t1_unconfirmed_caller_owners": null,
+     "grade": {
+      "signature": true,
+      "def": true,
+      "sites": true,
+      "false_calls": [],
+      "pass_recall": true,
+      "pass": true
+     }
+    },
+    {
+     "task": "T6",
+     "pos": 6,
+     "cost_usd": 0.12310040000000011,
+     "cost_split_usd": {
+      "BASE": 0.01015,
+      "SETUP": 0.00428,
+      "BP_RESULT": 0.01226,
+      "NATIVE_RESULT": 0.04635,
+      "OTHER": 0.0111,
+      "OUTPUT": 0.03896
+     },
+     "split_check_usd": -0.0,
+     "price_residual": 0.0,
+     "tokens": {
+      "input": 8,
+      "output": 1948,
+      "cache_write": 5080,
+      "cache_read": 217342
+     },
+     "usd_by_token_type": {
+      "input": 3e-05,
+      "output": 0.03896,
+      "cache_write": 0.04064,
+      "cache_read": 0.04347
+     },
+     "api_requests": 3,
+     "req0_cache_write": 1014,
+     "req0_cache_read": 70796,
+     "toolsearch_calls": 0,
+     "toolsearch_tokens": 0,
+     "toolsearch_queries": [],
+     "bp_calls": 0,
+     "bp_kinds": [],
+     "bp_bytes": 0,
+     "bp_latency_s": {
+      "n": 0,
+      "p50": null,
+      "max": null
+     },
+     "native_calls": 2,
+     "native_bytes": 6588,
+     "native_by_tool": {
+      "Bash": 2
+     },
+     "native_read_calls": 0,
+     "native_read_after_bp": 0,
+     "wall_s": 21.97,
+     "num_turns": 3,
+     "t1_sites_from_change_pages": null,
+     "t1_unconfirmed_caller_owners": null,
+     "grade": {
+      "signature": true,
+      "def": true,
+      "sites": true,
+      "false_calls": [
+       "gateway.rs:431",
+       "gateway.rs:486",
+       "gateway.rs:558",
+       "gateway.rs:599"
+      ],
+      "pass_recall": true,
+      "pass": true
+     }
+    }
+   ],
+   "toolsearch_calls": 2,
+   "toolsearch_tokens": 7128,
+   "schema_load_turns": [
+    1,
+    2
+   ],
+   "duplicate_file_reads": 0,
+   "peak_rss_kib": {
+    "brainprintd": 29184,
+    "claude": 229200,
+    "brainprint_total": 1034320,
+    "brainprint-mcp": 6320,
+    "rust-analyzer": 1014720
+   },
+   "end_of_turn_rss_kib": [
+    {
+     "task": "T1",
+     "rss_kib": {
+      "brainprint-mcp": 3584,
+      "claude": 187312,
+      "brainprintd": 11312,
+      "rust-analyzer": 16896,
+      "brainprint_total": 31792
+     }
+    },
+    {
+     "task": "T2",
+     "rss_kib": {
+      "brainprint-mcp": 3120,
+      "claude": 160992,
+      "brainprintd": 10016,
+      "rust-analyzer": 9776,
+      "brainprint_total": 22912
+     }
+    },
+    {
+     "task": "T3",
+     "rss_kib": {
+      "brainprint-mcp": 3328,
+      "claude": 142992,
+      "brainprintd": 9744,
+      "rust-analyzer": 17152,
+      "brainprint_total": 30224
+     }
+    },
+    {
+     "task": "T4",
+     "rss_kib": {
+      "brainprint-mcp": 3296,
+      "claude": 181760,
+      "brainprintd": 9904,
+      "rust-analyzer": 16672,
+      "brainprint_total": 29872
+     }
+    },
+    {
+     "task": "T5",
+     "rss_kib": {
+      "brainprint-mcp": 944,
+      "claude": 162880,
+      "brainprintd": 3552,
+      "rust-analyzer": 2432,
+      "brainprint_total": 6928
+     }
+    },
+    {
+     "task": "T6",
+     "rss_kib": {
+      "brainprint-mcp": 944,
+      "claude": 131696,
+      "brainprintd": 3536,
+      "rust-analyzer": 2416,
+      "brainprint_total": 6896
+     }
+    }
+   ],
+   "hook_events": 35,
+   "hook_latency_us_p50": 1330,
+   "hook_latency_us_max": 8199,
+   "wall_s_total": 167.8
+  },
+  {
+   "session": "B1-O2-r1",
+   "cond": "B1",
+   "order": "O2",
+   "round": "r1",
+   "cache_class": "STATIC",
+   "req0_cache_write": 6794,
+   "req0_cache_read": 10140,
+   "extended_cache_hits": 0,
+   "degraded": false,
+   "complete": true,
+   "total_usd": 1.53265,
+   "turns": [
+    {
+     "task": "T6",
+     "pos": 1,
+     "cost_usd": 0.4664462,
+     "cost_split_usd": {
+      "BASE": 0.09034,
+      "SETUP": 0.04263,
+      "BP_RESULT": 0.17864,
+      "NATIVE_RESULT": 0.07994,
+      "OTHER": 0.0,
+      "OUTPUT": 0.0749
+     },
+     "split_check_usd": 4e-06,
+     "price_residual": 0.0,
+     "tokens": {
+      "input": 22,
+      "output": 3745,
+      "cache_write": 40036,
+      "cache_read": 355851
+     },
+     "usd_by_token_type": {
+      "input": 9e-05,
+      "output": 0.0749,
+      "cache_write": 0.32029,
+      "cache_read": 0.07117
+     },
+     "api_requests": 11,
+     "req0_cache_write": 6794,
+     "req0_cache_read": 10140,
+     "toolsearch_calls": 1,
+     "toolsearch_tokens": 4350,
+     "toolsearch_queries": [
+      "select:mcp__brainprint__brainprint_context"
+     ],
+     "bp_calls": 4,
+     "bp_kinds": [
+      "BP:context:change",
+      "BP:context:change",
+      "BP:context:change",
+      "BP:context:change"
+     ],
+     "bp_bytes": 36940,
+     "bp_latency_s": {
+      "n": 4,
+      "p50": 0.59,
+      "max": 10.57
+     },
+     "native_calls": 6,
+     "native_bytes": 15960,
+     "native_by_tool": {
+      "Grep": 3,
+      "Bash": 3
+     },
+     "native_read_calls": 0,
+     "native_read_after_bp": 0,
+     "wall_s": 55.61,
+     "num_turns": 12,
+     "t1_sites_from_change_pages": null,
+     "t1_unconfirmed_caller_owners": null,
+     "grade": {
+      "signature": true,
+      "def": true,
+      "sites": true,
+      "false_calls": [],
+      "pass_recall": true,
+      "pass": true
+     }
+    },
+    {
+     "task": "T5",
+     "pos": 2,
+     "cost_usd": 0.23724360000000005,
+     "cost_split_usd": {
+      "BASE": 0.01358,
+      "SETUP": 0.02141,
+      "BP_RESULT": 0.11591,
+      "NATIVE_RESULT": 0.04623,
+      "OTHER": 0.01128,
+      "OUTPUT": 0.02884
+     },
+     "split_check_usd": 6e-06,
+     "price_residual": 0.0,
+     "tokens": {
+      "input": 8,
+      "output": 1442,
+      "cache_write": 20518,
+      "cache_read": 221138
+     },
+     "usd_by_token_type": {
+      "input": 3e-05,
+      "output": 0.02884,
+      "cache_write": 0.16414,
+      "cache_read": 0.04423
+     },
+     "api_requests": 4,
+     "req0_cache_write": 1312,
+     "req0_cache_read": 50176,
+     "toolsearch_calls": 1,
+     "toolsearch_tokens": 2134,
+     "toolsearch_queries": [
+      "select:mcp__brainprint__brainprint_inspect"
+     ],
+     "bp_calls": 1,
+     "bp_kinds": [
+      "BP:inspect"
+     ],
+     "bp_bytes": 24746,
+     "bp_latency_s": {
+      "n": 1,
+      "p50": 0.43,
+      "max": 0.43
+     },
+     "native_calls": 1,
+     "native_bytes": 10887,
+     "native_by_tool": {
+      "Read": 1
+     },
+     "native_read_calls": 1,
+     "native_read_after_bp": 1,
+     "wall_s": 16.17,
+     "num_turns": 4,
+     "t1_sites_from_change_pages": null,
+     "t1_unconfirmed_caller_owners": null,
+     "grade": {
+      "signature": true,
+      "def": true,
+      "sites": true,
+      "false_calls": [],
+      "pass_recall": true,
+      "pass": true
+     }
+    },
+    {
+     "task": "T4",
+     "pos": 3,
+     "cost_usd": 0.21620059999999997,
+     "cost_split_usd": {
+      "BASE": 0.01358,
+      "SETUP": 0.00519,
+      "BP_RESULT": 0.03327,
+      "NATIVE_RESULT": 0.11097,
+      "OTHER": 0.01054,
+      "OUTPUT": 0.04266
+     },
+     "split_check_usd": 9e-06,
+     "price_residual": 0.0,
+     "tokens": {
+      "input": 8,
+      "output": 2133,
+      "cache_write": 14217,
+      "cache_read": 298863
+     },
+     "usd_by_token_type": {
+      "input": 3e-05,
+      "output": 0.04266,
+      "cache_write": 0.11374,
+      "cache_read": 0.05977
+     },
+     "api_requests": 4,
+     "req0_cache_write": 1103,
+     "req0_cache_read": 70694,
+     "toolsearch_calls": 0,
+     "toolsearch_tokens": 0,
+     "toolsearch_queries": [],
+     "bp_calls": 1,
+     "bp_kinds": [
+      "BP:context:change"
+     ],
+     "bp_bytes": 1646,
+     "bp_latency_s": {
+      "n": 1,
+      "p50": 1.21,
+      "max": 1.21
+     },
+     "native_calls": 2,
+     "native_bytes": 16873,
+     "native_by_tool": {
+      "Bash": 2
+     },
+     "native_read_calls": 0,
+     "native_read_after_bp": 0,
+     "wall_s": 22.65,
+     "num_turns": 4,
+     "t1_sites_from_change_pages": null,
+     "t1_unconfirmed_caller_owners": null,
+     "grade": {
+      "signature": true,
+      "def": true,
+      "sites": true,
+      "false_calls": [],
+      "pass_recall": true,
+      "pass": true
+     }
+    },
+    {
+     "task": "T3",
+     "pos": 4,
+     "cost_usd": 0.20027779999999995,
+     "cost_split_usd": {
+      "BASE": 0.01697,
+      "SETUP": 0.00648,
+      "BP_RESULT": 0.05734,
+      "NATIVE_RESULT": 0.05906,
+      "OTHER": 0.00972,
+      "OUTPUT": 0.0507
+     },
+     "split_check_usd": -8e-06,
+     "price_residual": 0.0,
+     "tokens": {
+      "input": 10,
+      "output": 2535,
+      "cache_write": 7666,
+      "cache_read": 441049
+     },
+     "usd_by_token_type": {
+      "input": 4e-05,
+      "output": 0.0507,
+      "cache_write": 0.06133,
+      "cache_read": 0.08821
+     },
+     "api_requests": 5,
+     "req0_cache_write": 830,
+     "req0_cache_read": 84911,
+     "toolsearch_calls": 0,
+     "toolsearch_tokens": 0,
+     "toolsearch_queries": [],
+     "bp_calls": 1,
+     "bp_kinds": [
+      "BP:context:change"
+     ],
+     "bp_bytes": 5029,
+     "bp_latency_s": {
+      "n": 1,
+      "p50": 0.29,
+      "max": 0.29
+     },
+     "native_calls": 3,
+     "native_bytes": 5566,
+     "native_by_tool": {
+      "Bash": 3
+     },
+     "native_read_calls": 0,
+     "native_read_after_bp": 0,
+     "wall_s": 27.89,
+     "num_turns": 5,
+     "t1_sites_from_change_pages": null,
+     "t1_unconfirmed_caller_owners": null,
+     "grade": {
+      "signature": true,
+      "def": true,
+      "sites": true,
+      "false_calls": [],
+      "pass_recall": true,
+      "pass": true
+     }
+    },
+    {
+     "task": "T2",
+     "pos": 5,
+     "cost_usd": 0.18215040000000005,
+     "cost_split_usd": {
+      "BASE": 0.01358,
+      "SETUP": 0.00519,
+      "BP_RESULT": 0.02845,
+      "NATIVE_RESULT": 0.07262,
+      "OTHER": 0.01305,
+      "OUTPUT": 0.04926
+     },
+     "split_check_usd": -0.0,
+     "price_residual": 0.0,
+     "tokens": {
+      "input": 8,
+      "output": 2463,
+      "cache_write": 7104,
+      "cache_read": 380132
+     },
+     "usd_by_token_type": {
+      "input": 3e-05,
+      "output": 0.04926,
+      "cache_write": 0.05683,
+      "cache_read": 0.07603
+     },
+     "api_requests": 4,
+     "req0_cache_write": 1216,
+     "req0_cache_read": 92577,
+     "toolsearch_calls": 0,
+     "toolsearch_tokens": 0,
+     "toolsearch_queries": [],
+     "bp_calls": 0,
+     "bp_kinds": [],
+     "bp_bytes": 0,
+     "bp_latency_s": {
+      "n": 0,
+      "p50": null,
+      "max": null
+     },
+     "native_calls": 6,
+     "native_bytes": 10588,
+     "native_by_tool": {
+      "Read": 4,
+      "Bash": 1,
+      "Grep": 1
+     },
+     "native_read_calls": 4,
+     "native_read_after_bp": 2,
+     "wall_s": 28.13,
+     "num_turns": 7,
+     "t1_sites_from_change_pages": null,
+     "t1_unconfirmed_caller_owners": null,
+     "grade": {
+      "env_var": true,
+      "append_fn": true,
+      "jsonl": true,
+      "fields_found": 19,
+      "emitters_event_bridge": true,
+      "pass": true
+     }
+    },
+    {
+     "task": "T1",
+     "pos": 6,
+     "cost_usd": 0.23033280000000023,
+     "cost_split_usd": {
+      "BASE": 0.01358,
+      "SETUP": 0.00519,
+      "BP_RESULT": 0.08801,
+      "NATIVE_RESULT": 0.05918,
+      "OTHER": 0.01428,
+      "OUTPUT": 0.0501
+     },
+     "split_check_usd": 7e-06,
+     "price_residual": 0.0,
+     "tokens": {
+      "input": 8,
+      "output": 2505,
+      "cache_write": 12043,
+      "cache_read": 419284
+     },
+     "usd_by_token_type": {
+      "input": 3e-05,
+      "output": 0.0501,
+      "cache_write": 0.09634,
+      "cache_read": 0.08386
+     },
+     "api_requests": 4,
+     "req0_cache_write": 1245,
+     "req0_cache_read": 99681,
+     "toolsearch_calls": 0,
+     "toolsearch_tokens": 0,
+     "toolsearch_queries": [],
+     "bp_calls": 2,
+     "bp_kinds": [
+      "BP:context:change",
+      "BP:context:rules"
+     ],
+     "bp_bytes": 12916,
+     "bp_latency_s": {
+      "n": 2,
+      "p50": 1.2,
+      "max": 1.2
+     },
+     "native_calls": 2,
+     "native_bytes": 5638,
+     "native_by_tool": {
+      "Bash": 2
+     },
+     "native_read_calls": 0,
+     "native_read_after_bp": 0,
+     "wall_s": 25.41,
+     "num_turns": 5,
+     "t1_sites_from_change_pages": 8,
+     "t1_unconfirmed_caller_owners": 0,
+     "grade": {
+      "sites_found": 8,
+      "sites_expected": 8,
+      "missing": [],
+      "unexplained_line_numbers_in_call_site_section": [
+       437,
+       452,
+       468,
+       516,
+       531
+      ],
+      "signature": true,
+      "pass": true
+     }
+    }
+   ],
+   "toolsearch_calls": 2,
+   "toolsearch_tokens": 6484,
+   "schema_load_turns": [
+    1,
+    2
+   ],
+   "duplicate_file_reads": 2,
+   "peak_rss_kib": {
+    "claude": 266160,
+    "brainprintd": 36224,
+    "brainprint_total": 1274880,
+    "brainprint-mcp": 6576,
+    "rust-analyzer": 1244704
+   },
+   "end_of_turn_rss_kib": [
+    {
+     "task": "T6",
+     "rss_kib": {
+      "claude": 149840,
+      "brainprint-mcp": 1072,
+      "brainprintd": 5456,
+      "rust-analyzer": 21184,
+      "brainprint_total": 27712
+     }
+    },
+    {
+     "task": "T5",
+     "rss_kib": {
+      "claude": 155584,
+      "brainprint-mcp": 4256,
+      "brainprintd": 10112,
+      "rust-analyzer": 14592,
+      "brainprint_total": 28960
+     }
+    },
+    {
+     "task": "T4",
+     "rss_kib": {
+      "claude": 142208,
+      "brainprint-mcp": 2768,
+      "brainprintd": 7792,
+      "rust-analyzer": 4224,
+      "brainprint_total": 14784
+     }
+    },
+    {
+     "task": "T3",
+     "rss_kib": {
+      "claude": 129408,
+      "brainprint-mcp": 3120,
+      "brainprintd": 8656,
+      "rust-analyzer": 4064,
+      "brainprint_total": 15840
+     }
+    },
+    {
+     "task": "T2",
+     "rss_kib": {
+      "claude": 133952,
+      "brainprint-mcp": 688,
+      "brainprintd": 3072,
+      "rust-analyzer": 2048,
+      "brainprint_total": 5808
+     }
+    },
+    {
+     "task": "T1",
+     "rss_kib": {
+      "claude": 122224,
+      "brainprint-mcp": 3120,
+      "brainprintd": 9296,
+      "rust-analyzer": 13696,
+      "brainprint_total": 26112
+     }
+    }
+   ],
+   "hook_events": 36,
+   "hook_latency_us_p50": 1137,
+   "hook_latency_us_max": 21775,
+   "wall_s_total": 175.9
+  },
+  {
+   "session": "B1-O2-r2",
+   "cond": "B1",
+   "order": "O2",
+   "round": "r2",
+   "cache_class": "STATIC",
+   "req0_cache_write": 6793,
+   "req0_cache_read": 10140,
+   "extended_cache_hits": 0,
+   "degraded": false,
+   "complete": true,
+   "total_usd": 1.4125,
+   "turns": [
+    {
+     "task": "T6",
+     "pos": 1,
+     "cost_usd": 0.3323268,
+     "cost_split_usd": {
+      "BASE": 0.08693,
+      "SETUP": 0.04176,
+      "BP_RESULT": 0.08518,
+      "NATIVE_RESULT": 0.04555,
+      "OTHER": 0.0,
+      "OUTPUT": 0.0729
+     },
+     "split_check_usd": -7e-06,
+     "price_residual": 0.0,
+     "tokens": {
+      "input": 20,
+      "output": 3645,
+      "cache_write": 25935,
+      "cache_read": 259334
+     },
+     "usd_by_token_type": {
+      "input": 8e-05,
+      "output": 0.0729,
+      "cache_write": 0.20748,
+      "cache_read": 0.05187
+     },
+     "api_requests": 10,
+     "req0_cache_write": 6793,
+     "req0_cache_read": 10140,
+     "toolsearch_calls": 1,
+     "toolsearch_tokens": 4350,
+     "toolsearch_queries": [
+      "select:mcp__brainprint__brainprint_context"
+     ],
+     "bp_calls": 3,
+     "bp_kinds": [
+      "BP:context:change",
+      "BP:context:change",
+      "BP:context:change"
+     ],
+     "bp_bytes": 16783,
+     "bp_latency_s": {
+      "n": 3,
+      "p50": 0.05,
+      "max": 12.17
+     },
+     "native_calls": 5,
+     "native_bytes": 7065,
+     "native_by_tool": {
+      "Grep": 1,
+      "Bash": 4
+     },
+     "native_read_calls": 0,
+     "native_read_after_bp": 0,
+     "wall_s": 55.39,
+     "num_turns": 10,
+     "t1_sites_from_change_pages": null,
+     "t1_unconfirmed_caller_owners": null,
+     "grade": {
+      "signature": true,
+      "def": false,
+      "sites": true,
+      "false_calls": [],
+      "pass_recall": false,
+      "pass": false
+     }
+    },
+    {
+     "task": "T5",
+     "pos": 2,
+     "cost_usd": 0.2582166000000001,
+     "cost_split_usd": {
+      "BASE": 0.01697,
+      "SETUP": 0.02297,
+      "BP_RESULT": 0.11339,
+      "NATIVE_RESULT": 0.05104,
+      "OTHER": 0.01161,
+      "OUTPUT": 0.04224
+     },
+     "split_check_usd": 3e-06,
+     "price_residual": 0.0,
+     "tokens": {
+      "input": 10,
+      "output": 2112,
+      "cache_write": 21448,
+      "cache_read": 221763
+     },
+     "usd_by_token_type": {
+      "input": 4e-05,
+      "output": 0.04224,
+      "cache_write": 0.17158,
+      "cache_read": 0.04435
+     },
+     "api_requests": 5,
+     "req0_cache_write": 1319,
+     "req0_cache_read": 36075,
+     "toolsearch_calls": 1,
+     "toolsearch_tokens": 2165,
+     "toolsearch_queries": [
+      "select:mcp__brainprint__brainprint_inspect"
+     ],
+     "bp_calls": 1,
+     "bp_kinds": [
+      "BP:inspect"
+     ],
+     "bp_bytes": 24746,
+     "bp_latency_s": {
+      "n": 1,
+      "p50": 0.38,
+      "max": 0.38
+     },
+     "native_calls": 2,
+     "native_bytes": 11782,
+     "native_by_tool": {
+      "Read": 1,
+      "Grep": 1
+     },
+     "native_read_calls": 1,
+     "native_read_after_bp": 1,
+     "wall_s": 23.71,
+     "num_turns": 5,
+     "t1_sites_from_change_pages": null,
+     "t1_unconfirmed_caller_owners": null,
+     "grade": {
+      "signature": true,
+      "def": true,
+      "sites": true,
+      "false_calls": [],
+      "pass_recall": true,
+      "pass": true
+     }
+    },
+    {
+     "task": "T4",
+     "pos": 3,
+     "cost_usd": 0.12690780000000002,
+     "cost_split_usd": {
+      "BASE": 0.01358,
+      "SETUP": 0.00521,
+      "BP_RESULT": 0.02643,
+      "NATIVE_RESULT": 0.02763,
+      "OTHER": 0.01168,
+      "OUTPUT": 0.04238
+     },
+     "split_check_usd": 2e-06,
+     "price_residual": 0.0,
+     "tokens": {
+      "input": 8,
+      "output": 2119,
+      "cache_write": 4629,
+      "cache_read": 237319
+     },
+     "usd_by_token_type": {
+      "input": 3e-05,
+      "output": 0.04238,
+      "cache_write": 0.03703,
+      "cache_read": 0.04746
+     },
+     "api_requests": 4,
+     "req0_cache_write": 1235,
+     "req0_cache_read": 57523,
+     "toolsearch_calls": 0,
+     "toolsearch_tokens": 0,
+     "toolsearch_queries": [],
+     "bp_calls": 1,
+     "bp_kinds": [
+      "BP:context:change"
+     ],
+     "bp_bytes": 1646,
+     "bp_latency_s": {
+      "n": 1,
+      "p50": 1.35,
+      "max": 1.35
+     },
+     "native_calls": 2,
+     "native_bytes": 1718,
+     "native_by_tool": {
+      "Bash": 2
+     },
+     "native_read_calls": 0,
+     "native_read_after_bp": 0,
+     "wall_s": 23.65,
+     "num_turns": 4,
+     "t1_sites_from_change_pages": null,
+     "t1_unconfirmed_caller_owners": null,
+     "grade": {
+      "signature": true,
+      "def": true,
+      "sites": true,
+      "false_calls": [],
+      "pass_recall": true,
+      "pass": true
+     }
+    },
+    {
+     "task": "T3",
+     "pos": 4,
+     "cost_usd": 0.2997328,
+     "cost_split_usd": {
+      "BASE": 0.03055,
+      "SETUP": 0.01173,
+      "BP_RESULT": 0.07327,
+      "NATIVE_RESULT": 0.07689,
+      "OTHER": 0.01294,
+      "OUTPUT": 0.09436
+     },
+     "split_check_usd": 7e-06,
+     "price_residual": 0.0,
+     "tokens": {
+      "input": 18,
+      "output": 4718,
+      "cache_write": 10373,
+      "cache_read": 611584
+     },
+     "usd_by_token_type": {
+      "input": 7e-05,
+      "output": 0.09436,
+      "cache_write": 0.08298,
+      "cache_read": 0.12232
+     },
+     "api_requests": 9,
+     "req0_cache_write": 869,
+     "req0_cache_read": 62152,
+     "toolsearch_calls": 0,
+     "toolsearch_tokens": 0,
+     "toolsearch_queries": [],
+     "bp_calls": 1,
+     "bp_kinds": [
+      "BP:context:change"
+     ],
+     "bp_bytes": 5040,
+     "bp_latency_s": {
+      "n": 1,
+      "p50": 0.28,
+      "max": 0.28
+     },
+     "native_calls": 8,
+     "native_bytes": 5527,
+     "native_by_tool": {
+      "Read": 1,
+      "Bash": 7
+     },
+     "native_read_calls": 1,
+     "native_read_after_bp": 1,
+     "wall_s": 51.92,
+     "num_turns": 10,
+     "t1_sites_from_change_pages": null,
+     "t1_unconfirmed_caller_owners": null,
+     "grade": {
+      "signature": true,
+      "def": true,
+      "sites": true,
+      "false_calls": [],
+      "pass_recall": true,
+      "pass": true
+     }
+    },
+    {
+     "task": "T2",
+     "pos": 5,
+     "cost_usd": 0.14244599999999985,
+     "cost_split_usd": {
+      "BASE": 0.01018,
+      "SETUP": 0.00391,
+      "BP_RESULT": 0.01576,
+      "NATIVE_RESULT": 0.06106,
+      "OTHER": 0.01287,
+      "OUTPUT": 0.03866
+     },
+     "split_check_usd": -6e-06,
+     "price_residual": 0.0,
+     "tokens": {
+      "input": 6,
+      "output": 1933,
+      "cache_write": 7398,
+      "cache_read": 222890
+     },
+     "usd_by_token_type": {
+      "input": 2e-05,
+      "output": 0.03866,
+      "cache_write": 0.05918,
+      "cache_read": 0.04458
+     },
+     "api_requests": 3,
+     "req0_cache_write": 1288,
+     "req0_cache_read": 72525,
+     "toolsearch_calls": 0,
+     "toolsearch_tokens": 0,
+     "toolsearch_queries": [],
+     "bp_calls": 0,
+     "bp_kinds": [],
+     "bp_bytes": 0,
+     "bp_latency_s": {
+      "n": 0,
+      "p50": null,
+      "max": null
+     },
+     "native_calls": 3,
+     "native_bytes": 12879,
+     "native_by_tool": {
+      "Read": 2,
+      "Grep": 1
+     },
+     "native_read_calls": 2,
+     "native_read_after_bp": 1,
+     "wall_s": 20.06,
+     "num_turns": 4,
+     "t1_sites_from_change_pages": null,
+     "t1_unconfirmed_caller_owners": null,
+     "grade": {
+      "env_var": true,
+      "append_fn": true,
+      "jsonl": true,
+      "fields_found": 19,
+      "emitters_event_bridge": true,
+      "pass": true
+     }
+    },
+    {
+     "task": "T1",
+     "pos": 6,
+     "cost_usd": 0.2528695999999997,
+     "cost_split_usd": {
+      "BASE": 0.01697,
+      "SETUP": 0.00652,
+      "BP_RESULT": 0.08302,
+      "NATIVE_RESULT": 0.05687,
+      "OTHER": 0.01729,
+      "OUTPUT": 0.0722
+     },
+     "split_check_usd": 0.0,
+     "price_residual": 0.0,
+     "tokens": {
+      "input": 10,
+      "output": 3610,
+      "cache_write": 11769,
+      "cache_read": 432388
+     },
+     "usd_by_token_type": {
+      "input": 4e-05,
+      "output": 0.0722,
+      "cache_write": 0.09415,
+      "cache_read": 0.08648
+     },
+     "api_requests": 5,
+     "req0_cache_write": 1429,
+     "req0_cache_read": 79923,
+     "toolsearch_calls": 0,
+     "toolsearch_tokens": 0,
+     "toolsearch_queries": [],
+     "bp_calls": 2,
+     "bp_kinds": [
+      "BP:context:change",
+      "BP:context:rules"
+     ],
+     "bp_bytes": 10734,
+     "bp_latency_s": {
+      "n": 2,
+      "p50": 0.8,
+      "max": 0.8
+     },
+     "native_calls": 4,
+     "native_bytes": 4976,
+     "native_by_tool": {
+      "Bash": 4
+     },
+     "native_read_calls": 0,
+     "native_read_after_bp": 0,
+     "wall_s": 36.54,
+     "num_turns": 7,
+     "t1_sites_from_change_pages": 3,
+     "t1_unconfirmed_caller_owners": 0,
+     "grade": {
+      "sites_found": 8,
+      "sites_expected": 8,
+      "missing": [],
+      "unexplained_line_numbers_in_call_site_section": [
+       531
+      ],
+      "signature": true,
+      "pass": true
+     }
+    }
+   ],
+   "toolsearch_calls": 2,
+   "toolsearch_tokens": 6515,
+   "schema_load_turns": [
+    1,
+    2
+   ],
+   "duplicate_file_reads": 0,
+   "peak_rss_kib": {
+    "claude": 271216,
+    "brainprintd": 29360,
+    "brainprint_total": 1056688,
+    "brainprint-mcp": 5728,
+    "rust-analyzer": 1031008,
+    "brainprint-agent": 32
+   },
+   "end_of_turn_rss_kib": [
+    {
+     "task": "T6",
+     "rss_kib": {
+      "brainprint-mcp": 3456,
+      "claude": 142496,
+      "rust-analyzer": 29712,
+      "brainprintd": 9360,
+      "brainprint_total": 42528
+     }
+    },
+    {
+     "task": "T5",
+     "rss_kib": {
+      "brainprint-mcp": 3152,
+      "claude": 147296,
+      "rust-analyzer": 14560,
+      "brainprintd": 10560,
+      "brainprint_total": 28272
+     }
+    },
+    {
+     "task": "T4",
+     "rss_kib": {
+      "brainprint-mcp": 3152,
+      "claude": 163792,
+      "rust-analyzer": 14768,
+      "brainprintd": 10704,
+      "brainprint_total": 28624
+     }
+    },
+    {
+     "task": "T3",
+     "rss_kib": {
+      "brainprint-mcp": 3120,
+      "claude": 148016,
+      "rust-analyzer": 3216,
+      "brainprintd": 6544,
+      "brainprint_total": 12880
+     }
+    },
+    {
+     "task": "T2",
+     "rss_kib": {
+      "brainprint-mcp": 768,
+      "claude": 158736,
+      "rust-analyzer": 3200,
+      "brainprintd": 4368,
+      "brainprint_total": 8336
+     }
+    },
+    {
+     "task": "T1",
+     "rss_kib": {
+      "brainprint-mcp": 3184,
+      "claude": 126016,
+      "rust-analyzer": 14768,
+      "brainprintd": 10368,
+      "brainprint_total": 28320
+     }
+    }
+   ],
+   "hook_events": 40,
+   "hook_latency_us_p50": 1039,
+   "hook_latency_us_max": 5925,
+   "wall_s_total": 211.3
+  }
+ ],
+ "pooled_sessions": [
+  "A-O1-r1",
+  "A-O1-r2",
+  "A-O2-r1",
+  "A-O2-r2",
+  "B1-O1-r1",
+  "B1-O1-r2",
+  "B1-O2-r1",
+  "B1-O2-r2"
+ ],
+ "not_pooled": [],
+ "pooled": {
+  "A": {
+   "sessions": [
+    "A-O1-r1",
+    "A-O1-r2",
+    "A-O2-r1",
+    "A-O2-r2"
+   ],
+   "n": 4,
+   "turn_cost_mean": [
+    0.2059,
+    0.1299,
+    0.1014,
+    0.1141,
+    0.1131,
+    0.1606
+   ],
+   "turn_cost_sd": [
+    0.0371,
+    0.0468,
+    0.0378,
+    0.0496,
+    0.0425,
+    0.0241
+   ],
+   "cum_mean": [
+    0.2059,
+    0.3358,
+    0.4372,
+    0.5513,
+    0.6644,
+    0.825
+   ],
+   "cum_min": [
+    0.1673,
+    0.2536,
+    0.3292,
+    0.494,
+    0.6081,
+    0.7722
+   ],
+   "cum_max": [
+    0.2566,
+    0.3709,
+    0.5207,
+    0.5909,
+    0.7379,
+    0.8908
+   ],
+   "avg_per_task_mean": [
+    0.2059,
+    0.1679,
+    0.1457,
+    0.1378,
+    0.1329,
+    0.1375
+   ],
+   "first_turn_mean": 0.2059,
+   "followup_turn_mean": 0.1238,
+   "split_mean_per_turn": {
+    "first": {
+     "BASE": 0.0651,
+     "SETUP": 0.0,
+     "BP_RESULT": 0.0,
+     "NATIVE_RESULT": 0.0725,
+     "OTHER": 0.0,
+     "OUTPUT": 0.0683,
+     "tok_input": 0.0001,
+     "tok_output": 0.0683,
+     "tok_cache_write": 0.1128,
+     "tok_cache_read": 0.0247
+    },
+    "followup": {
+     "BASE": 0.0139,
+     "SETUP": 0.0,
+     "BP_RESULT": 0.0,
+     "NATIVE_RESULT": 0.0544,
+     "OTHER": 0.0126,
+     "OUTPUT": 0.0429,
+     "tok_input": 0.0,
+     "tok_output": 0.0429,
+     "tok_cache_write": 0.0479,
+     "tok_cache_read": 0.0329
+    }
+   }
+  },
+  "B1": {
+   "sessions": [
+    "B1-O1-r1",
+    "B1-O1-r2",
+    "B1-O2-r1",
+    "B1-O2-r2"
+   ],
+   "n": 4,
+   "turn_cost_mean": [
+    0.3375,
+    0.274,
+    0.1675,
+    0.2113,
+    0.1574,
+    0.23
+   ],
+   "turn_cost_sd": [
+    0.0903,
+    0.0707,
+    0.0442,
+    0.0604,
+    0.0291,
+    0.0794
+   ],
+   "cum_mean": [
+    0.3375,
+    0.6115,
+    0.779,
+    0.9902,
+    1.1477,
+    1.3776
+   ],
+   "cum_min": [
+    0.2673,
+    0.5067,
+    0.64,
+    0.8132,
+    0.937,
+    1.0601
+   ],
+   "cum_max": [
+    0.4664,
+    0.7037,
+    0.9199,
+    1.1202,
+    1.3023,
+    1.5327
+   ],
+   "avg_per_task_mean": [
+    0.3375,
+    0.3057,
+    0.2597,
+    0.2476,
+    0.2295,
+    0.2296
+   ],
+   "first_turn_mean": 0.3375,
+   "followup_turn_mean": 0.208,
+   "split_mean_per_turn": {
+    "first": {
+     "BASE": 0.0825,
+     "SETUP": 0.0406,
+     "BP_RESULT": 0.0982,
+     "NATIVE_RESULT": 0.0457,
+     "OTHER": 0.0,
+     "OUTPUT": 0.0704,
+     "tok_input": 0.0001,
+     "tok_output": 0.0704,
+     "tok_cache_write": 0.2197,
+     "tok_cache_read": 0.0473
+    },
+    "followup": {
+     "BASE": 0.0156,
+     "SETUP": 0.0114,
+     "BP_RESULT": 0.0694,
+     "NATIVE_RESULT": 0.0525,
+     "OTHER": 0.012,
+     "OUTPUT": 0.0471,
+     "tok_input": 0.0,
+     "tok_output": 0.0471,
+     "tok_cache_write": 0.0971,
+     "tok_cache_read": 0.0638
+    }
+   }
+  }
+ },
+ "paired_b1_minus_a_cum": [
+  {
+   "order": "O1",
+   "round": "r1",
+   "cum_diff": [
+    0.068,
+    0.2754,
+    0.3562,
+    0.4551,
+    0.5531,
+    0.7331
+   ]
+  },
+  {
+   "order": "O1",
+   "round": "r2",
+   "cum_diff": [
+    0.0835,
+    0.1358,
+    0.1192,
+    0.2223,
+    0.264,
+    0.2223
+   ]
+  },
+  {
+   "order": "O2",
+   "round": "r1",
+   "cum_diff": [
+    0.2098,
+    0.3546,
+    0.5034,
+    0.5552,
+    0.5644,
+    0.6418
+   ]
+  },
+  {
+   "order": "O2",
+   "round": "r2",
+   "cum_diff": [
+    0.1651,
+    0.3369,
+    0.3883,
+    0.5232,
+    0.5515,
+    0.6133
+   ]
+  }
+ ],
+ "cum_mean_diff_b1_minus_a": [
+  0.1316,
+  0.2757,
+  0.3418,
+  0.4389,
+  0.4833,
+  0.5526
+ ],
+ "first_k_with_b1_cum_below_a": null,
+ "first_k_with_all_pairs_b1_below_a": null,
+ "first_k_with_b1_cum_range_below_a_range": null
+}
