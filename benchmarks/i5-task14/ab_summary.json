@@ -1,0 +1,660 @@
+[
+ {
+  "name": "T1-A-r1",
+  "model": "claude-opus-5-5",
+  "cc_version": "2.1.284",
+  "bp_tools_available": 0,
+  "tool_calls": 7,
+  "first_route": "Bash:cd /private/tmp/claude-501/-Users-pixel-",
+  "first_discovery_route": "native/Bash",
+  "brainprint_calls": 0,
+  "native_discovery": 5,
+  "native_by_tool": {
+   "Bash": 3,
+   "Grep": 2
+  },
+  "native_before_first_bp": null,
+  "other_bash": 1,
+  "meta": {
+   "ToolSearch": 1
+  },
+  "duplicate_native_calls": 0,
+  "duplicate_file_reads": 0,
+  "native_read_after_bp_same_file": 0,
+  "native_result_bytes": 5588,
+  "read_bytes": 0,
+  "brainprint_delivered_bytes": 0,
+  "hook_blocked_calls": 2,
+  "telemetry": {
+   "events": 0,
+   "decisions": {},
+   "fallbacks": {},
+   "native_attempts": {},
+   "exact_substitute_proven": 0,
+   "hook_latency_us_p50": null,
+   "hook_latency_us_max": null,
+   "injected_bytes": 0
+  },
+  "duration_ms": 36801,
+  "num_turns": 8,
+  "cost_usd": 0.135858,
+  "tokens": {
+   "input_tokens": 14,
+   "output_tokens": 3560,
+   "cache_read_input_tokens": 127770,
+   "cache_creation_input_tokens": 4881
+  },
+  "is_error": false,
+  "sequence": [
+   "N:Bash cd /private/tmp/claude-501/-Users-pixel-Project-Ai-Brainprin",
+   "N:Grep load_workspace_config",
+   "M:ToolSearch {\"query\": \"brainprint\"}",
+   "N:Bash cd /private/tmp/claude-501/-Users-pixel-Project-Ai-Brainprin",
+   "O:Bash cd /private/tmp/claude-501/-Users-pixel-Project-Ai-Brainprin",
+   "N:Bash cd /private/tmp/claude-501/-Users-pixel-Project-Ai-Brainprin",
+   "N:Grep CoreQuerySurface::open|WorkspaceLifecycle::load"
+  ],
+  "grade": {
+   "signature": true,
+   "decl_line_213": true,
+   "prod_lifecycle_load": true,
+   "prod_query_surface_open": true,
+   "test_sites_cited": 6
+  }
+ },
+ {
+  "name": "T1-A-r2",
+  "model": "claude-opus-5-5",
+  "cc_version": "2.1.284",
+  "bp_tools_available": 0,
+  "tool_calls": 6,
+  "first_route": "Bash:sed -n 1,80p integrations/brainprint/SKI",
+  "first_discovery_route": "native/Bash",
+  "brainprint_calls": 0,
+  "native_discovery": 6,
+  "native_by_tool": {
+   "Bash": 4,
+   "Grep": 2
+  },
+  "native_before_first_bp": null,
+  "other_bash": 0,
+  "meta": {},
+  "duplicate_native_calls": 0,
+  "duplicate_file_reads": 0,
+  "native_read_after_bp_same_file": 0,
+  "native_result_bytes": 10240,
+  "read_bytes": 0,
+  "brainprint_delivered_bytes": 0,
+  "hook_blocked_calls": 2,
+  "telemetry": {
+   "events": 0,
+   "decisions": {},
+   "fallbacks": {},
+   "native_attempts": {},
+   "exact_substitute_proven": 0,
+   "hook_latency_us_p50": null,
+   "hook_latency_us_max": null,
+   "injected_bytes": 0
+  },
+  "duration_ms": 33982,
+  "num_turns": 7,
+  "cost_usd": 0.1431214,
+  "tokens": {
+   "input_tokens": 14,
+   "output_tokens": 3357,
+   "cache_read_input_tokens": 128827,
+   "cache_creation_input_tokens": 6270
+  },
+  "is_error": false,
+  "sequence": [
+   "N:Bash sed -n 1,80p integrations/brainprint/SKILL.md; which brainpr",
+   "N:Grep load_workspace_config",
+   "N:Bash sed -n 205,215p crates/engine/src/config.rs; echo ---; awk '",
+   "N:Bash awk 'NR<=531 && /^impl/{l=NR\": \"$0} NR==531{print l}' crates",
+   "N:Bash sed -n 1400,1450p crates/daemon/tests/p0_39_semantic_runtime",
+   "N:Grep CoreQuerySurface::open|WorkspaceLifecycle::load"
+  ],
+  "grade": {
+   "signature": true,
+   "decl_line_213": true,
+   "prod_lifecycle_load": true,
+   "prod_query_surface_open": true,
+   "test_sites_cited": 6
+  }
+ },
+ {
+  "name": "T1-B-r1",
+  "model": "claude-opus-5-5",
+  "cc_version": "2.1.284",
+  "bp_tools_available": 4,
+  "tool_calls": 8,
+  "first_route": "ToolSearch",
+  "first_discovery_route": "brainprint/mcp__brainprint__brainprint_context",
+  "brainprint_calls": 2,
+  "native_discovery": 5,
+  "native_by_tool": {
+   "Grep": 2,
+   "Bash": 3
+  },
+  "native_before_first_bp": 0,
+  "other_bash": 0,
+  "meta": {
+   "ToolSearch": 1
+  },
+  "duplicate_native_calls": 0,
+  "duplicate_file_reads": 0,
+  "native_read_after_bp_same_file": 0,
+  "native_result_bytes": 4832,
+  "read_bytes": 0,
+  "brainprint_delivered_bytes": 8830,
+  "hook_blocked_calls": 0,
+  "telemetry": {
+   "events": 9,
+   "decisions": {
+    "allow": 9
+   },
+   "fallbacks": {
+    "UNPROVEN_EQUIVALENCE": 1
+   },
+   "native_attempts": {
+    "brainprint": 4,
+    "text search": 4
+   },
+   "exact_substitute_proven": 0,
+   "hook_latency_us_p50": 840,
+   "hook_latency_us_max": 13084,
+   "injected_bytes": 489
+  },
+  "duration_ms": 40675,
+  "num_turns": 9,
+  "cost_usd": 0.31922459999999997,
+  "tokens": {
+   "input_tokens": 16,
+   "output_tokens": 3399,
+   "cache_read_input_tokens": 235183,
+   "cache_creation_input_tokens": 25518
+  },
+  "is_error": false,
+  "sequence": [
+   "M:ToolSearch {\"query\": \"select:mcp__brainprint__brainprint_context,mcp__brainprint__brainp",
+   "B:mcp__brainprint__brainprint_context {\"mode\": \"change\", \"symbol_name\": \"load_workspace_co",
+   "N:Grep load_workspace_config",
+   "B:mcp__brainprint__brainprint_context {\"mode\": \"rules\", \"resource_path\": \"crates/engine/sr",
+   "N:Bash cd /private/tmp/claude-501/-Users-pixel-Project-Ai-Brainprin",
+   "N:Bash cd /private/tmp/claude-501/-Users-pixel-Project-Ai-Brainprin",
+   "N:Bash cd /private/tmp/claude-501/-Users-pixel-Project-Ai-Brainprin",
+   "N:Grep CoreQuerySurface::open|WorkspaceLifecycle::load"
+  ],
+  "grade": {
+   "signature": true,
+   "decl_line_213": true,
+   "prod_lifecycle_load": true,
+   "prod_query_surface_open": true,
+   "test_sites_cited": 6
+  }
+ },
+ {
+  "name": "T1-B-r2",
+  "model": "claude-opus-5-5",
+  "cc_version": "2.1.284",
+  "bp_tools_available": 4,
+  "tool_calls": 6,
+  "first_route": "ToolSearch",
+  "first_discovery_route": "brainprint/mcp__brainprint__brainprint_context",
+  "brainprint_calls": 2,
+  "native_discovery": 3,
+  "native_by_tool": {
+   "Grep": 1,
+   "Bash": 2
+  },
+  "native_before_first_bp": 0,
+  "other_bash": 0,
+  "meta": {
+   "ToolSearch": 1
+  },
+  "duplicate_native_calls": 0,
+  "duplicate_file_reads": 0,
+  "native_read_after_bp_same_file": 0,
+  "native_result_bytes": 3278,
+  "read_bytes": 0,
+  "brainprint_delivered_bytes": 8830,
+  "hook_blocked_calls": 0,
+  "telemetry": {
+   "events": 11,
+   "decisions": {
+    "allow": 11
+   },
+   "fallbacks": {
+    "UNPROVEN_EQUIVALENCE": 3
+   },
+   "native_attempts": {
+    "brainprint": 4,
+    "text search": 2,
+    "source read": 4
+   },
+   "exact_substitute_proven": 0,
+   "hook_latency_us_p50": 678,
+   "hook_latency_us_max": 3665,
+   "injected_bytes": 489
+  },
+  "duration_ms": 31078,
+  "num_turns": 7,
+  "cost_usd": 0.28485479999999996,
+  "tokens": {
+   "input_tokens": 12,
+   "output_tokens": 2840,
+   "cache_read_input_tokens": 160834,
+   "cache_creation_input_tokens": 24480
+  },
+  "is_error": false,
+  "sequence": [
+   "M:ToolSearch {\"query\": \"select:mcp__brainprint__brainprint_context,mcp__brainprint__brainp",
+   "B:mcp__brainprint__brainprint_context {\"mode\": \"change\", \"symbol_name\": \"load_workspace_co",
+   "N:Grep load_workspace_config",
+   "B:mcp__brainprint__brainprint_context {\"mode\": \"rules\", \"resource_path\": \"crates/engine/sr",
+   "N:Bash awk 'NR>=420 && NR<=555 && /fn |mod tests|#\\[cfg\\(test\\)\\]/ ",
+   "N:Bash awk 'NR<=531 && /^impl/ {l=NR\": \"$0} END{print \"qs \"l}' crat"
+  ],
+  "grade": {
+   "signature": true,
+   "decl_line_213": true,
+   "prod_lifecycle_load": true,
+   "prod_query_surface_open": true,
+   "test_sites_cited": 6
+  }
+ },
+ {
+  "name": "T1-Bg",
+  "model": "claude-opus-5-5",
+  "cc_version": "2.1.284",
+  "bp_tools_available": 4,
+  "tool_calls": 7,
+  "first_route": "ToolSearch",
+  "first_discovery_route": "brainprint/mcp__brainprint__brainprint_context",
+  "brainprint_calls": 2,
+  "native_discovery": 4,
+  "native_by_tool": {
+   "Grep": 2,
+   "Bash": 2
+  },
+  "native_before_first_bp": 0,
+  "other_bash": 0,
+  "meta": {
+   "ToolSearch": 1
+  },
+  "duplicate_native_calls": 0,
+  "duplicate_file_reads": 0,
+  "native_read_after_bp_same_file": 0,
+  "native_result_bytes": 5424,
+  "read_bytes": 0,
+  "brainprint_delivered_bytes": 8830,
+  "hook_blocked_calls": 0,
+  "telemetry": {
+   "events": 13,
+   "decisions": {
+    "allow": 13
+   },
+   "fallbacks": {
+    "UNPROVEN_EQUIVALENCE": 4
+   },
+   "native_attempts": {
+    "brainprint": 4,
+    "text search": 4,
+    "source read": 4
+   },
+   "exact_substitute_proven": 0,
+   "hook_latency_us_p50": 904,
+   "hook_latency_us_max": 2319,
+   "injected_bytes": 489
+  },
+  "duration_ms": 34716,
+  "num_turns": 8,
+  "cost_usd": 0.30375199999999997,
+  "tokens": {
+   "input_tokens": 12,
+   "output_tokens": 3289,
+   "cache_read_input_tokens": 163220,
+   "cache_creation_input_tokens": 25660
+  },
+  "is_error": false,
+  "sequence": [
+   "M:ToolSearch {\"query\": \"select:mcp__brainprint__brainprint_context,mcp__brainprint__brainp",
+   "B:mcp__brainprint__brainprint_context {\"mode\": \"change\", \"symbol_name\": \"load_workspace_co",
+   "B:mcp__brainprint__brainprint_context {\"mode\": \"rules\", \"resource_path\": \"crates/engine/sr",
+   "N:Grep load_workspace_config|^\\s*(pub )?fn |#\\[cfg\\(test\\)\\]|mod te",
+   "N:Grep load_workspace_config",
+   "N:Bash awk 'NR<=115 && /fn [a-z_]+/ {l=NR\": \"$0} NR==115{print l}' ",
+   "N:Bash awk 'NR>=80 && NR<=97 && /impl|struct/ {print NR\": \"$0}' cra"
+  ],
+  "grade": {
+   "signature": true,
+   "decl_line_213": true,
+   "prod_lifecycle_load": true,
+   "prod_query_surface_open": true,
+   "test_sites_cited": 6
+  }
+ },
+ {
+  "name": "T2-A-r1",
+  "model": "claude-opus-5-5",
+  "cc_version": "2.1.284",
+  "bp_tools_available": 0,
+  "tool_calls": 5,
+  "first_route": "Grep",
+  "first_discovery_route": "native/Grep",
+  "brainprint_calls": 0,
+  "native_discovery": 5,
+  "native_by_tool": {
+   "Grep": 2,
+   "Read": 3
+  },
+  "native_before_first_bp": null,
+  "other_bash": 0,
+  "meta": {},
+  "duplicate_native_calls": 0,
+  "duplicate_file_reads": 0,
+  "native_read_after_bp_same_file": 0,
+  "native_result_bytes": 14963,
+  "read_bytes": 12671,
+  "brainprint_delivered_bytes": 0,
+  "hook_blocked_calls": 0,
+  "telemetry": {
+   "events": 0,
+   "decisions": {},
+   "fallbacks": {},
+   "native_attempts": {},
+   "exact_substitute_proven": 0,
+   "hook_latency_us_p50": null,
+   "hook_latency_us_max": null,
+   "injected_bytes": 0
+  },
+  "duration_ms": 19633,
+  "num_turns": 6,
+  "cost_usd": 0.118984,
+  "tokens": {
+   "input_tokens": 10,
+   "output_tokens": 2052,
+   "cache_read_input_tokens": 91400,
+   "cache_creation_input_tokens": 7453
+  },
+  "is_error": false,
+  "sequence": [
+   "N:Grep (?i)telemetry",
+   "N:Read crates/agent/src/telemetry.rs",
+   "N:Grep telemetry",
+   "N:Read crates/agent/src/main.rs",
+   "N:Read crates/agent/src/gateway.rs"
+  ],
+  "grade": {
+   "env_var": true,
+   "append_fn": true,
+   "jsonl": true,
+   "fields_found": 19,
+   "emitters_event_bridge": true
+  }
+ },
+ {
+  "name": "T2-A-r2",
+  "model": "claude-opus-5-5",
+  "cc_version": "2.1.284",
+  "bp_tools_available": 0,
+  "tool_calls": 5,
+  "first_route": "Grep",
+  "first_discovery_route": "native/Grep",
+  "brainprint_calls": 0,
+  "native_discovery": 5,
+  "native_by_tool": {
+   "Grep": 3,
+   "Bash": 1,
+   "Read": 1
+  },
+  "native_before_first_bp": null,
+  "other_bash": 0,
+  "meta": {},
+  "duplicate_native_calls": 0,
+  "duplicate_file_reads": 0,
+  "native_read_after_bp_same_file": 0,
+  "native_result_bytes": 22153,
+  "read_bytes": 8541,
+  "brainprint_delivered_bytes": 0,
+  "hook_blocked_calls": 0,
+  "telemetry": {
+   "events": 0,
+   "decisions": {},
+   "fallbacks": {},
+   "native_attempts": {},
+   "exact_substitute_proven": 0,
+   "hook_latency_us_p50": null,
+   "hook_latency_us_max": null,
+   "injected_bytes": 0
+  },
+  "duration_ms": 21315,
+  "num_turns": 6,
+  "cost_usd": 0.1479282,
+  "tokens": {
+   "input_tokens": 10,
+   "output_tokens": 2037,
+   "cache_read_input_tokens": 100701,
+   "cache_creation_input_tokens": 10876
+  },
+  "is_error": false,
+  "sequence": [
+   "N:Grep (?i)telemetry",
+   "N:Bash cd crates/agent/src && ls; grep -rn \"mod telemetry\\|telemetr",
+   "N:Read crates/agent/src/main.rs",
+   "N:Grep telemetry|fn is_adoption|adoption",
+   "N:Grep observed[:,]|observed ="
+  ],
+  "grade": {
+   "env_var": true,
+   "append_fn": true,
+   "jsonl": true,
+   "fields_found": 19,
+   "emitters_event_bridge": true
+  }
+ },
+ {
+  "name": "T2-B-r1",
+  "model": "claude-opus-5-5",
+  "cc_version": "2.1.284",
+  "bp_tools_available": 4,
+  "tool_calls": 5,
+  "first_route": "ToolSearch",
+  "first_discovery_route": "brainprint/mcp__brainprint__brainprint_find",
+  "brainprint_calls": 1,
+  "native_discovery": 3,
+  "native_by_tool": {
+   "Read": 2,
+   "Grep": 1
+  },
+  "native_before_first_bp": 0,
+  "other_bash": 0,
+  "meta": {
+   "ToolSearch": 1
+  },
+  "duplicate_native_calls": 0,
+  "duplicate_file_reads": 0,
+  "native_read_after_bp_same_file": 1,
+  "native_result_bytes": 12371,
+  "read_bytes": 12138,
+  "brainprint_delivered_bytes": 2250,
+  "hook_blocked_calls": 0,
+  "telemetry": {
+   "events": 9,
+   "decisions": {
+    "allow": 9
+   },
+   "fallbacks": {
+    "UNPROVEN_EQUIVALENCE": 1
+   },
+   "native_attempts": {
+    "brainprint": 2,
+    "source read": 4,
+    "text search": 2
+   },
+   "exact_substitute_proven": 0,
+   "hook_latency_us_p50": 855,
+   "hook_latency_us_max": 3184,
+   "injected_bytes": 489
+  },
+  "duration_ms": 21920,
+  "num_turns": 6,
+  "cost_usd": 0.1921244,
+  "tokens": {
+   "input_tokens": 10,
+   "output_tokens": 1925,
+   "cache_read_input_tokens": 97802,
+   "cache_creation_input_tokens": 16753
+  },
+  "is_error": false,
+  "sequence": [
+   "M:ToolSearch {\"query\": \"select:mcp__brainprint__brainprint_find,mcp__brainprint__brainprin",
+   "B:mcp__brainprint__brainprint_find {\"mode\": \"text\", \"pattern\": \"TELEMETRY\"}",
+   "N:Read crates/agent/src/telemetry.rs",
+   "N:Grep telemetry::",
+   "N:Read crates/agent/src/main.rs"
+  ],
+  "grade": {
+   "env_var": true,
+   "append_fn": true,
+   "jsonl": true,
+   "fields_found": 19,
+   "emitters_event_bridge": true
+  }
+ },
+ {
+  "name": "T2-B-r2",
+  "model": "claude-opus-5-5",
+  "cc_version": "2.1.284",
+  "bp_tools_available": 4,
+  "tool_calls": 6,
+  "first_route": "ToolSearch",
+  "first_discovery_route": "brainprint/mcp__brainprint__brainprint_find",
+  "brainprint_calls": 2,
+  "native_discovery": 3,
+  "native_by_tool": {
+   "Read": 3
+  },
+  "native_before_first_bp": 0,
+  "other_bash": 0,
+  "meta": {
+   "ToolSearch": 1
+  },
+  "duplicate_native_calls": 0,
+  "duplicate_file_reads": 0,
+  "native_read_after_bp_same_file": 3,
+  "native_result_bytes": 12515,
+  "read_bytes": 12515,
+  "brainprint_delivered_bytes": 15989,
+  "hook_blocked_calls": 0,
+  "telemetry": {
+   "events": 11,
+   "decisions": {
+    "allow": 11
+   },
+   "fallbacks": {},
+   "native_attempts": {
+    "brainprint": 4,
+    "source read": 6
+   },
+   "exact_substitute_proven": 0,
+   "hook_latency_us_p50": 647,
+   "hook_latency_us_max": 1836,
+   "injected_bytes": 489
+  },
+  "duration_ms": 23785,
+  "num_turns": 7,
+  "cost_usd": 0.2647922,
+  "tokens": {
+   "input_tokens": 12,
+   "output_tokens": 2309,
+   "cache_read_input_tokens": 136981,
+   "cache_creation_input_tokens": 23896
+  },
+  "is_error": false,
+  "sequence": [
+   "M:ToolSearch {\"query\": \"select:mcp__brainprint__brainprint_find,mcp__brainprint__brainprin",
+   "B:mcp__brainprint__brainprint_find {\"mode\": \"text\", \"pattern\": \"telemetry\", \"path_prefix\":",
+   "B:mcp__brainprint__brainprint_find {\"mode\": \"text\", \"pattern\": \"telemetry\"}",
+   "N:Read crates/agent/src/telemetry.rs",
+   "N:Read crates/agent/src/main.rs",
+   "N:Read crates/agent/src/gateway.rs"
+  ],
+  "grade": {
+   "env_var": true,
+   "append_fn": true,
+   "jsonl": true,
+   "fields_found": 19,
+   "emitters_event_bridge": true
+  }
+ },
+ {
+  "name": "T2-Bg",
+  "model": "claude-opus-5-5",
+  "cc_version": "2.1.284",
+  "bp_tools_available": 4,
+  "tool_calls": 5,
+  "first_route": "ToolSearch",
+  "first_discovery_route": "brainprint/mcp__brainprint__brainprint_find",
+  "brainprint_calls": 1,
+  "native_discovery": 3,
+  "native_by_tool": {
+   "Read": 2,
+   "Grep": 1
+  },
+  "native_before_first_bp": 0,
+  "other_bash": 0,
+  "meta": {
+   "ToolSearch": 1
+  },
+  "duplicate_native_calls": 0,
+  "duplicate_file_reads": 0,
+  "native_read_after_bp_same_file": 2,
+  "native_result_bytes": 13685,
+  "read_bytes": 12919,
+  "brainprint_delivered_bytes": 15607,
+  "hook_blocked_calls": 0,
+  "telemetry": {
+   "events": 9,
+   "decisions": {
+    "allow": 9
+   },
+   "fallbacks": {
+    "UNPROVEN_EQUIVALENCE": 1
+   },
+   "native_attempts": {
+    "brainprint": 2,
+    "source read": 4,
+    "text search": 2
+   },
+   "exact_substitute_proven": 0,
+   "hook_latency_us_p50": 1023,
+   "hook_latency_us_max": 3981,
+   "injected_bytes": 489
+  },
+  "duration_ms": 21581,
+  "num_turns": 6,
+  "cost_usd": 0.25521160000000004,
+  "tokens": {
+   "input_tokens": 10,
+   "output_tokens": 2022,
+   "cache_read_input_tokens": 114618,
+   "cache_creation_input_tokens": 23976
+  },
+  "is_error": false,
+  "sequence": [
+   "M:ToolSearch {\"query\": \"select:mcp__brainprint__brainprint_find,mcp__brainprint__brainprin",
+   "B:mcp__brainprint__brainprint_find {\"mode\": \"text\", \"pattern\": \"telemetry\", \"path_prefix\":",
+   "N:Read crates/agent/src/telemetry.rs",
+   "N:Read crates/agent/src/main.rs",
+   "N:Grep observed"
+  ],
+  "grade": {
+   "env_var": true,
+   "append_fn": true,
+   "jsonl": true,
+   "fields_found": 19,
+   "emitters_event_bridge": true
+  }
+ }
+]

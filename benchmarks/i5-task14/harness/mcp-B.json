@@ -1,0 +1,1 @@
+{"mcpServers": {"brainprint": {"type": "stdio", "command": "@T14_ROOT@/clean/repo/target/release/brainprint-mcp", "args": [], "env": {"XDG_RUNTIME_DIR": "@T14_ROOT@/ab/run"}}}}

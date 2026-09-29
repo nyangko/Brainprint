@@ -1,0 +1,46 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "command": "brainprint-agent bridge --client claude-code --event PostToolUse --mode guard",
+            "type": "command"
+          }
+        ],
+        "matcher": "*"
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "command": "brainprint-agent bridge --client claude-code --event PreToolUse --mode guard",
+            "type": "command"
+          }
+        ],
+        "matcher": "*"
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "command": "brainprint-agent bridge --client claude-code --event SessionStart --mode guard",
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "command": "brainprint-agent bridge --client claude-code --event SubagentStart --mode guard",
+            "type": "command"
+          }
+        ]
+      }
+    ]
+  }
+}
