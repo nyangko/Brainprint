@@ -1,0 +1,2383 @@
+{
+ "price_per_million_tokens_usd": {
+  "input_tokens": 4.0,
+  "cache_creation_input_tokens": 8.0,
+  "cache_read_input_tokens": 0.2,
+  "output_tokens": 20.0
+ },
+ "runs": {
+  "out_278f4cb/T1-A-r1": {
+   "total_usd": 0.1359,
+   "api_requests": 7,
+   "output_tokens": 3560,
+   "categories_usd": {
+    "OUTPUT": 0.0712,
+    "BASE": 0.0227,
+    "NATIVE_RESULT": 0.0415,
+    "SETUP": 0.0005,
+    "OTHER": 0.0
+   },
+   "requests": [
+    {
+     "req": 0,
+     "cache_write": 0,
+     "cache_read": 16142,
+     "usd_excl_output": 0.0032,
+     "calls": [
+      "Bash"
+     ]
+    },
+    {
+     "req": 1,
+     "cache_write": 830,
+     "cache_read": 16142,
+     "usd_excl_output": 0.0099,
+     "calls": [
+      "Grep",
+      "ToolSearch"
+     ]
+    },
+    {
+     "req": 2,
+     "cache_write": 1263,
+     "cache_read": 16972,
+     "usd_excl_output": 0.0135,
+     "calls": [
+      "Bash"
+     ]
+    },
+    {
+     "req": 3,
+     "cache_write": 1194,
+     "cache_read": 18235,
+     "usd_excl_output": 0.0132,
+     "calls": [
+      "Bash"
+     ]
+    },
+    {
+     "req": 4,
+     "cache_write": 769,
+     "cache_read": 19429,
+     "usd_excl_output": 0.01,
+     "calls": [
+      "Bash"
+     ]
+    },
+    {
+     "req": 5,
+     "cache_write": 454,
+     "cache_read": 20198,
+     "usd_excl_output": 0.0077,
+     "calls": [
+      "Grep"
+     ]
+    },
+    {
+     "req": 6,
+     "cache_write": 371,
+     "cache_read": 20652,
+     "usd_excl_output": 0.0071,
+     "calls": []
+    }
+   ],
+   "calls": [
+    {
+     "req": 0,
+     "kind": "Bash",
+     "result_bytes": 1539,
+     "tokens_added_to_context": 830,
+     "later_requests": 5,
+     "marginal_usd": 0.0075
+    },
+    {
+     "req": 1,
+     "kind": "Grep",
+     "result_bytes": 2098,
+     "tokens_added_to_context": 1211,
+     "later_requests": 4,
+     "marginal_usd": 0.0107
+    },
+    {
+     "req": 1,
+     "kind": "ToolSearch",
+     "result_bytes": 32,
+     "tokens_added_to_context": 52,
+     "later_requests": 4,
+     "marginal_usd": 0.0005
+    },
+    {
+     "req": 2,
+     "kind": "Bash",
+     "result_bytes": 1495,
+     "tokens_added_to_context": 1194,
+     "later_requests": 3,
+     "marginal_usd": 0.0103
+    },
+    {
+     "req": 3,
+     "kind": "Bash",
+     "result_bytes": 676,
+     "tokens_added_to_context": 769,
+     "later_requests": 2,
+     "marginal_usd": 0.0065
+    },
+    {
+     "req": 4,
+     "kind": "Bash",
+     "result_bytes": 171,
+     "tokens_added_to_context": 454,
+     "later_requests": 1,
+     "marginal_usd": 0.0037
+    },
+    {
+     "req": 5,
+     "kind": "Grep",
+     "result_bytes": 295,
+     "tokens_added_to_context": 371,
+     "later_requests": 0,
+     "marginal_usd": 0.003
+    }
+   ]
+  },
+  "out_278f4cb/T1-A-r2": {
+   "total_usd": 0.1431,
+   "api_requests": 7,
+   "output_tokens": 3357,
+   "categories_usd": {
+    "OUTPUT": 0.0671,
+    "BASE": 0.0227,
+    "NATIVE_RESULT": 0.0533,
+    "OTHER": 0.0
+   },
+   "requests": [
+    {
+     "req": 0,
+     "cache_write": 0,
+     "cache_read": 16142,
+     "usd_excl_output": 0.0032,
+     "calls": [
+      "Bash"
+     ]
+    },
+    {
+     "req": 1,
+     "cache_write": 850,
+     "cache_read": 16142,
+     "usd_excl_output": 0.01,
+     "calls": [
+      "Grep"
+     ]
+    },
+    {
+     "req": 2,
+     "cache_write": 1032,
+     "cache_read": 16992,
+     "usd_excl_output": 0.0117,
+     "calls": [
+      "Bash"
+     ]
+    },
+    {
+     "req": 3,
+     "cache_write": 1041,
+     "cache_read": 18024,
+     "usd_excl_output": 0.0119,
+     "calls": [
+      "Bash"
+     ]
+    },
+    {
+     "req": 4,
+     "cache_write": 1276,
+     "cache_read": 19065,
+     "usd_excl_output": 0.014,
+     "calls": [
+      "Bash"
+     ]
+    },
+    {
+     "req": 5,
+     "cache_write": 1780,
+     "cache_read": 20341,
+     "usd_excl_output": 0.0183,
+     "calls": [
+      "Grep"
+     ]
+    },
+    {
+     "req": 6,
+     "cache_write": 291,
+     "cache_read": 22121,
+     "usd_excl_output": 0.0068,
+     "calls": []
+    }
+   ],
+   "calls": [
+    {
+     "req": 0,
+     "kind": "Bash",
+     "result_bytes": 1539,
+     "tokens_added_to_context": 850,
+     "later_requests": 5,
+     "marginal_usd": 0.0077
+    },
+    {
+     "req": 1,
+     "kind": "Grep",
+     "result_bytes": 2098,
+     "tokens_added_to_context": 1032,
+     "later_requests": 4,
+     "marginal_usd": 0.0091
+    },
+    {
+     "req": 2,
+     "kind": "Bash",
+     "result_bytes": 1090,
+     "tokens_added_to_context": 1041,
+     "later_requests": 3,
+     "marginal_usd": 0.009
+    },
+    {
+     "req": 3,
+     "kind": "Bash",
+     "result_bytes": 1880,
+     "tokens_added_to_context": 1276,
+     "later_requests": 2,
+     "marginal_usd": 0.0107
+    },
+    {
+     "req": 4,
+     "kind": "Bash",
+     "result_bytes": 3348,
+     "tokens_added_to_context": 1780,
+     "later_requests": 1,
+     "marginal_usd": 0.0146
+    },
+    {
+     "req": 5,
+     "kind": "Grep",
+     "result_bytes": 295,
+     "tokens_added_to_context": 291,
+     "later_requests": 0,
+     "marginal_usd": 0.0023
+    }
+   ]
+  },
+  "out_278f4cb/T1-B-r1": {
+   "total_usd": 0.3192,
+   "api_requests": 8,
+   "output_tokens": 3399,
+   "categories_usd": {
+    "OUTPUT": 0.068,
+    "BASE": 0.0576,
+    "SETUP": 0.1092,
+    "BP_RESULT": 0.0436,
+    "NATIVE_RESULT": 0.034,
+    "OTHER": 0.0067
+   },
+   "requests": [
+    {
+     "req": 0,
+     "cache_write": 4818,
+     "cache_read": 11871,
+     "usd_excl_output": 0.0409,
+     "calls": [
+      "ToolSearch"
+     ]
+    },
+    {
+     "req": 1,
+     "cache_write": 11873,
+     "cache_read": 16689,
+     "usd_excl_output": 0.0983,
+     "calls": [
+      "BP.context"
+     ]
+    },
+    {
+     "req": 2,
+     "cache_write": 4718,
+     "cache_read": 28562,
+     "usd_excl_output": 0.0435,
+     "calls": [
+      "Grep",
+      "BP.context"
+     ]
+    },
+    {
+     "req": 3,
+     "cache_write": 1453,
+     "cache_read": 33280,
+     "usd_excl_output": 0.0183,
+     "calls": [
+      "Bash"
+     ]
+    },
+    {
+     "req": 4,
+     "cache_write": 1421,
+     "cache_read": 34733,
+     "usd_excl_output": 0.0183,
+     "calls": [
+      "Bash"
+     ]
+    },
+    {
+     "req": 5,
+     "cache_write": 620,
+     "cache_read": 36154,
+     "usd_excl_output": 0.0122,
+     "calls": [
+      "Bash"
+     ]
+    },
+    {
+     "req": 6,
+     "cache_write": 346,
+     "cache_read": 36774,
+     "usd_excl_output": 0.0101,
+     "calls": [
+      "Grep"
+     ]
+    },
+    {
+     "req": 7,
+     "cache_write": 269,
+     "cache_read": 37120,
+     "usd_excl_output": 0.0096,
+     "calls": []
+    }
+   ],
+   "calls": [
+    {
+     "req": 0,
+     "kind": "ToolSearch",
+     "result_bytes": 0,
+     "tokens_added_to_context": 11873,
+     "later_requests": 6,
+     "marginal_usd": 0.1092
+    },
+    {
+     "req": 1,
+     "kind": "BP:context:change",
+     "result_bytes": 8671,
+     "tokens_added_to_context": 4718,
+     "later_requests": 5,
+     "marginal_usd": 0.0425
+    },
+    {
+     "req": 2,
+     "kind": "Grep",
+     "result_bytes": 2098,
+     "tokens_added_to_context": 1319,
+     "later_requests": 4,
+     "marginal_usd": 0.0116
+    },
+    {
+     "req": 2,
+     "kind": "BP:context:rules",
+     "result_bytes": 159,
+     "tokens_added_to_context": 134,
+     "later_requests": 4,
+     "marginal_usd": 0.0012
+    },
+    {
+     "req": 3,
+     "kind": "Bash",
+     "result_bytes": 1968,
+     "tokens_added_to_context": 1421,
+     "later_requests": 3,
+     "marginal_usd": 0.0122
+    },
+    {
+     "req": 4,
+     "kind": "Bash",
+     "result_bytes": 417,
+     "tokens_added_to_context": 620,
+     "later_requests": 2,
+     "marginal_usd": 0.0052
+    },
+    {
+     "req": 5,
+     "kind": "Bash",
+     "result_bytes": 54,
+     "tokens_added_to_context": 346,
+     "later_requests": 1,
+     "marginal_usd": 0.0028
+    },
+    {
+     "req": 6,
+     "kind": "Grep",
+     "result_bytes": 295,
+     "tokens_added_to_context": 269,
+     "later_requests": 0,
+     "marginal_usd": 0.0022
+    }
+   ]
+  },
+  "out_278f4cb/T1-B-r2": {
+   "total_usd": 0.2849,
+   "api_requests": 6,
+   "output_tokens": 2840,
+   "categories_usd": {
+    "OUTPUT": 0.0568,
+    "BASE": 0.0528,
+    "SETUP": 0.1045,
+    "BP_RESULT": 0.0416,
+    "NATIVE_RESULT": 0.0243,
+    "OTHER": 0.0048
+   },
+   "requests": [
+    {
+     "req": 0,
+     "cache_write": 4818,
+     "cache_read": 11871,
+     "usd_excl_output": 0.0409,
+     "calls": [
+      "ToolSearch"
+     ]
+    },
+    {
+     "req": 1,
+     "cache_write": 11873,
+     "cache_read": 16689,
+     "usd_excl_output": 0.0983,
+     "calls": [
+      "BP.context"
+     ]
+    },
+    {
+     "req": 2,
+     "cache_write": 4702,
+     "cache_read": 28562,
+     "usd_excl_output": 0.0433,
+     "calls": [
+      "Grep",
+      "BP.context"
+     ]
+    },
+    {
+     "req": 3,
+     "cache_write": 1494,
+     "cache_read": 33264,
+     "usd_excl_output": 0.0186,
+     "calls": [
+      "Bash"
+     ]
+    },
+    {
+     "req": 4,
+     "cache_write": 932,
+     "cache_read": 34758,
+     "usd_excl_output": 0.0144,
+     "calls": [
+      "Bash"
+     ]
+    },
+    {
+     "req": 5,
+     "cache_write": 661,
+     "cache_read": 35690,
+     "usd_excl_output": 0.0124,
+     "calls": []
+    }
+   ],
+   "calls": [
+    {
+     "req": 0,
+     "kind": "ToolSearch",
+     "result_bytes": 0,
+     "tokens_added_to_context": 11873,
+     "later_requests": 4,
+     "marginal_usd": 0.1045
+    },
+    {
+     "req": 1,
+     "kind": "BP:context:change",
+     "result_bytes": 8671,
+     "tokens_added_to_context": 4702,
+     "later_requests": 3,
+     "marginal_usd": 0.0404
+    },
+    {
+     "req": 2,
+     "kind": "Grep",
+     "result_bytes": 2098,
+     "tokens_added_to_context": 1356,
+     "later_requests": 2,
+     "marginal_usd": 0.0114
+    },
+    {
+     "req": 2,
+     "kind": "BP:context:rules",
+     "result_bytes": 159,
+     "tokens_added_to_context": 138,
+     "later_requests": 2,
+     "marginal_usd": 0.0012
+    },
+    {
+     "req": 3,
+     "kind": "Bash",
+     "result_bytes": 788,
+     "tokens_added_to_context": 932,
+     "later_requests": 1,
+     "marginal_usd": 0.0076
+    },
+    {
+     "req": 4,
+     "kind": "Bash",
+     "result_bytes": 392,
+     "tokens_added_to_context": 661,
+     "later_requests": 0,
+     "marginal_usd": 0.0053
+    }
+   ]
+  },
+  "out_278f4cb/T1-Bg": {
+   "total_usd": 0.3038,
+   "api_requests": 6,
+   "output_tokens": 3289,
+   "categories_usd": {
+    "OUTPUT": 0.0658,
+    "BASE": 0.0528,
+    "SETUP": 0.1045,
+    "BP_RESULT": 0.0422,
+    "NATIVE_RESULT": 0.0336,
+    "OTHER": 0.0048
+   },
+   "requests": [
+    {
+     "req": 0,
+     "cache_write": 4816,
+     "cache_read": 11870,
+     "usd_excl_output": 0.0409,
+     "calls": [
+      "ToolSearch"
+     ]
+    },
+    {
+     "req": 1,
+     "cache_write": 11873,
+     "cache_read": 16686,
+     "usd_excl_output": 0.0983,
+     "calls": [
+      "BP.context"
+     ]
+    },
+    {
+     "req": 2,
+     "cache_write": 4772,
+     "cache_read": 28559,
+     "usd_excl_output": 0.0439,
+     "calls": [
+      "BP.context",
+      "Grep",
+      "Grep"
+     ]
+    },
+    {
+     "req": 3,
+     "cache_write": 2627,
+     "cache_read": 33331,
+     "usd_excl_output": 0.0277,
+     "calls": [
+      "Bash"
+     ]
+    },
+    {
+     "req": 4,
+     "cache_write": 858,
+     "cache_read": 35958,
+     "usd_excl_output": 0.0141,
+     "calls": [
+      "Bash"
+     ]
+    },
+    {
+     "req": 5,
+     "cache_write": 714,
+     "cache_read": 36816,
+     "usd_excl_output": 0.0131,
+     "calls": []
+    }
+   ],
+   "calls": [
+    {
+     "req": 0,
+     "kind": "ToolSearch",
+     "result_bytes": 0,
+     "tokens_added_to_context": 11873,
+     "later_requests": 4,
+     "marginal_usd": 0.1045
+    },
+    {
+     "req": 1,
+     "kind": "BP:context:change",
+     "result_bytes": 8671,
+     "tokens_added_to_context": 4772,
+     "later_requests": 3,
+     "marginal_usd": 0.041
+    },
+    {
+     "req": 2,
+     "kind": "BP:context:rules",
+     "result_bytes": 159,
+     "tokens_added_to_context": 143,
+     "later_requests": 2,
+     "marginal_usd": 0.0012
+    },
+    {
+     "req": 2,
+     "kind": "Grep",
+     "result_bytes": 2340,
+     "tokens_added_to_context": 1562,
+     "later_requests": 2,
+     "marginal_usd": 0.0131
+    },
+    {
+     "req": 2,
+     "kind": "Grep",
+     "result_bytes": 1357,
+     "tokens_added_to_context": 922,
+     "later_requests": 2,
+     "marginal_usd": 0.0077
+    },
+    {
+     "req": 3,
+     "kind": "Bash",
+     "result_bytes": 1041,
+     "tokens_added_to_context": 858,
+     "later_requests": 1,
+     "marginal_usd": 0.007
+    },
+    {
+     "req": 4,
+     "kind": "Bash",
+     "result_bytes": 686,
+     "tokens_added_to_context": 714,
+     "later_requests": 0,
+     "marginal_usd": 0.0057
+    }
+   ]
+  },
+  "out_278f4cb/T2-A-r1": {
+   "total_usd": 0.119,
+   "api_requests": 5,
+   "output_tokens": 2052,
+   "categories_usd": {
+    "OUTPUT": 0.041,
+    "BASE": 0.0162,
+    "NATIVE_RESULT": 0.0618,
+    "OTHER": 0.0
+   },
+   "requests": [
+    {
+     "req": 0,
+     "cache_write": 0,
+     "cache_read": 16137,
+     "usd_excl_output": 0.0032,
+     "calls": [
+      "Grep"
+     ]
+    },
+    {
+     "req": 1,
+     "cache_write": 653,
+     "cache_read": 16137,
+     "usd_excl_output": 0.0085,
+     "calls": [
+      "Read",
+      "Grep"
+     ]
+    },
+    {
+     "req": 2,
+     "cache_write": 2571,
+     "cache_read": 16790,
+     "usd_excl_output": 0.0239,
+     "calls": [
+      "Read"
+     ]
+    },
+    {
+     "req": 3,
+     "cache_write": 3614,
+     "cache_read": 19361,
+     "usd_excl_output": 0.0328,
+     "calls": [
+      "Read"
+     ]
+    },
+    {
+     "req": 4,
+     "cache_write": 615,
+     "cache_read": 22975,
+     "usd_excl_output": 0.0095,
+     "calls": []
+    }
+   ],
+   "calls": [
+    {
+     "req": 0,
+     "kind": "Grep",
+     "result_bytes": 961,
+     "tokens_added_to_context": 653,
+     "later_requests": 3,
+     "marginal_usd": 0.0056
+    },
+    {
+     "req": 1,
+     "kind": "Read",
+     "result_bytes": 3457,
+     "tokens_added_to_context": 1842,
+     "later_requests": 2,
+     "marginal_usd": 0.0155
+    },
+    {
+     "req": 1,
+     "kind": "Grep",
+     "result_bytes": 1331,
+     "tokens_added_to_context": 729,
+     "later_requests": 2,
+     "marginal_usd": 0.0061
+    },
+    {
+     "req": 2,
+     "kind": "Read",
+     "result_bytes": 8541,
+     "tokens_added_to_context": 3614,
+     "later_requests": 1,
+     "marginal_usd": 0.0296
+    },
+    {
+     "req": 3,
+     "kind": "Read",
+     "result_bytes": 673,
+     "tokens_added_to_context": 615,
+     "later_requests": 0,
+     "marginal_usd": 0.0049
+    }
+   ]
+  },
+  "out_278f4cb/T2-A-r2": {
+   "total_usd": 0.1479,
+   "api_requests": 5,
+   "output_tokens": 2037,
+   "categories_usd": {
+    "OUTPUT": 0.0407,
+    "BASE": 0.0162,
+    "NATIVE_RESULT": 0.091,
+    "OTHER": 0.0
+   },
+   "requests": [
+    {
+     "req": 0,
+     "cache_write": 0,
+     "cache_read": 16137,
+     "usd_excl_output": 0.0032,
+     "calls": [
+      "Grep"
+     ]
+    },
+    {
+     "req": 1,
+     "cache_write": 3847,
+     "cache_read": 16137,
+     "usd_excl_output": 0.034,
+     "calls": [
+      "Bash"
+     ]
+    },
+    {
+     "req": 2,
+     "cache_write": 2121,
+     "cache_read": 19984,
+     "usd_excl_output": 0.021,
+     "calls": [
+      "Read",
+      "Grep"
+     ]
+    },
+    {
+     "req": 3,
+     "cache_write": 4233,
+     "cache_read": 22105,
+     "usd_excl_output": 0.0383,
+     "calls": [
+      "Grep"
+     ]
+    },
+    {
+     "req": 4,
+     "cache_write": 675,
+     "cache_read": 26338,
+     "usd_excl_output": 0.0107,
+     "calls": []
+    }
+   ],
+   "calls": [
+    {
+     "req": 0,
+     "kind": "Grep",
+     "result_bytes": 7783,
+     "tokens_added_to_context": 3847,
+     "later_requests": 3,
+     "marginal_usd": 0.0331
+    },
+    {
+     "req": 1,
+     "kind": "Bash",
+     "result_bytes": 3985,
+     "tokens_added_to_context": 2121,
+     "later_requests": 2,
+     "marginal_usd": 0.0178
+    },
+    {
+     "req": 2,
+     "kind": "Read",
+     "result_bytes": 8541,
+     "tokens_added_to_context": 3847,
+     "later_requests": 1,
+     "marginal_usd": 0.0315
+    },
+    {
+     "req": 2,
+     "kind": "Grep",
+     "result_bytes": 802,
+     "tokens_added_to_context": 386,
+     "later_requests": 1,
+     "marginal_usd": 0.0032
+    },
+    {
+     "req": 3,
+     "kind": "Grep",
+     "result_bytes": 1042,
+     "tokens_added_to_context": 675,
+     "later_requests": 0,
+     "marginal_usd": 0.0054
+    }
+   ]
+  },
+  "out_278f4cb/T2-B-r1": {
+   "total_usd": 0.1921,
+   "api_requests": 5,
+   "output_tokens": 1925,
+   "categories_usd": {
+    "OUTPUT": 0.0385,
+    "BASE": 0.0504,
+    "SETUP": 0.0411,
+    "BP_RESULT": 0.0116,
+    "NATIVE_RESULT": 0.0467,
+    "OTHER": 0.0039
+   },
+   "requests": [
+    {
+     "req": 0,
+     "cache_write": 4813,
+     "cache_read": 11871,
+     "usd_excl_output": 0.0409,
+     "calls": [
+      "ToolSearch"
+     ]
+    },
+    {
+     "req": 1,
+     "cache_write": 4776,
+     "cache_read": 16684,
+     "usd_excl_output": 0.0416,
+     "calls": [
+      "BP.find"
+     ]
+    },
+    {
+     "req": 2,
+     "cache_write": 1385,
+     "cache_read": 21460,
+     "usd_excl_output": 0.0154,
+     "calls": [
+      "Read",
+      "Grep"
+     ]
+    },
+    {
+     "req": 3,
+     "cache_write": 2097,
+     "cache_read": 22845,
+     "usd_excl_output": 0.0214,
+     "calls": [
+      "Read"
+     ]
+    },
+    {
+     "req": 4,
+     "cache_write": 3682,
+     "cache_read": 24942,
+     "usd_excl_output": 0.0345,
+     "calls": []
+    }
+   ],
+   "calls": [
+    {
+     "req": 0,
+     "kind": "ToolSearch",
+     "result_bytes": 0,
+     "tokens_added_to_context": 4776,
+     "later_requests": 3,
+     "marginal_usd": 0.0411
+    },
+    {
+     "req": 1,
+     "kind": "BP:find:text",
+     "result_bytes": 2250,
+     "tokens_added_to_context": 1385,
+     "later_requests": 2,
+     "marginal_usd": 0.0116
+    },
+    {
+     "req": 2,
+     "kind": "Read",
+     "result_bytes": 3457,
+     "tokens_added_to_context": 1936,
+     "later_requests": 1,
+     "marginal_usd": 0.0159
+    },
+    {
+     "req": 2,
+     "kind": "Grep",
+     "result_bytes": 233,
+     "tokens_added_to_context": 161,
+     "later_requests": 1,
+     "marginal_usd": 0.0013
+    },
+    {
+     "req": 3,
+     "kind": "Read",
+     "result_bytes": 8681,
+     "tokens_added_to_context": 3682,
+     "later_requests": 0,
+     "marginal_usd": 0.0295
+    }
+   ]
+  },
+  "out_278f4cb/T2-B-r2": {
+   "total_usd": 0.2648,
+   "api_requests": 6,
+   "output_tokens": 2309,
+   "categories_usd": {
+    "OUTPUT": 0.0462,
+    "BASE": 0.0528,
+    "SETUP": 0.042,
+    "BP_RESULT": 0.0703,
+    "NATIVE_RESULT": 0.0486,
+    "OTHER": 0.0048
+   },
+   "requests": [
+    {
+     "req": 0,
+     "cache_write": 4813,
+     "cache_read": 11871,
+     "usd_excl_output": 0.0409,
+     "calls": [
+      "ToolSearch"
+     ]
+    },
+    {
+     "req": 1,
+     "cache_write": 4776,
+     "cache_read": 16684,
+     "usd_excl_output": 0.0416,
+     "calls": [
+      "BP.find"
+     ]
+    },
+    {
+     "req": 2,
+     "cache_write": 459,
+     "cache_read": 21460,
+     "usd_excl_output": 0.008,
+     "calls": [
+      "BP.find"
+     ]
+    },
+    {
+     "req": 3,
+     "cache_write": 7903,
+     "cache_read": 21919,
+     "usd_excl_output": 0.0676,
+     "calls": [
+      "Read",
+      "Read"
+     ]
+    },
+    {
+     "req": 4,
+     "cache_write": 5403,
+     "cache_read": 29822,
+     "usd_excl_output": 0.0492,
+     "calls": [
+      "Read"
+     ]
+    },
+    {
+     "req": 5,
+     "cache_write": 542,
+     "cache_read": 35225,
+     "usd_excl_output": 0.0114,
+     "calls": []
+    }
+   ],
+   "calls": [
+    {
+     "req": 0,
+     "kind": "ToolSearch",
+     "result_bytes": 0,
+     "tokens_added_to_context": 4776,
+     "later_requests": 4,
+     "marginal_usd": 0.042
+    },
+    {
+     "req": 1,
+     "kind": "BP:find:text",
+     "result_bytes": 377,
+     "tokens_added_to_context": 459,
+     "later_requests": 3,
+     "marginal_usd": 0.0039
+    },
+    {
+     "req": 2,
+     "kind": "BP:find:text",
+     "result_bytes": 15612,
+     "tokens_added_to_context": 7903,
+     "later_requests": 2,
+     "marginal_usd": 0.0664
+    },
+    {
+     "req": 3,
+     "kind": "Read",
+     "result_bytes": 3457,
+     "tokens_added_to_context": 1570,
+     "later_requests": 1,
+     "marginal_usd": 0.0129
+    },
+    {
+     "req": 3,
+     "kind": "Read",
+     "result_bytes": 8526,
+     "tokens_added_to_context": 3833,
+     "later_requests": 1,
+     "marginal_usd": 0.0314
+    },
+    {
+     "req": 4,
+     "kind": "Read",
+     "result_bytes": 532,
+     "tokens_added_to_context": 542,
+     "later_requests": 0,
+     "marginal_usd": 0.0043
+    }
+   ]
+  },
+  "out_278f4cb/T2-Bg": {
+   "total_usd": 0.2552,
+   "api_requests": 5,
+   "output_tokens": 2022,
+   "categories_usd": {
+    "OUTPUT": 0.0404,
+    "BASE": 0.0504,
+    "SETUP": 0.0412,
+    "BP_RESULT": 0.0665,
+    "NATIVE_RESULT": 0.0528,
+    "OTHER": 0.0038
+   },
+   "requests": [
+    {
+     "req": 0,
+     "cache_write": 4811,
+     "cache_read": 11870,
+     "usd_excl_output": 0.0409,
+     "calls": [
+      "ToolSearch"
+     ]
+    },
+    {
+     "req": 1,
+     "cache_write": 4793,
+     "cache_read": 16681,
+     "usd_excl_output": 0.0417,
+     "calls": [
+      "BP.find"
+     ]
+    },
+    {
+     "req": 2,
+     "cache_write": 7914,
+     "cache_read": 21474,
+     "usd_excl_output": 0.0676,
+     "calls": [
+      "Read",
+      "Read"
+     ]
+    },
+    {
+     "req": 3,
+     "cache_write": 5817,
+     "cache_read": 29388,
+     "usd_excl_output": 0.0524,
+     "calls": [
+      "Grep"
+     ]
+    },
+    {
+     "req": 4,
+     "cache_write": 641,
+     "cache_read": 35205,
+     "usd_excl_output": 0.0122,
+     "calls": []
+    }
+   ],
+   "calls": [
+    {
+     "req": 0,
+     "kind": "ToolSearch",
+     "result_bytes": 0,
+     "tokens_added_to_context": 4793,
+     "later_requests": 3,
+     "marginal_usd": 0.0412
+    },
+    {
+     "req": 1,
+     "kind": "BP:find:text",
+     "result_bytes": 15607,
+     "tokens_added_to_context": 7914,
+     "later_requests": 2,
+     "marginal_usd": 0.0665
+    },
+    {
+     "req": 2,
+     "kind": "Read",
+     "result_bytes": 3457,
+     "tokens_added_to_context": 1569,
+     "later_requests": 1,
+     "marginal_usd": 0.0129
+    },
+    {
+     "req": 2,
+     "kind": "Read",
+     "result_bytes": 9462,
+     "tokens_added_to_context": 4248,
+     "later_requests": 1,
+     "marginal_usd": 0.0348
+    },
+    {
+     "req": 3,
+     "kind": "Grep",
+     "result_bytes": 766,
+     "tokens_added_to_context": 641,
+     "later_requests": 0,
+     "marginal_usd": 0.0051
+    }
+   ]
+  },
+  "out/T1-A-r1": {
+   "total_usd": 0.1647,
+   "api_requests": 6,
+   "output_tokens": 2982,
+   "categories_usd": {
+    "OUTPUT": 0.0596,
+    "BASE": 0.0486,
+    "NATIVE_RESULT": 0.0521,
+    "OTHER": 0.0043
+   },
+   "requests": [
+    {
+     "req": 0,
+     "cache_write": 4289,
+     "cache_read": 11871,
+     "usd_excl_output": 0.0367,
+     "calls": [
+      "Bash"
+     ]
+    },
+    {
+     "req": 1,
+     "cache_write": 827,
+     "cache_read": 16160,
+     "usd_excl_output": 0.0099,
+     "calls": [
+      "Grep"
+     ]
+    },
+    {
+     "req": 2,
+     "cache_write": 2167,
+     "cache_read": 16987,
+     "usd_excl_output": 0.0207,
+     "calls": [
+      "Bash"
+     ]
+    },
+    {
+     "req": 3,
+     "cache_write": 1241,
+     "cache_read": 19154,
+     "usd_excl_output": 0.0138,
+     "calls": [
+      "Bash"
+     ]
+    },
+    {
+     "req": 4,
+     "cache_write": 1413,
+     "cache_read": 20395,
+     "usd_excl_output": 0.0154,
+     "calls": [
+      "Bash"
+     ]
+    },
+    {
+     "req": 5,
+     "cache_write": 527,
+     "cache_read": 21808,
+     "usd_excl_output": 0.0086,
+     "calls": []
+    }
+   ],
+   "calls": [
+    {
+     "req": 0,
+     "kind": "Bash",
+     "result_bytes": 1539,
+     "tokens_added_to_context": 827,
+     "later_requests": 4,
+     "marginal_usd": 0.0073
+    },
+    {
+     "req": 1,
+     "kind": "Grep",
+     "result_bytes": 4575,
+     "tokens_added_to_context": 2167,
+     "later_requests": 3,
+     "marginal_usd": 0.0186
+    },
+    {
+     "req": 2,
+     "kind": "Bash",
+     "result_bytes": 1227,
+     "tokens_added_to_context": 1241,
+     "later_requests": 2,
+     "marginal_usd": 0.0104
+    },
+    {
+     "req": 3,
+     "kind": "Bash",
+     "result_bytes": 2524,
+     "tokens_added_to_context": 1413,
+     "later_requests": 1,
+     "marginal_usd": 0.0116
+    },
+    {
+     "req": 4,
+     "kind": "Bash",
+     "result_bytes": 353,
+     "tokens_added_to_context": 527,
+     "later_requests": 0,
+     "marginal_usd": 0.0042
+    }
+   ]
+  },
+  "out/T1-A-r2": {
+   "total_usd": 0.1452,
+   "api_requests": 5,
+   "output_tokens": 2706,
+   "categories_usd": {
+    "OUTPUT": 0.0541,
+    "BASE": 0.0462,
+    "NATIVE_RESULT": 0.0414,
+    "OTHER": 0.0034
+   },
+   "requests": [
+    {
+     "req": 0,
+     "cache_write": 4289,
+     "cache_read": 11871,
+     "usd_excl_output": 0.0367,
+     "calls": [
+      "Bash"
+     ]
+    },
+    {
+     "req": 1,
+     "cache_write": 834,
+     "cache_read": 16160,
+     "usd_excl_output": 0.0099,
+     "calls": [
+      "Grep"
+     ]
+    },
+    {
+     "req": 2,
+     "cache_write": 2170,
+     "cache_read": 16994,
+     "usd_excl_output": 0.0208,
+     "calls": [
+      "Bash"
+     ]
+    },
+    {
+     "req": 3,
+     "cache_write": 1313,
+     "cache_read": 19164,
+     "usd_excl_output": 0.0143,
+     "calls": [
+      "Bash"
+     ]
+    },
+    {
+     "req": 4,
+     "cache_write": 657,
+     "cache_read": 20477,
+     "usd_excl_output": 0.0094,
+     "calls": []
+    }
+   ],
+   "calls": [
+    {
+     "req": 0,
+     "kind": "Bash",
+     "result_bytes": 1539,
+     "tokens_added_to_context": 834,
+     "later_requests": 3,
+     "marginal_usd": 0.0072
+    },
+    {
+     "req": 1,
+     "kind": "Grep",
+     "result_bytes": 4575,
+     "tokens_added_to_context": 2170,
+     "later_requests": 2,
+     "marginal_usd": 0.0182
+    },
+    {
+     "req": 2,
+     "kind": "Bash",
+     "result_bytes": 1452,
+     "tokens_added_to_context": 1313,
+     "later_requests": 1,
+     "marginal_usd": 0.0108
+    },
+    {
+     "req": 3,
+     "kind": "Bash",
+     "result_bytes": 537,
+     "tokens_added_to_context": 657,
+     "later_requests": 0,
+     "marginal_usd": 0.0053
+    }
+   ]
+  },
+  "out/T1-B-r1": {
+   "total_usd": 0.325,
+   "api_requests": 6,
+   "output_tokens": 3229,
+   "categories_usd": {
+    "OUTPUT": 0.0646,
+    "BASE": 0.053,
+    "SETUP": 0.1045,
+    "BP_RESULT": 0.0708,
+    "NATIVE_RESULT": 0.0273,
+    "OTHER": 0.0048
+   },
+   "requests": [
+    {
+     "req": 0,
+     "cache_write": 4836,
+     "cache_read": 11871,
+     "usd_excl_output": 0.0411,
+     "calls": [
+      "ToolSearch"
+     ]
+    },
+    {
+     "req": 1,
+     "cache_write": 11873,
+     "cache_read": 16707,
+     "usd_excl_output": 0.0983,
+     "calls": [
+      "BP.context"
+     ]
+    },
+    {
+     "req": 2,
+     "cache_write": 5734,
+     "cache_read": 28580,
+     "usd_excl_output": 0.0516,
+     "calls": [
+      "BP.context"
+     ]
+    },
+    {
+     "req": 3,
+     "cache_write": 2414,
+     "cache_read": 34314,
+     "usd_excl_output": 0.0262,
+     "calls": [
+      "BP.context",
+      "Grep"
+     ]
+    },
+    {
+     "req": 4,
+     "cache_write": 1551,
+     "cache_read": 36728,
+     "usd_excl_output": 0.0198,
+     "calls": [
+      "Bash"
+     ]
+    },
+    {
+     "req": 5,
+     "cache_write": 1972,
+     "cache_read": 38279,
+     "usd_excl_output": 0.0234,
+     "calls": []
+    }
+   ],
+   "calls": [
+    {
+     "req": 0,
+     "kind": "ToolSearch",
+     "result_bytes": 0,
+     "tokens_added_to_context": 11873,
+     "later_requests": 4,
+     "marginal_usd": 0.1045
+    },
+    {
+     "req": 1,
+     "kind": "BP:context:change",
+     "result_bytes": 10542,
+     "tokens_added_to_context": 5734,
+     "later_requests": 3,
+     "marginal_usd": 0.0493
+    },
+    {
+     "req": 2,
+     "kind": "BP:context:change",
+     "result_bytes": 3405,
+     "tokens_added_to_context": 2414,
+     "later_requests": 2,
+     "marginal_usd": 0.0203
+    },
+    {
+     "req": 3,
+     "kind": "BP:context:rules",
+     "result_bytes": 159,
+     "tokens_added_to_context": 143,
+     "later_requests": 1,
+     "marginal_usd": 0.0012
+    },
+    {
+     "req": 3,
+     "kind": "Grep",
+     "result_bytes": 2098,
+     "tokens_added_to_context": 1408,
+     "later_requests": 1,
+     "marginal_usd": 0.0115
+    },
+    {
+     "req": 4,
+     "kind": "Bash",
+     "result_bytes": 3381,
+     "tokens_added_to_context": 1972,
+     "later_requests": 0,
+     "marginal_usd": 0.0158
+    }
+   ]
+  },
+  "out/T1-B-r2": {
+   "total_usd": 0.3455,
+   "api_requests": 7,
+   "output_tokens": 3448,
+   "categories_usd": {
+    "OUTPUT": 0.069,
+    "BASE": 0.0554,
+    "SETUP": 0.1069,
+    "BP_RESULT": 0.0727,
+    "NATIVE_RESULT": 0.0358,
+    "OTHER": 0.0058
+   },
+   "requests": [
+    {
+     "req": 0,
+     "cache_write": 4836,
+     "cache_read": 11871,
+     "usd_excl_output": 0.0411,
+     "calls": [
+      "ToolSearch"
+     ]
+    },
+    {
+     "req": 1,
+     "cache_write": 11873,
+     "cache_read": 16707,
+     "usd_excl_output": 0.0983,
+     "calls": [
+      "BP.context"
+     ]
+    },
+    {
+     "req": 2,
+     "cache_write": 5708,
+     "cache_read": 28580,
+     "usd_excl_output": 0.0514,
+     "calls": [
+      "BP.context",
+      "BP.context"
+     ]
+    },
+    {
+     "req": 3,
+     "cache_write": 2609,
+     "cache_read": 34288,
+     "usd_excl_output": 0.0277,
+     "calls": [
+      "Grep"
+     ]
+    },
+    {
+     "req": 4,
+     "cache_write": 2402,
+     "cache_read": 36897,
+     "usd_excl_output": 0.0266,
+     "calls": [
+      "Bash"
+     ]
+    },
+    {
+     "req": 5,
+     "cache_write": 1089,
+     "cache_read": 39299,
+     "usd_excl_output": 0.0166,
+     "calls": [
+      "Bash"
+     ]
+    },
+    {
+     "req": 6,
+     "cache_write": 838,
+     "cache_read": 40388,
+     "usd_excl_output": 0.0148,
+     "calls": []
+    }
+   ],
+   "calls": [
+    {
+     "req": 0,
+     "kind": "ToolSearch",
+     "result_bytes": 0,
+     "tokens_added_to_context": 11873,
+     "later_requests": 5,
+     "marginal_usd": 0.1069
+    },
+    {
+     "req": 1,
+     "kind": "BP:context:change",
+     "result_bytes": 10542,
+     "tokens_added_to_context": 5708,
+     "later_requests": 4,
+     "marginal_usd": 0.0502
+    },
+    {
+     "req": 2,
+     "kind": "BP:context:change",
+     "result_bytes": 3405,
+     "tokens_added_to_context": 2454,
+     "later_requests": 3,
+     "marginal_usd": 0.0211
+    },
+    {
+     "req": 2,
+     "kind": "BP:context:rules",
+     "result_bytes": 159,
+     "tokens_added_to_context": 155,
+     "later_requests": 3,
+     "marginal_usd": 0.0013
+    },
+    {
+     "req": 3,
+     "kind": "Grep",
+     "result_bytes": 4575,
+     "tokens_added_to_context": 2402,
+     "later_requests": 2,
+     "marginal_usd": 0.0202
+    },
+    {
+     "req": 4,
+     "kind": "Bash",
+     "result_bytes": 1189,
+     "tokens_added_to_context": 1089,
+     "later_requests": 1,
+     "marginal_usd": 0.0089
+    },
+    {
+     "req": 5,
+     "kind": "Bash",
+     "result_bytes": 987,
+     "tokens_added_to_context": 838,
+     "later_requests": 0,
+     "marginal_usd": 0.0067
+    }
+   ]
+  },
+  "out/T1-Bg": {
+   "total_usd": 0.3907,
+   "api_requests": 6,
+   "output_tokens": 3280,
+   "categories_usd": {
+    "OUTPUT": 0.0656,
+    "BASE": 0.053,
+    "SETUP": 0.1045,
+    "BP_RESULT": 0.1536,
+    "NATIVE_RESULT": 0.0093,
+    "OTHER": 0.0048
+   },
+   "requests": [
+    {
+     "req": 0,
+     "cache_write": 4834,
+     "cache_read": 11870,
+     "usd_excl_output": 0.0411,
+     "calls": [
+      "ToolSearch"
+     ]
+    },
+    {
+     "req": 1,
+     "cache_write": 11873,
+     "cache_read": 16704,
+     "usd_excl_output": 0.0983,
+     "calls": [
+      "BP.context"
+     ]
+    },
+    {
+     "req": 2,
+     "cache_write": 5731,
+     "cache_read": 28577,
+     "usd_excl_output": 0.0516,
+     "calls": [
+      "BP.context",
+      "BP.context"
+     ]
+    },
+    {
+     "req": 3,
+     "cache_write": 2540,
+     "cache_read": 34308,
+     "usd_excl_output": 0.0272,
+     "calls": [
+      "BP.find",
+      "BP.find",
+      "BP.find",
+      "BP.find",
+      "BP.find",
+      "BP.find"
+     ]
+    },
+    {
+     "req": 4,
+     "cache_write": 10115,
+     "cache_read": 36848,
+     "usd_excl_output": 0.0883,
+     "calls": [
+      "Grep"
+     ]
+    },
+    {
+     "req": 5,
+     "cache_write": 1160,
+     "cache_read": 46963,
+     "usd_excl_output": 0.0187,
+     "calls": []
+    }
+   ],
+   "calls": [
+    {
+     "req": 0,
+     "kind": "ToolSearch",
+     "result_bytes": 0,
+     "tokens_added_to_context": 11873,
+     "later_requests": 4,
+     "marginal_usd": 0.1045
+    },
+    {
+     "req": 1,
+     "kind": "BP:context:change",
+     "result_bytes": 10556,
+     "tokens_added_to_context": 5731,
+     "later_requests": 3,
+     "marginal_usd": 0.0493
+    },
+    {
+     "req": 2,
+     "kind": "BP:context:change",
+     "result_bytes": 3391,
+     "tokens_added_to_context": 2388,
+     "later_requests": 2,
+     "marginal_usd": 0.0201
+    },
+    {
+     "req": 2,
+     "kind": "BP:context:rules",
+     "result_bytes": 159,
+     "tokens_added_to_context": 152,
+     "later_requests": 2,
+     "marginal_usd": 0.0013
+    },
+    {
+     "req": 3,
+     "kind": "BP:find:target",
+     "result_bytes": 2843,
+     "tokens_added_to_context": 1683,
+     "later_requests": 1,
+     "marginal_usd": 0.0138
+    },
+    {
+     "req": 3,
+     "kind": "BP:find:target",
+     "result_bytes": 2828,
+     "tokens_added_to_context": 1674,
+     "later_requests": 1,
+     "marginal_usd": 0.0137
+    },
+    {
+     "req": 3,
+     "kind": "BP:find:target",
+     "result_bytes": 2804,
+     "tokens_added_to_context": 1660,
+     "later_requests": 1,
+     "marginal_usd": 0.0136
+    },
+    {
+     "req": 3,
+     "kind": "BP:find:target",
+     "result_bytes": 2891,
+     "tokens_added_to_context": 1710,
+     "later_requests": 1,
+     "marginal_usd": 0.014
+    },
+    {
+     "req": 3,
+     "kind": "BP:find:target",
+     "result_bytes": 2840,
+     "tokens_added_to_context": 1681,
+     "later_requests": 1,
+     "marginal_usd": 0.0138
+    },
+    {
+     "req": 3,
+     "kind": "BP:find:target",
+     "result_bytes": 2885,
+     "tokens_added_to_context": 1707,
+     "later_requests": 1,
+     "marginal_usd": 0.014
+    },
+    {
+     "req": 4,
+     "kind": "Grep",
+     "result_bytes": 2098,
+     "tokens_added_to_context": 1160,
+     "later_requests": 0,
+     "marginal_usd": 0.0093
+    }
+   ]
+  },
+  "out/T2-A-r1": {
+   "total_usd": 0.1821,
+   "api_requests": 7,
+   "output_tokens": 2635,
+   "categories_usd": {
+    "OUTPUT": 0.0527,
+    "BASE": 0.0509,
+    "NATIVE_RESULT": 0.0733,
+    "OTHER": 0.0051
+   },
+   "requests": [
+    {
+     "req": 0,
+     "cache_write": 4284,
+     "cache_read": 11871,
+     "usd_excl_output": 0.0367,
+     "calls": [
+      "Grep"
+     ]
+    },
+    {
+     "req": 1,
+     "cache_write": 808,
+     "cache_read": 16155,
+     "usd_excl_output": 0.0097,
+     "calls": [
+      "Read",
+      "Grep"
+     ]
+    },
+    {
+     "req": 2,
+     "cache_write": 2571,
+     "cache_read": 16963,
+     "usd_excl_output": 0.024,
+     "calls": [
+      "Read"
+     ]
+    },
+    {
+     "req": 3,
+     "cache_write": 3614,
+     "cache_read": 19534,
+     "usd_excl_output": 0.0328,
+     "calls": [
+      "Read"
+     ]
+    },
+    {
+     "req": 4,
+     "cache_write": 711,
+     "cache_read": 23148,
+     "usd_excl_output": 0.0103,
+     "calls": [
+      "Grep"
+     ]
+    },
+    {
+     "req": 5,
+     "cache_write": 303,
+     "cache_read": 23859,
+     "usd_excl_output": 0.0072,
+     "calls": [
+      "Grep"
+     ]
+    },
+    {
+     "req": 6,
+     "cache_write": 479,
+     "cache_read": 24162,
+     "usd_excl_output": 0.0087,
+     "calls": []
+    }
+   ],
+   "calls": [
+    {
+     "req": 0,
+     "kind": "Grep",
+     "result_bytes": 1225,
+     "tokens_added_to_context": 808,
+     "later_requests": 5,
+     "marginal_usd": 0.0073
+    },
+    {
+     "req": 1,
+     "kind": "Read",
+     "result_bytes": 3457,
+     "tokens_added_to_context": 1842,
+     "later_requests": 4,
+     "marginal_usd": 0.0162
+    },
+    {
+     "req": 1,
+     "kind": "Grep",
+     "result_bytes": 1331,
+     "tokens_added_to_context": 729,
+     "later_requests": 4,
+     "marginal_usd": 0.0064
+    },
+    {
+     "req": 2,
+     "kind": "Read",
+     "result_bytes": 8541,
+     "tokens_added_to_context": 3614,
+     "later_requests": 3,
+     "marginal_usd": 0.0311
+    },
+    {
+     "req": 3,
+     "kind": "Read",
+     "result_bytes": 831,
+     "tokens_added_to_context": 711,
+     "later_requests": 2,
+     "marginal_usd": 0.006
+    },
+    {
+     "req": 4,
+     "kind": "Grep",
+     "result_bytes": 16,
+     "tokens_added_to_context": 303,
+     "later_requests": 1,
+     "marginal_usd": 0.0025
+    },
+    {
+     "req": 5,
+     "kind": "Grep",
+     "result_bytes": 371,
+     "tokens_added_to_context": 479,
+     "later_requests": 0,
+     "marginal_usd": 0.0038
+    }
+   ]
+  },
+  "out/T2-A-r2": {
+   "total_usd": 0.1506,
+   "api_requests": 4,
+   "output_tokens": 1989,
+   "categories_usd": {
+    "OUTPUT": 0.0398,
+    "BASE": 0.0438,
+    "NATIVE_RESULT": 0.0645,
+    "OTHER": 0.0026
+   },
+   "requests": [
+    {
+     "req": 0,
+     "cache_write": 4284,
+     "cache_read": 11871,
+     "usd_excl_output": 0.0367,
+     "calls": [
+      "Grep",
+      "Bash"
+     ]
+    },
+    {
+     "req": 1,
+     "cache_write": 1575,
+     "cache_read": 16155,
+     "usd_excl_output": 0.0158,
+     "calls": [
+      "Read",
+      "Grep"
+     ]
+    },
+    {
+     "req": 2,
+     "cache_write": 2462,
+     "cache_read": 17730,
+     "usd_excl_output": 0.0232,
+     "calls": [
+      "Read",
+      "Grep"
+     ]
+    },
+    {
+     "req": 3,
+     "cache_write": 3881,
+     "cache_read": 20192,
+     "usd_excl_output": 0.0351,
+     "calls": []
+    }
+   ],
+   "calls": [
+    {
+     "req": 0,
+     "kind": "Grep",
+     "result_bytes": 1225,
+     "tokens_added_to_context": 695,
+     "later_requests": 2,
+     "marginal_usd": 0.0058
+    },
+    {
+     "req": 0,
+     "kind": "Bash",
+     "result_bytes": 1566,
+     "tokens_added_to_context": 880,
+     "later_requests": 2,
+     "marginal_usd": 0.0074
+    },
+    {
+     "req": 1,
+     "kind": "Read",
+     "result_bytes": 3457,
+     "tokens_added_to_context": 1832,
+     "later_requests": 1,
+     "marginal_usd": 0.015
+    },
+    {
+     "req": 1,
+     "kind": "Grep",
+     "result_bytes": 1149,
+     "tokens_added_to_context": 630,
+     "later_requests": 1,
+     "marginal_usd": 0.0052
+    },
+    {
+     "req": 2,
+     "kind": "Read",
+     "result_bytes": 8386,
+     "tokens_added_to_context": 3694,
+     "later_requests": 0,
+     "marginal_usd": 0.0296
+    },
+    {
+     "req": 2,
+     "kind": "Grep",
+     "result_bytes": 368,
+     "tokens_added_to_context": 187,
+     "later_requests": 0,
+     "marginal_usd": 0.0015
+    }
+   ]
+  },
+  "out/T2-B-r1": {
+   "total_usd": 0.2506,
+   "api_requests": 5,
+   "output_tokens": 1875,
+   "categories_usd": {
+    "OUTPUT": 0.0375,
+    "BASE": 0.0506,
+    "SETUP": 0.0411,
+    "BP_RESULT": 0.0685,
+    "NATIVE_RESULT": 0.0491,
+    "OTHER": 0.0039
+   },
+   "requests": [
+    {
+     "req": 0,
+     "cache_write": 4831,
+     "cache_read": 11871,
+     "usd_excl_output": 0.041,
+     "calls": [
+      "ToolSearch"
+     ]
+    },
+    {
+     "req": 1,
+     "cache_write": 4776,
+     "cache_read": 16702,
+     "usd_excl_output": 0.0416,
+     "calls": [
+      "BP.find"
+     ]
+    },
+    {
+     "req": 2,
+     "cache_write": 8159,
+     "cache_read": 21478,
+     "usd_excl_output": 0.0696,
+     "calls": [
+      "Read",
+      "Read"
+     ]
+    },
+    {
+     "req": 3,
+     "cache_write": 5525,
+     "cache_read": 29637,
+     "usd_excl_output": 0.0501,
+     "calls": [
+      "Read"
+     ]
+    },
+    {
+     "req": 4,
+     "cache_write": 471,
+     "cache_read": 35162,
+     "usd_excl_output": 0.0108,
+     "calls": []
+    }
+   ],
+   "calls": [
+    {
+     "req": 0,
+     "kind": "ToolSearch",
+     "result_bytes": 0,
+     "tokens_added_to_context": 4776,
+     "later_requests": 3,
+     "marginal_usd": 0.0411
+    },
+    {
+     "req": 1,
+     "kind": "BP:find:text",
+     "result_bytes": 15774,
+     "tokens_added_to_context": 8159,
+     "later_requests": 2,
+     "marginal_usd": 0.0685
+    },
+    {
+     "req": 2,
+     "kind": "Read",
+     "result_bytes": 3457,
+     "tokens_added_to_context": 1563,
+     "later_requests": 1,
+     "marginal_usd": 0.0128
+    },
+    {
+     "req": 2,
+     "kind": "Read",
+     "result_bytes": 8853,
+     "tokens_added_to_context": 3962,
+     "later_requests": 1,
+     "marginal_usd": 0.0325
+    },
+    {
+     "req": 3,
+     "kind": "Read",
+     "result_bytes": 532,
+     "tokens_added_to_context": 471,
+     "later_requests": 0,
+     "marginal_usd": 0.0038
+    }
+   ]
+  },
+  "out/T2-B-r2": {
+   "total_usd": 0.2163,
+   "api_requests": 6,
+   "output_tokens": 2312,
+   "categories_usd": {
+    "OUTPUT": 0.0462,
+    "BASE": 0.0529,
+    "SETUP": 0.042,
+    "BP_RESULT": 0.0187,
+    "NATIVE_RESULT": 0.0516,
+    "OTHER": 0.0048
+   },
+   "requests": [
+    {
+     "req": 0,
+     "cache_write": 4831,
+     "cache_read": 11871,
+     "usd_excl_output": 0.041,
+     "calls": [
+      "ToolSearch"
+     ]
+    },
+    {
+     "req": 1,
+     "cache_write": 4776,
+     "cache_read": 16702,
+     "usd_excl_output": 0.0416,
+     "calls": [
+      "BP.find"
+     ]
+    },
+    {
+     "req": 2,
+     "cache_write": 2175,
+     "cache_read": 21478,
+     "usd_excl_output": 0.0217,
+     "calls": [
+      "Read",
+      "Grep"
+     ]
+    },
+    {
+     "req": 3,
+     "cache_write": 2095,
+     "cache_read": 23653,
+     "usd_excl_output": 0.0215,
+     "calls": [
+      "Grep"
+     ]
+    },
+    {
+     "req": 4,
+     "cache_write": 748,
+     "cache_read": 25748,
+     "usd_excl_output": 0.0111,
+     "calls": [
+      "Read"
+     ]
+    },
+    {
+     "req": 5,
+     "cache_write": 3478,
+     "cache_read": 26496,
+     "usd_excl_output": 0.0331,
+     "calls": []
+    }
+   ],
+   "calls": [
+    {
+     "req": 0,
+     "kind": "ToolSearch",
+     "result_bytes": 0,
+     "tokens_added_to_context": 4776,
+     "later_requests": 4,
+     "marginal_usd": 0.042
+    },
+    {
+     "req": 1,
+     "kind": "BP:find:text",
+     "result_bytes": 3699,
+     "tokens_added_to_context": 2175,
+     "later_requests": 3,
+     "marginal_usd": 0.0187
+    },
+    {
+     "req": 2,
+     "kind": "Read",
+     "result_bytes": 3457,
+     "tokens_added_to_context": 1934,
+     "later_requests": 2,
+     "marginal_usd": 0.0162
+    },
+    {
+     "req": 2,
+     "kind": "Grep",
+     "result_bytes": 233,
+     "tokens_added_to_context": 161,
+     "later_requests": 2,
+     "marginal_usd": 0.0014
+    },
+    {
+     "req": 3,
+     "kind": "Grep",
+     "result_bytes": 1211,
+     "tokens_added_to_context": 748,
+     "later_requests": 1,
+     "marginal_usd": 0.0061
+    },
+    {
+     "req": 4,
+     "kind": "Read",
+     "result_bytes": 8236,
+     "tokens_added_to_context": 3478,
+     "later_requests": 0,
+     "marginal_usd": 0.0278
+    }
+   ]
+  },
+  "out/T2-Bg": {
+   "total_usd": 0.2208,
+   "api_requests": 7,
+   "output_tokens": 2339,
+   "categories_usd": {
+    "OUTPUT": 0.0468,
+    "BASE": 0.0553,
+    "SETUP": 0.043,
+    "BP_RESULT": 0.0215,
+    "NATIVE_RESULT": 0.0485,
+    "OTHER": 0.0058
+   },
+   "requests": [
+    {
+     "req": 0,
+     "cache_write": 4829,
+     "cache_read": 11870,
+     "usd_excl_output": 0.041,
+     "calls": [
+      "ToolSearch"
+     ]
+    },
+    {
+     "req": 1,
+     "cache_write": 4776,
+     "cache_read": 16699,
+     "usd_excl_output": 0.0416,
+     "calls": [
+      "BP.find"
+     ]
+    },
+    {
+     "req": 2,
+     "cache_write": 356,
+     "cache_read": 21475,
+     "usd_excl_output": 0.0072,
+     "calls": [
+      "BP.find"
+     ]
+    },
+    {
+     "req": 3,
+     "cache_write": 2131,
+     "cache_read": 21831,
+     "usd_excl_output": 0.0214,
+     "calls": [
+      "Read",
+      "Grep"
+     ]
+    },
+    {
+     "req": 4,
+     "cache_write": 2095,
+     "cache_read": 23962,
+     "usd_excl_output": 0.0216,
+     "calls": [
+      "Grep"
+     ]
+    },
+    {
+     "req": 5,
+     "cache_write": 424,
+     "cache_read": 26057,
+     "usd_excl_output": 0.0086,
+     "calls": [
+      "Read"
+     ]
+    },
+    {
+     "req": 6,
+     "cache_write": 3428,
+     "cache_read": 26481,
+     "usd_excl_output": 0.0327,
+     "calls": []
+    }
+   ],
+   "calls": [
+    {
+     "req": 0,
+     "kind": "ToolSearch",
+     "result_bytes": 0,
+     "tokens_added_to_context": 4776,
+     "later_requests": 5,
+     "marginal_usd": 0.043
+    },
+    {
+     "req": 1,
+     "kind": "BP:find:text",
+     "result_bytes": 377,
+     "tokens_added_to_context": 356,
+     "later_requests": 4,
+     "marginal_usd": 0.0031
+    },
+    {
+     "req": 2,
+     "kind": "BP:find:text",
+     "result_bytes": 3699,
+     "tokens_added_to_context": 2131,
+     "later_requests": 3,
+     "marginal_usd": 0.0183
+    },
+    {
+     "req": 3,
+     "kind": "Read",
+     "result_bytes": 3457,
+     "tokens_added_to_context": 1934,
+     "later_requests": 2,
+     "marginal_usd": 0.0162
+    },
+    {
+     "req": 3,
+     "kind": "Grep",
+     "result_bytes": 233,
+     "tokens_added_to_context": 161,
+     "later_requests": 2,
+     "marginal_usd": 0.0014
+    },
+    {
+     "req": 4,
+     "kind": "Grep",
+     "result_bytes": 256,
+     "tokens_added_to_context": 424,
+     "later_requests": 1,
+     "marginal_usd": 0.0035
+    },
+    {
+     "req": 5,
+     "kind": "Read",
+     "result_bytes": 8141,
+     "tokens_added_to_context": 3428,
+     "later_requests": 0,
+     "marginal_usd": 0.0274
+    }
+   ]
+  }
+ }
+}

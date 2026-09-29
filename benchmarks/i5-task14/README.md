@@ -57,3 +57,25 @@ artifact of the rerun. No raw transcripts or model reasoning are stored.
   native Read of a path that appeared in earlier Brainprint output, whether or
   not Brainprint delivered that file's content (a location-only `find text`
   hit counts).
+
+## Cost analysis (base `2997729`)
+
+- `analysis/cost_breakdown_r1_r2.json` — every API request and tool call of both A/B sets
+  (`out_278f4cb` = rerun 1, `out` = rerun 2): cache-write/read tokens, the tokens each tool
+  result added to the context (the next request's cache-write), marginal USD, and the
+  per-run category split (BASE / SETUP / BP_RESULT / NATIVE_RESULT / OTHER / OUTPUT).
+- `analysis/cost_breakdown_pairs.json` — 8 extra runs, same worktree back to back, to see
+  what the prompt cache does to the same conversation.
+- `harness/breakdown.py` builds both files. Prices are fitted from the runs' own
+  `total_cost_usd` (input $4, cache-write $8, cache-read $0.20, output $20 per 1M tokens);
+  the fit reproduces all 20 totals exactly. Per-request `output_tokens` in the stream are
+  mid-stream values, so output is priced per run.
+- `harness/run_e.sh`, `run_pairs.sh` — measurement-only run variants. `ENABLE_TOOL_SEARCH=false`
+  was tried and discarded: it loads every deferred built-in tool too (cache-write 56k, $0.525).
+- `harness/owner_cost.py` (caller-owner refresh time/RSS through the product CLI) and
+  `harness/t2_estimate.py` (enclosing-symbol/source additions to `find text`, inspect packet sizes).
+- Contamination note: worktrees at `5430637` or later contain `benchmarks/i5-task14/`. Rerun 2
+  and the pair runs therefore had harness files in every Grep/`find text` result (about 2.5 KB of a
+  4.6 KB T1 Grep, and 4 of 10 `find text` matches). Rerun 1 (base `278f4cb`) did not. Remove the
+  directory from each worktree before the next A/B.
+
