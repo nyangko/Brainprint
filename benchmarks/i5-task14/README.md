@@ -79,3 +79,26 @@ artifact of the rerun. No raw transcripts or model reasoning are stored.
   4.6 KB T1 Grep, and 4 of 10 `find text` matches). Rerun 1 (base `278f4cb`) did not. Remove the
   directory from each worktree before the next A/B.
 
+## Tool-selection instruction experiment (base `ed2abd0`)
+
+Instruction only, no product change. `harness/instr.md` is appended to the B1 worktree's
+`CLAUDE.md` (never to A or B0). B0 = Brainprint as before, B1 = B0 + the instruction.
+
+- `harness/run_instr.sh` (one run in a fresh worktree at the base commit with
+  `benchmarks/i5-task14/` removed for A and B alike), `run_instr_all.sh` (T1 and T2, four rounds
+  of A/B0/B1 in ABBA order = four runs per condition per task), `run_instr_t1.sh` (T1 block only),
+  `harness/instr_compare.py` (per run: cache class, ToolSearch tokens, cost split, grade).
+- `analysis/instr_tool_selection_final.json` — the 24 valid runs. Every run has cache class
+  STATIC (first request reads only the shared static prefix, no later request reads cache it did not
+  write in this run); runs in another class would be reported but never pooled.
+- `analysis/instr_tool_selection_t1_degraded_observation.json` — 12 T1 runs in which the daemon's
+  rust-analyzer could not start (the harness had dropped `RUSTUP_HOME`/`CARGO_HOME`): Brainprint
+  returned 4 of 8 call sites and said so (`UnconfirmedCallerOwners: 3`). Kept as an observation, not pooled.
+- Harness defects found and fixed during this experiment (their runs were discarded, none is in the
+  numbers): (1) the per-run daemon restart lacked `R`/`SP`, so B runs had no daemon (transport_error);
+  (2) the restart lacked `RUSTUP_HOME`/`CARGO_HOME` (degraded T1 above); (3) reusing a worktree path
+  with a stale `brainprint init` registry entry makes `init` fail — reset `~/.brainprint` data of the
+  isolated HOME between blocks; (4) a readiness guard now aborts a B run whose daemon does not
+  answer a structural query; (5) a run must never be started twice (macOS has no `setsid`; use
+  `start_new_session`).
+
