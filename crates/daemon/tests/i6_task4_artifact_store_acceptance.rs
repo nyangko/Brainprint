@@ -151,11 +151,15 @@ async fn cleanup_removes_the_store_and_a_restart_expires_old_handles() {
         Err(ArtifactError::Unavailable)
     );
     drop(first);
+    // Windows: dropping a listener aborts its pipe-instance tasks; the
+    // pipe name is free only once the runtime has dropped them.
+    tokio::time::sleep(Duration::from_millis(50)).await;
 
     // A crash (no cleanup) leaves files; the next start purges them.
     let crashed = Server::bind(&global_paths).await.expect("second bind");
     let left = insert(crashed.query_runtime().artifacts(), b"left by a crash");
     drop(crashed);
+    tokio::time::sleep(Duration::from_millis(50)).await;
     assert_eq!(entries(&dir).len(), 1);
 
     let next = Server::bind(&global_paths).await.expect("third bind");
