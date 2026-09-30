@@ -36,3 +36,7 @@ harness = false
 [[test]]
 name = "verification"
 harness = false
+
+[[test]]
+name = "output_capture"
+harness = false
