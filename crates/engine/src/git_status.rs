@@ -12,7 +12,8 @@
 //! The fingerprint is #50's entry-level one: further content edits to an
 //! already-dirty path do not change it.
 
-#[cfg(test)]
+// The #51 runner tests that time a run are unix-only.
+#[cfg(all(test, unix))]
 use std::time::Instant;
 use std::{
     ffi::OsString,
