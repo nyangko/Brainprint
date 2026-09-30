@@ -18,6 +18,7 @@ use std::{
     io::Read,
     path::Path,
     process::{Command, ExitStatus, Stdio},
+    sync::mpsc,
     thread,
     time::{Duration, Instant},
 };
@@ -355,8 +356,16 @@ fn run_bounded(
         .map_err(|error| GitStatusError::GitUnavailable(error.to_string()))?;
     let stdout = child.stdout.take().expect("piped stdout");
     let stderr = child.stderr.take().expect("piped stderr");
-    let out = thread::spawn(move || read_capped(stdout, cap, true));
-    let err = thread::spawn(move || read_capped(stderr, STDERR_CAP, false));
+    // Readers report over channels: a descendant that inherited a pipe can
+    // keep it open after the child is gone, so no wait below is unbounded.
+    let (out_tx, out_rx) = mpsc::channel();
+    let (err_tx, err_rx) = mpsc::channel();
+    thread::spawn(move || {
+        let _ = out_tx.send(read_capped(stdout, cap, true));
+    });
+    thread::spawn(move || {
+        let _ = err_tx.send(read_capped(stderr, STDERR_CAP, false));
+    });
     let deadline = Instant::now() + timeout;
     // Past the cap the reader drops the pipe, so git fails its next write
     // and exits; only a hung process reaches the deadline.
@@ -367,20 +376,28 @@ fn run_bounded(
             Ok(None) | Err(_) => break None,
         }
     };
-    if status.is_none() {
-        // Kill before joining: the readers end only when the pipes close.
+    let Some(status) = status else {
         let _ = child.kill();
         let _ = child.wait();
-    }
-    let (stdout, overflowed) = out.join().unwrap_or_default();
-    let (stderr, _) = err.join().unwrap_or_default();
+        // ponytail: readers still blocked on a pipe a descendant holds are
+        // left detached; they end when that pipe closes.
+        return Err(match out_rx.try_recv() {
+            Ok((_, true)) => GitStatusError::OutputTooLarge,
+            _ => GitStatusError::Timeout,
+        });
+    };
+    // Output is complete only at EOF, which a surviving descendant can
+    // withhold: the same deadline bounds that wait.
+    let remaining = || deadline.saturating_duration_since(Instant::now());
+    let (stdout, overflowed) = out_rx
+        .recv_timeout(remaining())
+        .map_err(|_| GitStatusError::Timeout)?;
     if overflowed {
         return Err(GitStatusError::OutputTooLarge);
     }
-    let Some(status) = status else {
-        return Err(GitStatusError::Timeout);
-    };
     if !status.success() {
+        // stderr is log detail only; a withheld one is simply empty.
+        let (stderr, _) = err_rx.recv_timeout(remaining()).unwrap_or_default();
         return Err(GitStatusError::GitFailed {
             exit_code: status.code(),
             stderr: String::from_utf8_lossy(&stderr).trim().to_owned(),

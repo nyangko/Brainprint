@@ -334,16 +334,44 @@ fn shell(script: &str) -> Command {
 #[cfg(unix)]
 #[test]
 fn a_hung_process_is_killed_at_the_deadline() {
+    // `; true` keeps the shell from exec-ing sleep, so sleep is a
+    // grandchild that still holds the pipes after the shell is killed
+    // (the Linux dash behavior CI caught).
     let started = Instant::now();
     assert_eq!(
         run_bounded(
-            shell("sleep 30"),
+            shell("sleep 30; true"),
             Duration::from_millis(200),
             GIT_OUTPUT_CAP
         ),
         Err(GitStatusError::Timeout)
     );
-    assert!(started.elapsed() < Duration::from_secs(10));
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        started.elapsed()
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_descendant_holding_stdout_cannot_outlive_the_deadline() {
+    // The child exits at once, but a background process keeps stdout
+    // open: the output never reaches EOF, so it is not complete.
+    let started = Instant::now();
+    assert_eq!(
+        run_bounded(
+            shell("sleep 30 & echo partial"),
+            Duration::from_millis(300),
+            GIT_OUTPUT_CAP
+        ),
+        Err(GitStatusError::Timeout)
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        started.elapsed()
+    );
 }
 
 #[cfg(unix)]
