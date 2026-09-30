@@ -54,8 +54,8 @@ pub use resolve::{
 };
 pub use work::{
     GenerationReference, GenerationReferenceState, NotReady, ResourceEvidence, ResourceObservation,
-    ResultObservation, Staleness, StartObservation, WorkError, WorkOverlap, WorkProgress,
-    WorkRuntime, WorkSnapshot,
+    ResultObservation, ResultOutcome, Staleness, StartObservation, WorkError, WorkOverlap,
+    WorkProgress, WorkRuntime, WorkSnapshot,
 };
 pub use workspace::WorkspaceKnowledgeStore;
 

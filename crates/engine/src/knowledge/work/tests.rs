@@ -1908,3 +1908,88 @@ fn task3_access_paths_use_their_intended_indexes() {
         "{overlap}"
     );
 }
+
+// ======================================= #52 result preflight
+
+#[test]
+fn check_result_allowed_matches_the_write_and_writes_nothing() {
+    use WorkItemStatus::{Abandoned, Active, Blocked, Completed, Open, Paused};
+    let fixture = Fixture::new("result-preflight");
+    fixture.publish("A");
+    let runtime = fixture.runtime();
+    let in_status = |status: WorkItemStatus| {
+        let uid = if status == Open {
+            runtime.create(&item("open")).expect("create").uid
+        } else {
+            started(&runtime, "started")
+        };
+        let done = result("done", None, DirtyObservation::Unknown);
+        match status {
+            Open | Active => {}
+            Blocked => drop(runtime.block(uid, "waiting").expect("block")),
+            Paused => drop(runtime.pause(uid).expect("pause")),
+            Completed => drop(runtime.complete(uid, &done, None).expect("complete")),
+            Abandoned => drop(runtime.abandon(uid, &done, None).expect("abandon")),
+        }
+        uid
+    };
+    let write = |uid, outcome| {
+        let done = result("write", None, DirtyObservation::Unknown);
+        match outcome {
+            ResultOutcome::Partial => runtime.record_partial(uid, &done).map(drop),
+            ResultOutcome::Complete => runtime.complete(uid, &done, None).map(drop),
+            ResultOutcome::Abandon => runtime.abandon(uid, &done, None).map(drop),
+        }
+    };
+    let matrix = [
+        (Open, [false, false, true]),
+        (Active, [true, true, true]),
+        (Blocked, [true, false, true]),
+        (Paused, [true, false, true]),
+        (Completed, [false, false, false]),
+        (Abandoned, [false, false, false]),
+    ];
+    let outcomes = [
+        ResultOutcome::Partial,
+        ResultOutcome::Complete,
+        ResultOutcome::Abandon,
+    ];
+    let files = || {
+        ["", "-wal"].map(|suffix| {
+            fs::read(format!("{}{suffix}", fixture.paths.workspace_db.display())).ok()
+        })
+    };
+    for (status, allowed) in matrix {
+        for (outcome, allowed) in outcomes.into_iter().zip(allowed) {
+            let uid = in_status(status);
+            let before = (files(), format!("{:?}", runtime.snapshot(uid, None)));
+            let checked = runtime.check_result_allowed(uid, outcome);
+            assert_eq!(
+                before,
+                (files(), format!("{:?}", runtime.snapshot(uid, None))),
+                "{status:?} {outcome:?}: the preflight wrote"
+            );
+            assert_eq!(
+                checked.is_ok(),
+                allowed,
+                "{status:?} {outcome:?}: {checked:?}"
+            );
+            if let Err(error) = &checked {
+                assert!(is_transition_error(error), "{error:?}");
+            }
+            // The write agrees with the preflight.
+            let written = write(uid, outcome);
+            assert_eq!(
+                written.is_ok(),
+                allowed,
+                "{status:?} {outcome:?}: {written:?}"
+            );
+        }
+    }
+    for outcome in outcomes {
+        assert!(matches!(
+            runtime.check_result_allowed(WorkItemId::generate(), outcome),
+            Err(WorkError::Knowledge(KnowledgeError::NotFound { .. }))
+        ));
+    }
+}

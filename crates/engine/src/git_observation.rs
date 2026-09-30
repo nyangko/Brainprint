@@ -194,7 +194,7 @@ pub fn resolve_active(
 
 /// Workspace-relative, `/`-separated, no `.`/`..`/empty component. One
 /// trailing `/` (Git's untracked-directory form) is trimmed.
-fn normalized_path(path: &str) -> Result<String, GitObservationError> {
+pub(crate) fn normalized_path(path: &str) -> Result<String, GitObservationError> {
     let invalid = |reason| GitObservationError::InvalidPath {
         path: path.to_owned(),
         reason,

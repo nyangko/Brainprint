@@ -338,7 +338,7 @@ fn git_command(
 
 /// Windows `canonicalize` yields `\\?\C:\...` / `\\?\UNC\...` verbatim
 /// paths, which Git does not take as `-C`; hand Git the plain form.
-fn plain_path(path: &Path) -> std::path::PathBuf {
+pub(crate) fn plain_path(path: &Path) -> std::path::PathBuf {
     let text = path.to_string_lossy();
     if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
         return format!(r"\\{rest}").into();

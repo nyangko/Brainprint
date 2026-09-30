@@ -62,4 +62,5 @@ pub mod telemetry;
 pub mod trust;
 pub mod types;
 pub mod typescript_semantic;
+pub mod verification;
 pub mod watch;

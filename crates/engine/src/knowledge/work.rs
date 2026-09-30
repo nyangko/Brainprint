@@ -38,6 +38,26 @@ const STARTED: [WorkItemStatus; 3] = [
     WorkItemStatus::Blocked,
     WorkItemStatus::Paused,
 ];
+/// The statuses [`WorkRuntime::complete`] finishes from.
+const COMPLETE_FROM: [WorkItemStatus; 1] = [WorkItemStatus::Active];
+/// The statuses [`WorkRuntime::abandon`] finishes from.
+const ABANDON_FROM: [WorkItemStatus; 4] = [
+    WorkItemStatus::Open,
+    WorkItemStatus::Active,
+    WorkItemStatus::Blocked,
+    WorkItemStatus::Paused,
+];
+
+/// Which result write [`WorkRuntime::check_result_allowed`] checks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResultOutcome {
+    /// [`WorkRuntime::record_partial`].
+    Partial,
+    /// [`WorkRuntime::complete`].
+    Complete,
+    /// [`WorkRuntime::abandon`].
+    Abandon,
+}
 
 /// Why index.db cannot supply an exact baseline right now. The caller
 /// retries; nothing here waits, syncs, or runs init.
@@ -467,7 +487,7 @@ impl WorkRuntime {
     ) -> Result<WorkSnapshot, WorkError> {
         self.finish(
             work_item,
-            &[WorkItemStatus::Active],
+            &COMPLETE_FROM,
             WorkItemStatus::Completed,
             WorkResultStatus::Completed,
             observation,
@@ -484,12 +504,7 @@ impl WorkRuntime {
     ) -> Result<WorkSnapshot, WorkError> {
         self.finish(
             work_item,
-            &[
-                WorkItemStatus::Open,
-                WorkItemStatus::Active,
-                WorkItemStatus::Blocked,
-                WorkItemStatus::Paused,
-            ],
+            &ABANDON_FROM,
             WorkItemStatus::Abandoned,
             WorkResultStatus::Abandoned,
             observation,
@@ -613,6 +628,32 @@ impl WorkRuntime {
     /// not-ready Workspace leaves no OPEN WorkItem behind.
     pub fn check_baseline_ready(&self) -> Result<(), WorkError> {
         self.baseline_observation().map(|_| ())
+    }
+
+    /// The status check the `outcome` write makes, writing nothing: a
+    /// caller that runs something before the write (#52 verification)
+    /// checks this first. The write itself still checks again.
+    pub fn check_result_allowed(
+        &self,
+        work_item: WorkItemId,
+        outcome: ResultOutcome,
+    ) -> Result<(), WorkError> {
+        let (from, next) = match outcome {
+            ResultOutcome::Partial => return self.started_state(work_item).map(|_| ()),
+            ResultOutcome::Complete => (&COMPLETE_FROM[..], WorkItemStatus::Completed),
+            ResultOutcome::Abandon => (&ABANDON_FROM[..], WorkItemStatus::Abandoned),
+        };
+        let item = self.require_item(work_item)?;
+        if from.contains(&item.status) {
+            Ok(())
+        } else {
+            // The reason `transition_work_item` gives for the same refusal.
+            Err(KnowledgeError::InvalidTransition {
+                what: "work_item",
+                reason: format!("{} -> {}", item.status.as_str(), next.as_str()),
+            }
+            .into())
+        }
     }
 
     /// The clock plus the stable generation built for exactly its
