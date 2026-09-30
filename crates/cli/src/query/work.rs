@@ -137,7 +137,8 @@ fn exit_for(error: &WorkErrorWire) -> Exit {
         }
         WorkErrorWire::WorkItemNotFound { .. }
         | WorkErrorWire::InvalidTransition { .. }
-        | WorkErrorWire::WorkspaceNotReady(_) => Exit::QueryOrDeliveryFailure,
+        | WorkErrorWire::WorkspaceNotReady(_)
+        | WorkErrorWire::GitObservation(_) => Exit::QueryOrDeliveryFailure,
         WorkErrorWire::Internal { .. } => Exit::DaemonOrProtocolFailure,
     }
 }
@@ -154,6 +155,9 @@ fn describe(error: &WorkErrorWire) -> String {
         WorkErrorWire::WorkspaceNotReady(reason) => {
             format!("Workspace cannot take a baseline yet ({reason:?}); nothing was written, retry")
         }
+        WorkErrorWire::GitObservation(reason) => format!(
+            "Git observation failed ({reason:?}); nothing was written. Retry, or send an explicit \"Unknown\""
+        ),
         WorkErrorWire::Internal { message } => message.clone(),
     }
 }

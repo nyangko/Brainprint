@@ -17,8 +17,10 @@ pub const PACKAGE_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// decode. Compatibility stays strict and symmetric -- an older client and
 /// a newer daemon (or the reverse) reject each other explicitly rather
 /// than negotiating or guessing. Bumped to 4 by #50: `Request`/`Response`
-/// gained the `Work` variant, which a v3 peer cannot decode.
-pub const PROTOCOL_VERSION: u32 = 4;
+/// gained the `Work` variant, which a v3 peer cannot decode. Bumped to 5
+/// by #51: `GitObservationWire::Observe` and
+/// `WorkErrorWire::GitObservation` are variants a v4 peer cannot decode.
+pub const PROTOCOL_VERSION: u32 = 5;
 
 /// Minimal build identity that benchmark and runtime boundaries can record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

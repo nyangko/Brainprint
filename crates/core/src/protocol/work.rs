@@ -62,7 +62,14 @@ pub struct NewWorkItemWire {
 pub enum GitObservationWire {
     Unknown,
     Clean,
-    Dirty { entries: Vec<GitEntryWire> },
+    Dirty {
+        entries: Vec<GitEntryWire>,
+    },
+    /// #51: the daemon reads the Workspace's Git state itself (v5). On a
+    /// Start it also supplies `head`, so the caller's `head` must be empty.
+    /// Two consecutive status reads must agree; that is not an atomic
+    /// snapshot of the work tree.
+    Observe,
 }
 
 /// Mirrors `brainprint_engine::git_observation::GitEntry`. `path` is
@@ -161,6 +168,8 @@ pub enum WorkErrorWire {
     },
     /// Retryable: nothing was written.
     WorkspaceNotReady(WorkNotReadyWire),
+    /// #51: `Observe` produced no observation; nothing was written.
+    GitObservation(GitObservationFailureWire),
     /// A safe summary; storage detail stays in the daemon log.
     Internal {
         message: String,
@@ -176,4 +185,24 @@ pub enum WorkNotReadyWire {
         stable_basis: String,
         current: String,
     },
+}
+
+/// Mirrors `brainprint_engine::git_status::GitStatusError`, without the
+/// daemon-log-only detail (stderr, spawn error text).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum GitObservationFailureWire {
+    NotAGitWorkspace,
+    /// Git's work tree is not the Workspace root.
+    WorkspaceBoundaryMismatch,
+    GitUnavailable,
+    GitFailed {
+        exit_code: Option<i32>,
+    },
+    Timeout,
+    OutputTooLarge,
+    TooManyEntries,
+    UnrepresentablePath,
+    Unparsable,
+    /// The two status reads differed. Retryable.
+    ChangedDuringObservation,
 }

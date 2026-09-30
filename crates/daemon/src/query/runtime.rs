@@ -166,6 +166,28 @@ impl DaemonQueryRuntime {
         }
     }
 
+    /// The registered root of `workspace` (#51: where Git is observed),
+    /// read on a blocking thread.
+    pub async fn workspace_root(&self, workspace: WorkspaceId) -> Result<PathBuf, QueryErrorWire> {
+        use brainprint_engine::{
+            query_surface::{CoreError, NotInitialized},
+            registry::GlobalRegistry,
+        };
+        let global_db = self.global_db.clone();
+        let found = tokio::task::spawn_blocking(move || {
+            GlobalRegistry::open(&global_db).and_then(|registry| registry.get_workspace(workspace))
+        })
+        .await;
+        match found {
+            Ok(Ok(Some(entry))) => Ok(entry.locator),
+            Ok(Ok(None)) => Err(convert_out::core_error(CoreError::NotInitialized(
+                NotInitialized::WorkspaceNotRegistered,
+            ))),
+            Ok(Err(error)) => Err(convert_out::core_error(CoreError::Registry(error))),
+            Err(error) => Err(convert_out::daemon_internal("workspace_root", &error)),
+        }
+    }
+
     fn handle_for(&self, workspace: WorkspaceId) -> WorkerHandle {
         let mut workers = self.workers.lock().expect("worker map mutex poisoned");
         if let Some(handle) = workers.get(&workspace) {

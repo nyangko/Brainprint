@@ -89,7 +89,12 @@ pub async fn handle_query_ack(runtime: &DaemonQueryRuntime, request: QueryAckReq
 /// on that Workspace's worker.
 pub async fn handle_work(runtime: &DaemonQueryRuntime, request: WorkRequest) -> Response {
     let response = match resolve(runtime, request.workspace).await {
-        Ok(workspace_id) => runtime.work(workspace_id, request.operation).await,
+        Ok(workspace_id) => {
+            match super::observe::resolve(runtime, workspace_id, request.operation).await {
+                Ok(operation) => runtime.work(workspace_id, operation).await,
+                Err(failure) => WorkResponse::Failed(failure),
+            }
+        }
         Err(error) => WorkResponse::Failed(WorkFailureWire {
             error: WorkErrorWire::Workspace(error),
             created_work_item: None,

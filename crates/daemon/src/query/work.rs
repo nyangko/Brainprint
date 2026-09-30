@@ -77,7 +77,7 @@ fn start_work(
     start: WorkStartWire,
 ) -> Result<WorkResponse, WorkFailureWire> {
     let (dirty, entries) =
-        git_observation::dirty_observation(&git_observation_in(start.git)).map_err(observation)?;
+        git_observation::dirty_observation(&git_observation_in(start.git)?).map_err(observation)?;
     let runtime = open(workspace, paths)?;
     // Opened only after `WorkRuntime::open` proved index.db exists and is
     // bound: `ResourceStore::open` would create a missing file.
@@ -133,7 +133,7 @@ fn record_result(
     input: WorkResultInputWire,
 ) -> Result<WorkResponse, WorkFailureWire> {
     let (remaining_dirty, _) =
-        git_observation::dirty_observation(&git_observation_in(input.git)).map_err(observation)?;
+        git_observation::dirty_observation(&git_observation_in(input.git)?).map_err(observation)?;
     let change_set_fingerprint = input
         .change_set
         .map(|entries| {
@@ -273,14 +273,21 @@ fn internal_message(message: &str) -> WorkErrorWire {
 
 // --------------------------------------------------------- conversions
 
-fn git_observation_in(observation: GitObservationWire) -> GitObservation {
-    match observation {
+/// `Observe` is replaced by the handler's own observation (#51) before
+/// the write is dispatched; one reaching here is never stored as-is.
+fn git_observation_in(observation: GitObservationWire) -> Result<GitObservation, WorkFailureWire> {
+    Ok(match observation {
         GitObservationWire::Unknown => GitObservation::Unknown,
         GitObservationWire::Clean => GitObservation::Clean,
         GitObservationWire::Dirty { entries } => {
             GitObservation::Dirty(entries.into_iter().map(git_entry_in).collect())
         }
-    }
+        GitObservationWire::Observe => {
+            return Err(failure(internal_message(
+                "an Observe request reached the write unresolved",
+            )));
+        }
+    })
 }
 
 fn git_entry_in(entry: GitEntryWire) -> GitEntry {

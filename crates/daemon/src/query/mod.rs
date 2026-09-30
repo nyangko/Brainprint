@@ -10,6 +10,7 @@ mod convert_in;
 mod convert_out;
 mod handler;
 pub mod lifecycle;
+mod observe;
 mod runtime;
 pub mod semantic;
 #[cfg(test)]

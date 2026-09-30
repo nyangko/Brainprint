@@ -756,8 +756,9 @@ async fn a_storage_failure_is_internal_and_writes_nothing() {
 // --------------------------------------------------------------- version
 
 #[tokio::test]
-async fn protocol_version_is_4() {
-    assert_eq!(PROTOCOL_VERSION, 4);
+async fn the_protocol_version_is_pinned() {
+    // #50 introduced v4; #51 bumped it to 5 (`Observe`).
+    assert_eq!(PROTOCOL_VERSION, 5);
 }
 
 /// Old client → new daemon: refused at handshake; a Work request sent
@@ -778,7 +779,7 @@ async fn a_v3_client_is_refused_and_its_work_request_is_not_served() {
     assert_eq!(
         handshake(&mut connection, 3).await,
         Response::Handshake(HandshakeResponse::VersionMismatch {
-            server_protocol_version: 4,
+            server_protocol_version: PROTOCOL_VERSION,
             client_protocol_version: 3,
         })
     );
@@ -846,12 +847,12 @@ async fn a_v4_client_stops_at_a_v3_daemon() {
             error,
             brainprint_daemon::client::ClientError::VersionMismatch {
                 server_protocol_version: 3,
-                client_protocol_version: 4,
+                client_protocol_version: PROTOCOL_VERSION,
             }
         ),
         "{error:?}"
     );
-    assert_eq!(fake_v3.await.expect("fake daemon"), 4);
+    assert_eq!(fake_v3.await.expect("fake daemon"), PROTOCOL_VERSION);
 }
 
 // ---------------------------------------------------------------- static
