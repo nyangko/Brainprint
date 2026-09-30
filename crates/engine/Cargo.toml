@@ -8,6 +8,7 @@ license.workspace = true
 
 [dependencies]
 brainprint-core.workspace = true
+command-group.workspace = true
 notify.workspace = true
 regex.workspace = true
 rusqlite.workspace = true
@@ -25,3 +26,9 @@ tree-sitter-typescript.workspace = true
 
 [lints]
 workspace = true
+
+# #52: the test binary is its own portable helper; libtest would write
+# to the helper's stdout.
+[[test]]
+name = "process_runner"
+harness = false

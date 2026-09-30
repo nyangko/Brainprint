@@ -30,6 +30,9 @@ rmcp = { version = "=3.4.0", default-features = false }
 # hand-rolled match parser (three flat commands) does not scale to this;
 # clap's derive API is the standard tool for exactly this shape.
 clap = { version = "4", features = ["derive"] }
+# #52: process group (unix) / Job Object (Windows) primitive for the
+# common bounded runner, so Brainprint code stays free of `unsafe`.
+command-group = "=5.0.1"
 rusqlite = { version = "0.40", features = ["bundled"] }
 serde = { version = "1.0", features = ["derive"] }
 notify = "8"

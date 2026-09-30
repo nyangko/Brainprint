@@ -12,19 +12,21 @@
 //! The fingerprint is #50's entry-level one: further content edits to an
 //! already-dirty path do not change it.
 
+#[cfg(test)]
+use std::time::Instant;
 use std::{
     ffi::OsString,
     fs,
-    io::Read,
     path::Path,
-    process::{Command, ExitStatus, Stdio},
-    sync::mpsc,
-    thread,
-    time::{Duration, Instant},
+    process::{Command, Stdio},
+    time::Duration,
 };
 
-use crate::git_observation::{
-    self, GIT_ENTRY_BOUND, GitEntry, GitEntryStatus, GitObservation, GitObservationError,
+use crate::{
+    git_observation::{
+        self, GIT_ENTRY_BOUND, GitEntry, GitEntryStatus, GitObservation, GitObservationError,
+    },
+    process_runner::{self, Cancel, Capture, RunEnd},
 };
 
 /// Wall time per `git` call.
@@ -344,88 +346,42 @@ fn plain_path(path: &Path) -> std::path::PathBuf {
         .map_or_else(|| path.to_path_buf(), Into::into)
 }
 
-/// Run with a wall-time bound and a stdout cap. On timeout the process is
-/// killed; past the cap reading stops and the process is killed.
+/// Run on the common bounded runner (#52) with a wall-time bound and a
+/// stdout cap. Past the cap, or at the deadline, the process group is
+/// terminated.
 fn run_bounded(
     mut command: Command,
     timeout: Duration,
     cap: usize,
 ) -> Result<Vec<u8>, GitStatusError> {
-    let mut child = command
-        .spawn()
-        .map_err(|error| GitStatusError::GitUnavailable(error.to_string()))?;
-    let stdout = child.stdout.take().expect("piped stdout");
-    let stderr = child.stderr.take().expect("piped stderr");
-    // Readers report over channels: a descendant that inherited a pipe can
-    // keep it open after the child is gone, so no wait below is unbounded.
-    let (out_tx, out_rx) = mpsc::channel();
-    let (err_tx, err_rx) = mpsc::channel();
-    thread::spawn(move || {
-        let _ = out_tx.send(read_capped(stdout, cap, true));
-    });
-    thread::spawn(move || {
-        let _ = err_tx.send(read_capped(stderr, STDERR_CAP, false));
-    });
-    let deadline = Instant::now() + timeout;
-    // Past the cap the reader drops the pipe, so git fails its next write
-    // and exits; only a hung process reaches the deadline.
-    let status: Option<ExitStatus> = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break Some(status),
-            Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(5)),
-            Ok(None) | Err(_) => break None,
-        }
-    };
-    let Some(status) = status else {
-        let _ = child.kill();
-        let _ = child.wait();
-        // ponytail: readers still blocked on a pipe a descendant holds are
-        // left detached; they end when that pipe closes.
-        return Err(match out_rx.try_recv() {
-            Ok((_, true)) => GitStatusError::OutputTooLarge,
-            _ => GitStatusError::Timeout,
-        });
+    let output = process_runner::run(
+        &mut command,
+        timeout,
+        &Cancel::default(),
+        Capture::Limit(cap),
+        Capture::Keep(STDERR_CAP),
+    )
+    .map_err(|error| GitStatusError::GitUnavailable(error.to_string()))?;
+    let status = match output.end {
+        RunEnd::Exited(status) => status,
+        RunEnd::OutputLimit => return Err(GitStatusError::OutputTooLarge),
+        RunEnd::TimedOut | RunEnd::Cancelled => return Err(GitStatusError::Timeout),
     };
     // Output is complete only at EOF, which a surviving descendant can
     // withhold: the same deadline bounds that wait.
-    let remaining = || deadline.saturating_duration_since(Instant::now());
-    let (stdout, overflowed) = out_rx
-        .recv_timeout(remaining())
-        .map_err(|_| GitStatusError::Timeout)?;
-    if overflowed {
-        return Err(GitStatusError::OutputTooLarge);
+    if !output.stdout.complete {
+        return Err(GitStatusError::Timeout);
     }
     if !status.success() {
         // stderr is log detail only; a withheld one is simply empty.
-        let (stderr, _) = err_rx.recv_timeout(remaining()).unwrap_or_default();
         return Err(GitStatusError::GitFailed {
             exit_code: status.code(),
-            stderr: String::from_utf8_lossy(&stderr).trim().to_owned(),
+            stderr: String::from_utf8_lossy(&output.stderr.kept)
+                .trim()
+                .to_owned(),
         });
     }
-    Ok(stdout)
-}
-
-/// Read at most `cap` bytes. `stop` returns at the cap (dropping the pipe
-/// so the writer fails); otherwise the rest is drained and discarded.
-fn read_capped(mut reader: impl Read, cap: usize, stop: bool) -> (Vec<u8>, bool) {
-    let mut kept = Vec::new();
-    let mut overflowed = false;
-    let mut chunk = [0_u8; 8192];
-    loop {
-        let read = match reader.read(&mut chunk) {
-            Ok(0) | Err(_) => return (kept, overflowed),
-            Ok(read) => read,
-        };
-        let room = cap - kept.len().min(cap);
-        kept.extend_from_slice(&chunk[..read.min(room)]);
-        if read > room {
-            overflowed = true;
-            if stop {
-                return (kept, overflowed);
-            }
-        }
-    }
+    Ok(output.stdout.kept)
 }
 
 #[cfg(test)]
