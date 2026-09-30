@@ -7,7 +7,8 @@
 //! `exit:<code>`, `sleep:<ms>`, `out:<bytes>`, `err:<bytes>`,
 //! `mark:<path>` (create a file), `await:<path>` (wait until it exists),
 //! `spawn [ ops… ]` (a child sharing our stdout/stderr, not waited for),
-//! `detach [ ops… ]` (the same with stdio null).
+//! `detach [ ops… ]` (the same with stdio null; on Windows std still
+//! passes it our inheritable pipe handles, so it holds the pipes anyway).
 
 use std::{
     fs,
@@ -308,12 +309,19 @@ fn descendants_left_after_a_normal_exit_are_ended() {
             &format!("await:{started_marker}"),
             "exit:0",
         ],
-        Duration::from_secs(20),
+        DEADLINE,
         &Cancel::default(),
     );
     assert!(matches!(output.end, RunEnd::Exited(status) if status.success()));
-    assert!(output.stdout.complete && output.stderr.complete);
-    assert_quick(started, Duration::from_secs(5));
+    // unix: the descendant does not hold the pipes, so output completes
+    // at the parent's exit. Windows: it inherited them, so output stays
+    // incomplete until the deadline. Either way the group/job is ended.
+    let complete = cfg!(unix);
+    assert_eq!(
+        (output.stdout.complete, output.stderr.complete),
+        (complete, complete)
+    );
+    assert_quick(started, DEADLINE + Duration::from_secs(1));
     assert_ended(&started_marker, &late);
 }
 
