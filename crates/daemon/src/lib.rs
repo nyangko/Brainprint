@@ -10,6 +10,7 @@
 //! implemented. Watcher, semantic backend, MCP, Command Intelligence,
 //! doctor/rebuild/uninit are out of scope here.
 
+pub mod artifacts;
 pub mod client;
 pub mod handlers;
 pub mod query;

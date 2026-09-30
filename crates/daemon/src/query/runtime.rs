@@ -34,6 +34,8 @@ use brainprint_engine::{
 };
 use tokio::sync::oneshot;
 
+use crate::artifacts::ArtifactStore;
+
 use super::{
     convert_in, convert_out,
     lifecycle::{LifecycleStats, WatchFactory, WorkspaceLifecycle, notify_watch_factory},
@@ -111,6 +113,9 @@ pub struct DaemonQueryRuntime {
     workers: Mutex<HashMap<WorkspaceId, WorkerHandle>>,
     /// #52: running verifications (never inside a worker).
     verification_slots: verify::Slots,
+    /// #53: the one raw-output store of this daemon (never inside a
+    /// worker either).
+    artifact_store: ArtifactStore,
 }
 
 impl std::fmt::Debug for DaemonQueryRuntime {
@@ -138,6 +143,7 @@ impl DaemonQueryRuntime {
             watch_factory,
             workers: Mutex::new(HashMap::new()),
             verification_slots: verify::Slots::default(),
+            artifact_store: ArtifactStore::new(&global_paths.runtime_root()),
         }
     }
 
@@ -189,6 +195,13 @@ impl DaemonQueryRuntime {
             Ok(Err(error)) => Err(convert_out::core_error(CoreError::Registry(error))),
             Err(error) => Err(convert_out::daemon_internal("workspace_root", &error)),
         }
+    }
+
+    /// #53: the daemon-wide raw-output store; inert until the server
+    /// owns the singleton.
+    #[must_use]
+    pub fn artifacts(&self) -> &ArtifactStore {
+        &self.artifact_store
     }
 
     pub(super) fn verification_slots(&self) -> &verify::Slots {

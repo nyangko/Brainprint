@@ -132,6 +132,11 @@ impl Server {
             Err(source) => return Err(source.into()),
         };
 
+        // #53: only now, owning the singleton, may this daemon purge the
+        // previous one's raw artifacts -- a second instance that found a
+        // live daemon has already returned `AlreadyRunning` above.
+        query_runtime.artifacts().initialize_after_lock()?;
+
         Ok(Self {
             listener,
             endpoint,
@@ -159,10 +164,11 @@ impl Server {
         }
     }
 
-    /// Remove this instance's runtime artifacts (socket/pipe file, lock
-    /// file). Call after a clean shutdown; a crash simply leaves them for
+    /// Remove this instance's runtime artifacts (raw-output store,
+    /// socket/pipe file, lock file). Call after a clean shutdown; a crash simply leaves them for
     /// the next start's stale-recovery pass (#13 task 4 §14-15).
     pub fn cleanup(&self) {
+        self.query_runtime.artifacts().shutdown();
         #[cfg(unix)]
         {
             let _ = std::fs::remove_file(&self.endpoint.socket_path);
