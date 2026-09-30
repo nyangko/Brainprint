@@ -16,8 +16,9 @@ pub const PACKAGE_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// (`Full` or `Reuse`, never both for one slot), which a v2 peer cannot
 /// decode. Compatibility stays strict and symmetric -- an older client and
 /// a newer daemon (or the reverse) reject each other explicitly rather
-/// than negotiating or guessing.
-pub const PROTOCOL_VERSION: u32 = 3;
+/// than negotiating or guessing. Bumped to 4 by #50: `Request`/`Response`
+/// gained the `Work` variant, which a v3 peer cannot decode.
+pub const PROTOCOL_VERSION: u32 = 4;
 
 /// Minimal build identity that benchmark and runtime boundaries can record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -16,6 +16,7 @@ pub mod evidence;
 pub mod extract;
 pub mod gaps;
 pub mod generation;
+pub mod git_observation;
 pub mod graph;
 pub mod graph_lifecycle;
 pub mod identity;

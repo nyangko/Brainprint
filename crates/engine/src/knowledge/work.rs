@@ -331,18 +331,7 @@ impl WorkRuntime {
             }
             .into());
         }
-        let observed = self.observe()?;
-        let (incarnation, generation_no) = match (&observed.stable, observed.matching_generation())
-        {
-            (_, Some(reference)) => reference,
-            (None, None) => return Err(WorkError::WorkspaceNotReady(NotReady::NoStableGeneration)),
-            (Some(stable), None) => {
-                return Err(WorkError::WorkspaceNotReady(NotReady::StableBehind {
-                    stable_basis: stable.basis_workspace_revision.clone(),
-                    current: observed.revision,
-                }));
-            }
-        };
+        let (observed, (incarnation, generation_no)) = self.baseline_observation()?;
 
         let transaction = self.store.begin()?;
         self.store.transition_work_item(
@@ -618,6 +607,27 @@ impl WorkRuntime {
     }
 
     // ---- internals ----
+
+    /// The same index.db check [`Self::start`] makes, writing nothing: a
+    /// caller that must create the WorkItem first checks this before, so a
+    /// not-ready Workspace leaves no OPEN WorkItem behind.
+    pub fn check_baseline_ready(&self) -> Result<(), WorkError> {
+        self.baseline_observation().map(|_| ())
+    }
+
+    /// The clock plus the stable generation built for exactly its
+    /// revision, or why there is none yet.
+    fn baseline_observation(&self) -> Result<(Observed, (IndexIncarnationId, i64)), WorkError> {
+        let observed = self.observe()?;
+        match (&observed.stable, observed.matching_generation()) {
+            (_, Some(reference)) => Ok((observed, reference)),
+            (None, None) => Err(WorkError::WorkspaceNotReady(NotReady::NoStableGeneration)),
+            (Some(stable), None) => Err(WorkError::WorkspaceNotReady(NotReady::StableBehind {
+                stable_basis: stable.basis_workspace_revision.clone(),
+                current: observed.revision,
+            })),
+        }
+    }
 
     fn observe(&self) -> Result<Observed, WorkError> {
         let revision = self

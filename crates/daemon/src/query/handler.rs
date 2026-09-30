@@ -7,9 +7,10 @@ use brainprint_core::{
     protocol::{
         Response,
         query::{
-            AckStatusWire, QueryAckRequest, QueryAckResponse, QueryOutcomeWire, QueryRequest,
-            QueryResponse, WorkspaceSelectorWire,
+            AckStatusWire, QueryAckRequest, QueryAckResponse, QueryErrorWire, QueryOutcomeWire,
+            QueryRequest, QueryResponse, WorkspaceSelectorWire,
         },
+        work::{WorkErrorWire, WorkFailureWire, WorkRequest, WorkResponse},
     },
 };
 
@@ -25,17 +26,24 @@ fn unresolved_workspace_sentinel() -> WorkspaceId {
     WorkspaceId::from_bytes([0; 16])
 }
 
+async fn resolve(
+    runtime: &DaemonQueryRuntime,
+    selector: WorkspaceSelectorWire,
+) -> Result<WorkspaceId, QueryErrorWire> {
+    match selector {
+        WorkspaceSelectorWire::Id { workspace_id } => Ok(workspace_id),
+        WorkspaceSelectorWire::Locator { path } => {
+            runtime.resolve_workspace(PathBuf::from(path)).await
+        }
+    }
+}
+
 pub async fn handle_query(runtime: &DaemonQueryRuntime, request: QueryRequest) -> Response {
     let echo_id = match &request.workspace {
         WorkspaceSelectorWire::Id { workspace_id } => Some(*workspace_id),
         WorkspaceSelectorWire::Locator { .. } => None,
     };
-    let workspace_id = match request.workspace {
-        WorkspaceSelectorWire::Id { workspace_id } => Ok(workspace_id),
-        WorkspaceSelectorWire::Locator { path } => {
-            runtime.resolve_workspace(PathBuf::from(path)).await
-        }
-    };
+    let workspace_id = resolve(runtime, request.workspace).await;
 
     let workspace_id = match workspace_id {
         Ok(id) => id,
@@ -75,4 +83,17 @@ pub async fn handle_query_ack(runtime: &DaemonQueryRuntime, request: QueryAckReq
         request_id: request.request_id,
         status,
     })
+}
+
+/// #50: resolve the Workspace exactly as a query does, then run the write
+/// on that Workspace's worker.
+pub async fn handle_work(runtime: &DaemonQueryRuntime, request: WorkRequest) -> Response {
+    let response = match resolve(runtime, request.workspace).await {
+        Ok(workspace_id) => runtime.work(workspace_id, request.operation).await,
+        Err(error) => WorkResponse::Failed(WorkFailureWire {
+            error: WorkErrorWire::Workspace(error),
+            created_work_item: None,
+        }),
+    };
+    Response::Work(response)
 }

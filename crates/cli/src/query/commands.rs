@@ -71,6 +71,12 @@ pub enum Cli {
         mode: KnowledgeCommand,
     },
     Structure(StructureArgs),
+    /// #50: record caller-observed Git state in the Working State. Runs
+    /// no Git.
+    Work {
+        #[command(subcommand)]
+        mode: super::WorkCommand,
+    },
 }
 
 #[derive(Debug, Subcommand)]

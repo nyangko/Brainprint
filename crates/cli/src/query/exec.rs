@@ -39,7 +39,7 @@ impl From<Exit> for i32 {
     }
 }
 
-fn exit_for_code(code: QueryErrorCodeWire) -> Exit {
+pub(super) fn exit_for_code(code: QueryErrorCodeWire) -> Exit {
     match code {
         QueryErrorCodeWire::InvalidRequest => Exit::CliSyntax,
         QueryErrorCodeWire::NotInitialized
@@ -57,7 +57,7 @@ fn exit_for_code(code: QueryErrorCodeWire) -> Exit {
     }
 }
 
-fn absolute_workspace(path: &str) -> String {
+pub(super) fn absolute_workspace(path: &str) -> String {
     std::path::Path::new(path)
         .canonicalize()
         .or_else(|_| std::env::current_dir().map(|cwd| cwd.join(path)))

@@ -552,7 +552,7 @@ fn fingerprint(
 /// Length-prefixed field encoding: no value can be confused with a
 /// different field, a different boundary, or a value containing the
 /// separator.
-fn field(hasher: &mut Sha256, name: &str, value: &[u8]) {
+pub(crate) fn field(hasher: &mut Sha256, name: &str, value: &[u8]) {
     hasher.update(name.as_bytes());
     hasher.update(b":");
     hasher.update(value.len().to_string().as_bytes());
@@ -562,7 +562,7 @@ fn field(hasher: &mut Sha256, name: &str, value: &[u8]) {
 }
 
 /// `Some("")` and `None` must not hash alike, so presence is its own byte.
-fn optional_field(hasher: &mut Sha256, name: &str, value: Option<&str>) {
+pub(crate) fn optional_field(hasher: &mut Sha256, name: &str, value: Option<&str>) {
     match value {
         Some(value) => {
             hasher.update(b"+");

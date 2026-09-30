@@ -10,9 +10,11 @@ mod knowledge;
 mod render;
 mod target;
 mod vocab;
+mod work;
 
 pub use commands::Cli;
 pub use exec::Exit;
+pub use work::WorkCommand;
 
 /// Dispatches every `Cli` variant except `Install`/`Status`/`Init`, which
 /// `main.rs` still handles directly (unchanged Task 11 behavior other
@@ -26,6 +28,7 @@ pub async fn run_query_command(cli: Cli) -> Exit {
         Cli::Context { mode } => exec::run_context(mode).await,
         Cli::Knowledge { mode } => exec::run_knowledge(mode).await,
         Cli::Structure(args) => exec::run_structure(args).await,
+        Cli::Work { mode } => work::run_work(mode).await,
         Cli::Install | Cli::Status | Cli::Init { .. } => {
             unreachable!("main.rs handles Install/Status/Init before dispatching here")
         }

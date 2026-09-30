@@ -115,6 +115,8 @@ pub enum Request {
     Query(QueryRequest),
     /// #24 Task 11: acknowledge a `Query` response's pending delivery.
     QueryAck(QueryAckRequest),
+    /// #50 (I6 task 1): a caller-observed Working State write.
+    Work(super::work::WorkRequest),
 }
 
 /// An envelope for every response the daemon may send.
@@ -133,6 +135,7 @@ pub enum Response {
     Error(ErrorResponse),
     Query(QueryResponse),
     QueryAck(QueryAckResponse),
+    Work(super::work::WorkResponse),
 }
 
 /// A coarse, stable classification a client can act on without parsing

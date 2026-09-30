@@ -117,7 +117,8 @@ pub async fn handshake(
         | Response::Install(_)
         | Response::Init(_)
         | Response::Query(_)
-        | Response::QueryAck(_) => Err(ClientError::UnexpectedResponse),
+        | Response::QueryAck(_)
+        | Response::Work(_) => Err(ClientError::UnexpectedResponse),
     }
 }
 
@@ -140,7 +141,8 @@ pub async fn status(connection: &mut ClientConnection) -> Result<StatusResponse,
         | Response::Install(_)
         | Response::Init(_)
         | Response::Query(_)
-        | Response::QueryAck(_) => Err(ClientError::UnexpectedResponse),
+        | Response::QueryAck(_)
+        | Response::Work(_) => Err(ClientError::UnexpectedResponse),
     }
 }
 

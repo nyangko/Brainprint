@@ -319,6 +319,47 @@ fn first_activation_needs_a_current_stable_generation() {
 }
 
 #[test]
+fn the_readiness_check_agrees_with_start_and_writes_nothing() {
+    // #50: checked before creating a WorkItem, so it must say exactly what
+    // `start` would.
+    let fixture = Fixture::new("readiness-check");
+    let runtime = fixture.runtime();
+    assert!(matches!(
+        runtime.check_baseline_ready(),
+        Err(WorkError::WorkspaceNotReady(NotReady::ClockNotBootstrapped))
+    ));
+    fixture.advance("A");
+    assert!(matches!(
+        runtime.check_baseline_ready(),
+        Err(WorkError::WorkspaceNotReady(NotReady::NoStableGeneration))
+    ));
+    fixture.publish("A");
+    fixture.advance("B");
+    assert!(matches!(
+        runtime.check_baseline_ready(),
+        Err(WorkError::WorkspaceNotReady(NotReady::StableBehind { stable_basis, current }))
+            if stable_basis == "A" && current == "B"
+    ));
+    fixture.publish("B");
+    runtime.check_baseline_ready().expect("ready at B");
+    // Nothing was created or started by the checks.
+    for status in [WorkItemStatus::Open, WorkItemStatus::Active] {
+        assert!(
+            WorkspaceKnowledgeStore::open(&fixture.paths.workspace_db)
+                .expect("workspace.db")
+                .list_work_items(status, 10)
+                .expect("list")
+                .is_empty()
+        );
+    }
+    let uid = started(&runtime, "g");
+    assert_eq!(
+        runtime.snapshot(uid, None).expect("snapshot").item.status,
+        WorkItemStatus::Active
+    );
+}
+
+#[test]
 fn first_activation_stores_the_exact_observed_baseline() {
     // 8.
     let fixture = Fixture::new("exact-baseline");

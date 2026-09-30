@@ -22,7 +22,10 @@ use std::{
 
 use brainprint_core::{
     WorkspaceId,
-    protocol::query::{CorrelationWire, QueryErrorWire, QueryOperationWire, QueryResultWire},
+    protocol::{
+        query::{CorrelationWire, QueryErrorWire, QueryOperationWire, QueryResultWire},
+        work::{WorkOperationWire, WorkResponse},
+    },
 };
 use brainprint_engine::{
     paths::GlobalPaths,
@@ -35,6 +38,7 @@ use super::{
     convert_in, convert_out,
     lifecycle::{LifecycleStats, WatchFactory, WorkspaceLifecycle, notify_watch_factory},
     semantic::{SemanticStats, WorkspaceSemantic},
+    work,
 };
 
 /// How often an idle worker journals buffered watcher events: the
@@ -74,6 +78,12 @@ enum Job {
     Ack {
         ack_token: String,
         reply: oneshot::Sender<AckOutcome>,
+    },
+    /// #50: a Working State write, serialized with this Workspace's index
+    /// publications so the baseline it reads cannot move underneath it.
+    Work {
+        operation: WorkOperationWire,
+        reply: oneshot::Sender<WorkResponse>,
     },
     /// #38 init: bring the Workspace to structural READY.
     Activate {
@@ -191,6 +201,18 @@ impl DaemonQueryRuntime {
             return Err(worker_gone());
         }
         receiver.await.unwrap_or_else(|_| Err(worker_gone()))
+    }
+
+    /// #50: run a Working State write on `workspace`'s worker.
+    pub async fn work(&self, workspace: WorkspaceId, operation: WorkOperationWire) -> WorkResponse {
+        let handle = self.handle_for(workspace);
+        let (reply, receiver) = oneshot::channel();
+        if handle.jobs.send(Job::Work { operation, reply }).is_err() {
+            return work::internal("workspace worker is gone");
+        }
+        receiver
+            .await
+            .unwrap_or_else(|_| work::internal("workspace worker is gone"))
     }
 
     /// #38: run the Workspace's activation (watcher, baseline or
@@ -381,6 +403,23 @@ fn worker_loop(
             Job::Ack { ack_token, reply } => {
                 let outcome = pending.ack(&ack_token, &mut ledger);
                 let _ = reply.send(outcome);
+            }
+            Job::Work { operation, reply } => {
+                // No freshness recovery here: a baseline is taken only from
+                // a stable generation that is already current (#50).
+                let response = match (&surface, &lifecycle) {
+                    (Err(error), _) => {
+                        work::workspace_error(convert_out::core_error(clone_core_error(error)))
+                    }
+                    (Ok(_), Ok(lifecycle)) => work::run(workspace, lifecycle.root(), operation),
+                    (Ok(_), Err(error)) => {
+                        eprintln!(
+                            "brainprintd: workspace {workspace} runtime unavailable: {error}"
+                        );
+                        work::internal("workspace runtime is unavailable")
+                    }
+                };
+                let _ = reply.send(response);
             }
             Job::Activate { reply } => {
                 // `init` may have repaired the locator (directory move):

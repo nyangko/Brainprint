@@ -3,7 +3,8 @@
 //! [`convert_in`]/[`convert_out`] hold the explicit, bijective wire <->
 //! Core conversions; [`runtime`] owns the per-Workspace worker threads,
 //! `DeliveryLedger` lifetime and pending-acknowledgement state;
-//! [`handler`] dispatches `Request::Query`/`Request::QueryAck` against it.
+//! [`handler`] dispatches `Request::Query`/`Request::QueryAck` against it,
+//! and `Request::Work` (#50) onto the same per-Workspace worker.
 
 mod convert_in;
 mod convert_out;
@@ -13,6 +14,7 @@ mod runtime;
 pub mod semantic;
 #[cfg(test)]
 mod verification;
+mod work;
 
-pub use handler::{handle_query, handle_query_ack};
+pub use handler::{handle_query, handle_query_ack, handle_work};
 pub use runtime::DaemonQueryRuntime;

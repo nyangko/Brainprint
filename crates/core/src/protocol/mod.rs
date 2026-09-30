@@ -19,6 +19,7 @@ pub mod framing;
 pub mod messages;
 pub mod query;
 pub mod transport;
+pub mod work;
 
 pub use endpoint::{EndpointPaths, EndpointResolutionError};
 pub use messages::{

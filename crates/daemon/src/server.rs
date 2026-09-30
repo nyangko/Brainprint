@@ -266,6 +266,9 @@ where
             Request::QueryAck(ack_request) => {
                 crate::query::handle_query_ack(&query_runtime, ack_request).await
             }
+            Request::Work(work_request) => {
+                crate::query::handle_work(&query_runtime, work_request).await
+            }
         };
         protocol::framing::write_message(&mut connection, &response).await?;
     }

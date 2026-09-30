@@ -961,7 +961,7 @@ fn work_item_source_kind_wire(kind: WorkItemSourceKind) -> WorkItemSourceKindWir
     }
 }
 
-fn work_item_status_wire(status: WorkItemStatus) -> WorkItemStatusWire {
+pub(super) fn work_item_status_wire(status: WorkItemStatus) -> WorkItemStatusWire {
     match status {
         WorkItemStatus::Open => WorkItemStatusWire::Open,
         WorkItemStatus::Active => WorkItemStatusWire::Active,
@@ -1015,7 +1015,7 @@ fn dirty_observation_wire(
     }
 }
 
-fn work_result_wire(result: WorkResult) -> WorkResultWire {
+pub(super) fn work_result_wire(result: WorkResult) -> WorkResultWire {
     WorkResultWire {
         work_item: result.work_item,
         result_status: work_result_status_wire(result.result_status),
@@ -1031,7 +1031,7 @@ fn work_result_wire(result: WorkResult) -> WorkResultWire {
     }
 }
 
-fn working_state_wire(state: WorkingState) -> WorkingStateWire {
+pub(super) fn working_state_wire(state: WorkingState) -> WorkingStateWire {
     WorkingStateWire {
         work_item: state.work_item,
         baseline_workspace_revision: state.baseline_workspace_revision,
