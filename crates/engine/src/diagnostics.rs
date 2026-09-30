@@ -8,8 +8,11 @@
 //! the result and normalizes paths against the Workspace.
 //!
 //! Memory: every captured field is held to [`MAX_MESSAGE_BYTES`]. A longer
-//! message is cut (UTF-8 safe) and flagged; any other longer field (path,
-//! code) makes its line a parse miss instead of a cut-short fact.
+//! message is cut (UTF-8 safe) and flagged; a longer path or code makes its
+//! line a parse miss, never a cut-short identity or location.
+//!
+//! Arbitrary output never panics a parser: whatever is not a diagnostic of
+//! the format is a parse miss.
 
 use std::path::Path;
 
@@ -17,15 +20,18 @@ use std::path::Path;
 pub const MAX_DIAGNOSTICS: usize = 64;
 /// UTF-8 bytes of one message; also the bound of every other field.
 pub const MAX_MESSAGE_BYTES: usize = 2 * 1024;
-/// JSON nesting the RustcJson scanner follows (1 KiB of stack); a deeper
-/// line is a parse miss.
+/// A P0 defensive bound, not a schema claim: a line may have at most this
+/// many JSON containers open at once; one more makes it a parse miss.
 const MAX_JSON_DEPTH: usize = 1024;
+/// The longest `:<line>:<column>: ` a PathLineColumn line can carry.
+const MAX_SEPARATOR_BYTES: usize = ":4294967295:4294967295: ".len();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiagnosticFormat {
-    /// Line-delimited cargo JSON (`--message-format=json`, written into
-    /// argv by the caller); `compiler-message` lines only.
-    RustcJson,
+    /// Cargo's line-delimited JSON (`--message-format=json`, written into
+    /// argv by the caller): only `reason: "compiler-message"` envelopes.
+    /// A direct `rustc --error-format=json` diagnostic is a parse miss.
+    CargoCompilerMessageJson,
     /// `<path>:<line>:<column>: <message>`.
     PathLineColumn,
 }
@@ -51,17 +57,27 @@ pub struct Diagnostic {
     pub severity: Severity,
     pub code: Option<String>,
     pub message: String,
-    /// Workspace-relative (`/`-separated) when the file resolves inside
-    /// the Workspace; `None` otherwise.
-    pub path: Option<String>,
+    pub path: DiagnosticPath,
     pub line: Option<u32>,
     pub column: Option<u32>,
     pub stream: Stream,
-    /// The tool named a path that is not a confirmed Workspace file:
-    /// outside it, or not resolvable (a virtual or deleted path). Its text
-    /// is not kept.
-    pub external: bool,
     pub message_truncated: bool,
+}
+
+/// What the path a diagnostic named is, as far as the filesystem shows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DiagnosticPath {
+    /// The diagnostic named no path.
+    Absent,
+    /// An existing file inside the Workspace: its Workspace-relative,
+    /// `/`-separated path.
+    Workspace(String),
+    /// An existing file outside the Workspace; its text is not kept.
+    External,
+    /// A path that does not resolve to an existing file (virtual, deleted,
+    /// missing, a directory): neither inside nor outside is claimed, and
+    /// its text is not kept.
+    Unresolved,
 }
 
 /// `observed == items.len() + deduplicated + omitted`.
@@ -70,9 +86,12 @@ pub struct DiagnosticSummary {
     pub items: Vec<Diagnostic>,
     /// Diagnostics parsed, duplicates included.
     pub observed: u64,
+    /// Occurrences found to be exact duplicates of an item kept at the
+    /// time. Not a global unique count: memory stays bounded, so only the
+    /// kept (at most [`MAX_DIAGNOSTICS`]) items are compared.
     pub deduplicated: u64,
-    /// Beyond [`MAX_DIAGNOSTICS`]. Only kept items are compared for
-    /// duplicates, so a repeat of an omitted one counts here again.
+    /// Occurrences beyond [`MAX_DIAGNOSTICS`], including repeats of an
+    /// item already omitted (it is no longer compared).
     pub omitted: u64,
     /// Lines that are not a diagnostic of the format.
     pub parse_misses: u64,
@@ -103,14 +122,14 @@ pub struct DiagnosticParser {
 
 #[derive(Debug)]
 enum Line {
-    Rustc(Box<RustcLine>),
+    Cargo(Box<CargoLine>),
     Plc(PlcLine),
 }
 
 impl DiagnosticParser {
     pub fn new(format: DiagnosticFormat, stream: Stream) -> Self {
         let line = match format {
-            DiagnosticFormat::RustcJson => Line::Rustc(Box::default()),
+            DiagnosticFormat::CargoCompilerMessageJson => Line::Cargo(Box::default()),
             DiagnosticFormat::PathLineColumn => Line::Plc(PlcLine::default()),
         };
         Self {
@@ -129,7 +148,7 @@ impl DiagnosticParser {
             } else {
                 self.pending = true;
                 match &mut self.line {
-                    Line::Rustc(line) => line.byte(byte),
+                    Line::Cargo(line) => line.byte(byte),
                     Line::Plc(line) => line.byte(byte),
                 }
             }
@@ -156,7 +175,7 @@ impl DiagnosticParser {
     fn end_line(&mut self) {
         self.pending = false;
         let found = match &mut self.line {
-            Line::Rustc(line) => std::mem::take(&mut **line).end(),
+            Line::Cargo(line) => std::mem::take(&mut **line).end(),
             Line::Plc(line) => std::mem::take(line).end(),
         };
         match found {
@@ -235,45 +254,41 @@ pub fn summarize(
     merged.truncate(MAX_DIAGNOSTICS);
     summary.items = merged
         .into_iter()
-        .map(|(stream, found)| {
-            let (path, external) = found
-                .path
-                .as_deref()
-                .map_or((None, false), |raw| workspace_path(raw, root, base));
-            Diagnostic {
-                severity: found.severity,
-                code: found.code,
-                message: found.message,
-                path,
-                line: found.line,
-                column: found.column,
-                stream,
-                external,
-                message_truncated: found.message_truncated,
-            }
+        .map(|(stream, found)| Diagnostic {
+            severity: found.severity,
+            code: found.code,
+            message: found.message,
+            path: resolve(found.path.as_deref(), root, base),
+            line: found.line,
+            column: found.column,
+            stream,
+            message_truncated: found.message_truncated,
         })
         .collect();
     summary
 }
 
-/// `(Some(relative), false)` only when the file exists inside `root`.
-fn workspace_path(raw: &str, root: &Path, base: &Path) -> (Option<String>, bool) {
-    let Ok(resolved) = std::fs::canonicalize(base.join(raw)) else {
-        return (None, true);
+fn resolve(raw: Option<&str>, root: &Path, base: &Path) -> DiagnosticPath {
+    let Some(raw) = raw else {
+        return DiagnosticPath::Absent;
     };
+    let Ok(resolved) = std::fs::canonicalize(base.join(raw)) else {
+        return DiagnosticPath::Unresolved;
+    };
+    if !resolved.is_file() {
+        return DiagnosticPath::Unresolved;
+    }
     let Ok(relative) = resolved.strip_prefix(root) else {
-        return (None, true);
+        return DiagnosticPath::External;
     };
     let parts: Option<Vec<&str>> = relative
         .components()
         .map(|component| component.as_os_str().to_str())
         .collect();
-    match parts {
-        // The root itself names no file.
-        Some(parts) if !parts.is_empty() => (Some(parts.join("/")), false),
-        Some(_) => (None, false),
-        None => (None, true),
-    }
+    // A name that is not UTF-8 has no Workspace path text.
+    parts.map_or(DiagnosticPath::Unresolved, |parts| {
+        DiagnosticPath::Workspace(parts.join("/"))
+    })
 }
 
 /// Captured bytes as text; a cut-off value may end mid-character, which is
@@ -300,31 +315,24 @@ fn capture(field: &mut Vec<u8>, byte: u8) -> bool {
 
 // ------------------------------------------------------------ PathLineColumn
 
-/// `<path>:<line>:<column>: <message>`, parsed left to right. The path
-/// has no `:` but a drive prefix (`C:\`, `C:/`), no surrounding
-/// whitespace, and its file name ends in an extension with a letter
-/// (`main.rs`, `a b.ts`), so times like `12:30:45: done` are no path.
-/// The message may open with `error`/`warning`/`note`/`help`, optionally
-/// with a `[code]`, then `: `; otherwise its severity is `Unknown`.
+/// `<path>:<line>:<column>: <message>`. The first `:<line>:<column>: `
+/// (1..=10 digits each, fitting `u32`) ends the path, so a drive colon
+/// (`C:\`) stays in it. That is the whole grammar: the path is any
+/// non-empty run without control bytes, up to [`MAX_MESSAGE_BYTES`]; its
+/// name or extension is never judged. The message may open with
+/// `error`/`warning`/`note`/`help`, optionally with a `[code]`, then `: `;
+/// otherwise its severity is `Unknown`.
 #[derive(Debug, Default)]
 struct PlcLine {
-    state: Plc,
     failed: bool,
-    path: Vec<u8>,
-    line: Option<u32>,
-    column: Option<u32>,
+    /// The path and the separator being matched, until one is.
+    head: Vec<u8>,
+    /// Set once the separator matched: the path's length in `head`.
+    path_len: Option<usize>,
+    line: u32,
+    column: u32,
     message: Vec<u8>,
     truncated: bool,
-}
-
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-enum Plc {
-    #[default]
-    Path,
-    Line,
-    Column,
-    Space,
-    Message,
 }
 
 impl PlcLine {
@@ -332,45 +340,33 @@ impl PlcLine {
         if self.failed {
             return;
         }
-        let ok = match self.state {
-            Plc::Path
-                if byte == b':' && self.path.len() == 1 && self.path[0].is_ascii_alphabetic() =>
-            {
-                self.path.push(byte);
-                true
+        if self.path_len.is_some() {
+            if !capture(&mut self.message, byte) {
+                self.truncated = true;
             }
-            Plc::Path if byte == b':' => {
-                self.state = Plc::Line;
-                true
-            }
-            Plc::Path => !byte.is_ascii_control() && capture(&mut self.path, byte),
-            Plc::Line => number(&mut self.line, byte, &mut self.state, Plc::Column),
-            Plc::Column => number(&mut self.column, byte, &mut self.state, Plc::Space),
-            Plc::Space => {
-                self.state = Plc::Message;
-                byte == b' '
-            }
-            Plc::Message => {
-                if !capture(&mut self.message, byte) {
-                    self.truncated = true;
-                }
-                true
-            }
-        };
-        self.failed = !ok;
+            return;
+        }
+        // Past this, any separator would leave a path over the bound.
+        if byte.is_ascii_control() || self.head.len() == MAX_MESSAGE_BYTES + MAX_SEPARATOR_BYTES {
+            self.failed = true;
+            return;
+        }
+        self.head.push(byte);
+        if byte == b' '
+            && let Some((path_len, line, column)) = separator(&self.head)
+        {
+            self.failed = path_len > MAX_MESSAGE_BYTES;
+            (self.path_len, self.line, self.column) = (Some(path_len), line, column);
+        }
     }
 
     fn end(mut self) -> Option<Found> {
-        if self.failed || self.state != Plc::Message {
-            return None;
-        }
+        let path_len = self.path_len.filter(|_| !self.failed)?;
         if !self.truncated && self.message.last() == Some(&b'\r') {
             self.message.pop();
         }
-        let path = text(self.path, false)?;
-        if !plausible_path(&path) {
-            return None;
-        }
+        self.head.truncate(path_len);
+        let path = text(self.head, false)?;
         let message = text(self.message, self.truncated)?;
         let (severity, code, message) = marked(&message);
         if message.is_empty() {
@@ -382,47 +378,34 @@ impl PlcLine {
             message: message.to_owned(),
             message_truncated: self.truncated,
             path: Some(path),
-            line: self.line,
-            column: self.column,
+            line: Some(self.line),
+            column: Some(self.column),
         })
     }
 }
 
-/// Decimal digits into `value` until `:`, which moves to `next`.
-fn number(value: &mut Option<u32>, byte: u8, state: &mut Plc, next: Plc) -> bool {
-    match byte {
-        b'0'..=b'9' => {
-            let digit = u32::from(byte - b'0');
-            *value = value
-                .unwrap_or(0)
-                .checked_mul(10)
-                .and_then(|v| v.checked_add(digit));
-            value.is_some()
-        }
-        b':' if value.is_some() => {
-            *state = next;
-            true
-        }
-        _ => false,
-    }
+/// `head` ends in `<path>:<line>:<column>: ` with a non-empty path:
+/// the path length, line and column.
+fn separator(head: &[u8]) -> Option<(usize, u32, u32)> {
+    let rest = head.strip_suffix(b": ")?;
+    let (rest, column) = trailing_number(rest)?;
+    let (rest, line) = trailing_number(rest.strip_suffix(b":")?)?;
+    let path = rest.strip_suffix(b":")?;
+    (!path.is_empty()).then_some((path.len(), line, column))
 }
 
-fn plausible_path(path: &str) -> bool {
-    if path.is_empty() || path.trim() != path {
-        return false;
+fn trailing_number(bytes: &[u8]) -> Option<(&[u8], u32)> {
+    let digits = bytes
+        .iter()
+        .rev()
+        .take_while(|b| b.is_ascii_digit())
+        .count();
+    if !(1..=10).contains(&digits) {
+        return None;
     }
-    let bytes = path.as_bytes();
-    if bytes.get(1) == Some(&b':') && !matches!(bytes.get(2), Some(b'\\' | b'/')) {
-        return false;
-    }
-    let name = path.rsplit(['/', '\\']).next().unwrap_or(path);
-    name.rsplit_once('.').is_some_and(|(_, extension)| {
-        !extension.is_empty()
-            && extension
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b == b'_')
-            && extension.bytes().any(|b| b.is_ascii_alphabetic())
-    })
+    let (rest, digits) = bytes.split_at(bytes.len() - digits);
+    let value = std::str::from_utf8(digits).ok()?.parse().ok()?;
+    Some((rest, value))
 }
 
 /// Split an explicit severity marker (and `[code]`) off the message.
@@ -452,14 +435,14 @@ fn marked(message: &str) -> (Severity, Option<String>, &str) {
     (Severity::Unknown, None, message)
 }
 
-// ----------------------------------------------------------------- RustcJson
+// -------------------------------------------------- CargoCompilerMessageJson
 
 /// A validating push scanner over one JSON line. It follows the structure
 /// and keeps only the fields it needs, each bounded; everything else
 /// (`rendered`, `children`, span `text`, `expansion`, …) is scanned past,
 /// never kept. Any JSON error makes the line a miss.
 #[derive(Debug, Default)]
-struct RustcLine {
+struct CargoLine {
     state: Json,
     failed: bool,
     /// Open containers: is-object and what the container is.
@@ -555,7 +538,7 @@ enum Target {
     IsPrimary,
 }
 
-impl RustcLine {
+impl CargoLine {
     fn byte(&mut self, byte: u8) {
         if !self.failed && !self.step(byte) {
             self.failed = true;

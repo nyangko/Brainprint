@@ -125,13 +125,13 @@ pub struct CaptureRequest {
 
 /// The sink of one stream.
 #[derive(Debug)]
-pub struct StreamCapture {
+struct StreamCapture {
     raw: Option<HeadTail>,
     diagnostics: Option<DiagnosticParser>,
 }
 
 impl StreamCapture {
-    pub fn new(request: CaptureRequest, stream: Stream) -> Self {
+    fn new(request: CaptureRequest, stream: Stream) -> Self {
         Self {
             raw: request.raw.then(HeadTail::default),
             diagnostics: request

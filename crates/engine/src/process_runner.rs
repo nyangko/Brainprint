@@ -87,9 +87,11 @@ pub struct RunOutput {
 }
 
 /// Takes each chunk of a stream as it is read (#53). A sink never owns
-/// the whole output and cannot fail the drain: whatever it cannot keep is
-/// its own fact to report.
-pub trait OutputSink: Send + 'static {
+/// the whole output, and what it cannot keep or parse is its own fact to
+/// report (a parse miss, a partial capture): input never fails the drain.
+/// A panic in a sink is a Brainprint defect, not a failure mode; the
+/// runner does not isolate one.
+pub(crate) trait OutputSink: Send + 'static {
     fn write(&mut self, chunk: &[u8]);
 }
 
@@ -104,15 +106,15 @@ impl OutputSink for NoSink {
 /// A stream that did not complete (`output.<stream>.complete == false`)
 /// left its sink with only what was read before the run ended.
 #[derive(Debug)]
-pub struct ObservedRun<S> {
-    pub output: RunOutput,
-    pub stdout: S,
-    pub stderr: S,
+pub(crate) struct ObservedRun<S> {
+    pub(crate) output: RunOutput,
+    pub(crate) stdout: S,
+    pub(crate) stderr: S,
 }
 
 /// [`run`] with both streams counted and every chunk also written to its
 /// sink while it is read. Nothing else is kept.
-pub fn run_observed<S: OutputSink>(
+pub(crate) fn run_observed<S: OutputSink>(
     command: &mut Command,
     timeout: Duration,
     cancel: &Cancel,

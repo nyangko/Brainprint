@@ -22,8 +22,8 @@ fn plc(line: &str) -> Option<Found> {
     items.pop()
 }
 
-fn rustc(line: &str) -> Option<Found> {
-    let mut items = found(DiagnosticFormat::RustcJson, line);
+fn cargo(line: &str) -> Option<Found> {
+    let mut items = found(DiagnosticFormat::CargoCompilerMessageJson, line);
     assert!(items.len() <= 1);
     items.pop()
 }
@@ -102,25 +102,61 @@ fn path_line_column_lines() {
 }
 
 #[test]
-fn ambiguous_lines_are_parse_misses() {
+fn extensionless_paths_are_grammar_not_guessed() {
+    let make = plc("Makefile:1:2: error: problem").expect("Makefile");
+    assert_eq!(
+        (make.path.as_deref(), make.line, make.column, make.severity),
+        (Some("Makefile"), Some(1), Some(2), Severity::Error)
+    );
+    let docker = plc("Dockerfile:3:4: warning: problem").expect("Dockerfile");
+    assert_eq!(
+        (
+            docker.path.as_deref(),
+            docker.line,
+            docker.column,
+            docker.severity
+        ),
+        (Some("Dockerfile"), Some(3), Some(4), Severity::Warning)
+    );
+    // The grammar alone decides: a time-like line that matches it is a
+    // diagnostic (its path then resolves, or not, like any other).
+    let timed = plc("12:30:45: done").expect("grammar match");
+    assert_eq!(
+        (
+            timed.path.as_deref(),
+            timed.line,
+            timed.column,
+            timed.severity
+        ),
+        (Some("12"), Some(30), Some(45), Severity::Unknown)
+    );
+    // The first `:<line>:<column>: ` ends the path; later ones are message.
+    let first = plc("a.rs:1:2: see b.rs:3:4: x").expect("first separator");
+    assert_eq!(
+        (first.path.as_deref(), first.message.as_str()),
+        (Some("a.rs"), "see b.rs:3:4: x")
+    );
+    let drive = plc("C:work.rs:1:2: error: x").expect("drive-relative");
+    assert_eq!(drive.path.as_deref(), Some("C:work.rs"));
+}
+
+#[test]
+fn lines_off_the_grammar_are_parse_misses() {
     for line in [
         "not a diagnostic",
         "foo:bar:baz",
-        "12:30:45: done",
-        "2026-09-30T12:30:45: started",
-        "Sep 30 12:30:45: started",
-        "v1.2 build 12:30:45: ok",
-        "12.5:3:4: ratio",
+        "12:30 done",
+        "1:2:3",
+        "src/main.rs:1:2",
         "src/main.rs:10: error: no column",
         "src/main.rs:10:4:error: no space",
         "src/main.rs:10:4: ",
         "src/main.rs:10:4: error: ",
         "src/main.rs:x:4: error: bad line",
-        "src/main.rs:99999999999:4: error: overflow",
-        " src/main.rs:1:2: error: leading space",
-        "error: src/main.rs:1:2: prefixed",
-        "C:work.rs:1:2: error: drive without separator",
-        "Makefile:1:2: no extension",
+        "src/main.rs:99999999999:4: error: too many digits",
+        "src/main.rs:4294967296:4: error: over u32",
+        ":1:2: error: empty path",
+        "src/\tmain.rs:1:2: error: control byte",
         "",
     ] {
         let parsed = parse(DiagnosticFormat::PathLineColumn, line);
@@ -147,13 +183,20 @@ fn every_line_is_a_diagnostic_or_a_miss() {
 
 #[test]
 fn an_overlong_path_is_a_miss_not_a_cut_path() {
-    let line = format!("{}.rs:1:1: error: x", "p".repeat(MAX_MESSAGE_BYTES));
-    assert_eq!(plc(&line), None);
-    let fits = format!("{}.rs:1:1: error: x", "p".repeat(MAX_MESSAGE_BYTES - 3));
-    assert!(plc(&fits).is_some());
+    let fits = format!("{}:1:1: error: x", "p".repeat(MAX_MESSAGE_BYTES));
+    assert_eq!(
+        plc(&fits)
+            .and_then(|found| found.path)
+            .map(|path| path.len()),
+        Some(MAX_MESSAGE_BYTES)
+    );
+    let over = format!("{}:1:1: error: x", "p".repeat(MAX_MESSAGE_BYTES + 1));
+    assert_eq!(plc(&over), None);
+    let far_over = format!("{}:1:1: error: x", "p".repeat(10 * MAX_MESSAGE_BYTES));
+    assert_eq!(plc(&far_over), None);
 }
 
-// ----------------------------------------------------------------- RustcJson
+// -------------------------------------------------- CargoCompilerMessageJson
 
 fn compiler_message(diagnostic: &str) -> String {
     format!(
@@ -170,7 +213,7 @@ fn span(file: &str, line: u32, column: u32, primary: bool) -> String {
 const RENDERED: &str = r#""error[E0308]: mismatched types\n --> src/lib.rs:2:18\n  |\n2 |     let x: u32 = \"a\";\n  |                  ^^^ expected `u32`\n\n""#;
 
 #[test]
-fn rustc_error_with_code_and_primary_span() {
+fn cargo_error_with_code_and_primary_span() {
     let line = compiler_message(&format!(
         r#"{{"$message_type":"diagnostic","children":[{{"children":[],"code":null,"level":"note","message":"child note","rendered":null,"spans":[{}]}}],"code":{{"code":"E0308","explanation":"Expected type did not match the received type.\n\nErroneous code examples:\n\n```\nlet x: i32 = \"I am not a number!\";\n```\n"}},"level":"error","message":"mismatched types","spans":[{},{}],"rendered":{RENDERED}}}"#,
         span("src/child.rs", 9, 9, true),
@@ -178,7 +221,7 @@ fn rustc_error_with_code_and_primary_span() {
         span("src/lib.rs", 2, 18, true),
     ));
     assert_eq!(
-        rustc(&line),
+        cargo(&line),
         Some(Found {
             severity: Severity::Error,
             code: Some("E0308".to_owned()),
@@ -192,12 +235,12 @@ fn rustc_error_with_code_and_primary_span() {
 }
 
 #[test]
-fn rustc_warning_without_code_or_primary_span() {
+fn cargo_warning_without_code_or_primary_span() {
     let no_code = compiler_message(
         r#"{"children":[],"code":null,"level":"warning","message":"2 warnings emitted","spans":[],"rendered":"warning: 2 warnings emitted\n\n"}"#,
     );
     assert_eq!(
-        rustc(&no_code),
+        cargo(&no_code),
         Some(Found {
             severity: Severity::Warning,
             code: None,
@@ -212,7 +255,7 @@ fn rustc_warning_without_code_or_primary_span() {
         r#"{{"children":[],"code":{{"code":"unused_variables","explanation":null}},"level":"warning","message":"unused variable: `y`","spans":[{}],"rendered":"w"}}"#,
         span("src/lib.rs", 3, 9, false),
     ));
-    let lint = rustc(&lint).expect("lint");
+    let lint = cargo(&lint).expect("lint");
     assert_eq!(lint.code.as_deref(), Some("unused_variables"));
     // Spans, but none primary: no location is invented.
     assert_eq!((lint.path, lint.line, lint.column), (None, None, None));
@@ -225,7 +268,7 @@ fn a_huge_rendered_field_is_scanned_past_not_kept() {
         r#"{{"rendered":"{huge}","children":[],"code":null,"level":"error","message":"boom","spans":[{}]}}"#,
         span("src/lib.rs", 1, 1, true),
     ));
-    let found = rustc(&line).expect("parsed");
+    let found = cargo(&line).expect("parsed");
     assert_eq!(found.message, "boom");
     assert!(!found.message.contains("xxx"));
 }
@@ -256,18 +299,38 @@ fn non_diagnostic_and_malformed_lines_are_misses() {
         valid.replace("[]", "[}"),
         compiler_message(r#"{"children":[],"code":null,"message":"no level","spans":[]}"#),
         compiler_message(r#"{"children":[],"code":null,"level":"error","spans":[]}"#),
-        format!(
-            r#"{{"a":{}{}}}"#,
-            "[".repeat(MAX_JSON_DEPTH),
-            "]".repeat(MAX_JSON_DEPTH)
-        ),
+        // A direct `rustc --error-format=json` diagnostic: no envelope.
+        r#"{"$message_type":"diagnostic","message":"mismatched types","code":{"code":"E0308","explanation":null},"level":"error","spans":[],"children":[],"rendered":"error"}"#.to_owned(),
     ] {
-        let parsed = parse(DiagnosticFormat::RustcJson, &line);
+        let parsed = parse(DiagnosticFormat::CargoCompilerMessageJson, &line);
         assert!(parsed.kept.items.is_empty(), "{line}");
         assert_eq!(parsed.parse_misses, 1, "{line}");
     }
-    let parsed = parse(DiagnosticFormat::RustcJson, &valid);
+    let parsed = parse(DiagnosticFormat::CargoCompilerMessageJson, &valid);
     assert_eq!((parsed.kept.items.len(), parsed.parse_misses), (1, 0));
+}
+
+/// A compiler message with `open` containers open at once at its deepest:
+/// the root, the diagnostic and `open - 2` nested arrays.
+fn nested(open: usize) -> String {
+    compiler_message(&format!(
+        r#"{{"x":{}{},"code":null,"level":"error","message":"deep","spans":[]}}"#,
+        "[".repeat(open - 2),
+        "]".repeat(open - 2)
+    ))
+}
+
+#[test]
+fn json_nesting_is_bounded_at_1024_open_containers() {
+    assert_eq!(MAX_JSON_DEPTH, 1024);
+    let deepest = cargo(&nested(MAX_JSON_DEPTH)).expect("1024 open is allowed");
+    assert_eq!(deepest.message, "deep");
+    let parsed = parse(
+        DiagnosticFormat::CargoCompilerMessageJson,
+        &nested(MAX_JSON_DEPTH + 1),
+    );
+    assert!(parsed.kept.items.is_empty());
+    assert_eq!(parsed.parse_misses, 1);
 }
 
 #[test]
@@ -277,7 +340,7 @@ fn json_escapes_numbers_and_nesting_are_read_exactly() {
         span("src/nested.rs", 5, 5, true),
         span(r"src\\win.rs", 4294967295, 7, true),
     ));
-    let found = rustc(&line).expect("parsed");
+    let found = cargo(&line).expect("parsed");
     assert_eq!(found.message, "a \"q\" \\ / \t é 😀");
     assert_eq!(found.path.as_deref(), Some(r"src\win.rs"));
     assert_eq!((found.line, found.column), (Some(u32::MAX), Some(7)));
@@ -289,12 +352,12 @@ fn an_overlong_code_or_path_is_a_miss() {
     let code = compiler_message(&format!(
         r#"{{"children":[],"code":{{"code":"{long}"}},"level":"error","message":"m","spans":[]}}"#
     ));
-    assert_eq!(rustc(&code), None);
+    assert_eq!(cargo(&code), None);
     let path = compiler_message(&format!(
         r#"{{"children":[],"code":null,"level":"error","message":"m","spans":[{}]}}"#,
         span(&long, 1, 1, true)
     ));
-    assert_eq!(rustc(&path), None);
+    assert_eq!(cargo(&path), None);
 }
 
 // ---------------------------------------------------------- message bounds
@@ -305,7 +368,7 @@ fn a_long_message_is_cut_on_a_char_boundary() {
     let message = format!("x{}", "é".repeat(MAX_MESSAGE_BYTES));
     for found in [
         plc(&format!("a.rs:1:1: {message}")).expect("plc"),
-        rustc(&compiler_message(&format!(
+        cargo(&compiler_message(&format!(
             r#"{{"code":null,"level":"error","message":"{message}","spans":[]}}"#
         )))
         .expect("rustc"),
@@ -377,7 +440,7 @@ fn past_64_the_rest_is_omitted_and_better_severities_still_win() {
 }
 
 #[test]
-fn over_64_rustc_diagnostics_are_bounded() {
+fn over_64_cargo_diagnostics_are_bounded() {
     let input: Vec<String> = (0..100)
         .map(|index| {
             compiler_message(&format!(
@@ -385,7 +448,10 @@ fn over_64_rustc_diagnostics_are_bounded() {
             ))
         })
         .collect();
-    let parsed = parse(DiagnosticFormat::RustcJson, &input.join("\n"));
+    let parsed = parse(
+        DiagnosticFormat::CargoCompilerMessageJson,
+        &input.join("\n"),
+    );
     assert_eq!(parsed.kept.items.len(), 64);
     assert_eq!((parsed.kept.observed, parsed.kept.omitted), (100, 36));
     assert_eq!(parsed.kept.items[63].message, "w63");
@@ -445,26 +511,17 @@ fn summarize_merges_bounds_and_normalizes_paths() {
     let view: Vec<_> = summary
         .items
         .iter()
-        .map(|d| (d.message.as_str(), d.path.as_deref(), d.external, d.stream))
+        .map(|d| (d.message.as_str(), d.path.clone(), d.stream))
         .collect();
+    let inside = || DiagnosticPath::Workspace("src/sub/a.rs".to_owned());
     assert_eq!(
         view,
         [
-            (
-                "absolute inside",
-                Some("src/sub/a.rs"),
-                false,
-                Stream::Stdout
-            ),
-            ("outside", None, true, Stream::Stdout),
-            ("absolute outside", None, true, Stream::Stderr),
-            (
-                "relative to cwd",
-                Some("src/sub/a.rs"),
-                false,
-                Stream::Stdout
-            ),
-            ("virtual", None, true, Stream::Stdout),
+            ("absolute inside", inside(), Stream::Stdout),
+            ("outside", DiagnosticPath::External, Stream::Stdout),
+            ("absolute outside", DiagnosticPath::External, Stream::Stderr),
+            ("relative to cwd", inside(), Stream::Stdout),
+            ("virtual", DiagnosticPath::Unresolved, Stream::Stdout),
         ]
     );
 }
@@ -491,4 +548,98 @@ fn summarize_bounds_the_merged_streams_to_64() {
     );
     assert_eq!(summary.items[40].line, Some(0));
     assert_eq!(summary.items[63].line, Some(23));
+}
+
+#[test]
+fn path_truth_is_absent_workspace_external_or_unresolved() {
+    let (_dir, root) = workspace("truth");
+    let base = root.join("src");
+    let outside = root.parent().expect("parent").join("outside.rs");
+    fs::write(root.join("src/deleted.rs"), "").expect("file");
+    fs::remove_file(root.join("src/deleted.rs")).expect("delete");
+    let resolve = |raw: Option<&str>| super::resolve(raw, &root, &base);
+    assert_eq!(resolve(None), DiagnosticPath::Absent);
+    assert_eq!(
+        resolve(Some("sub/a.rs")),
+        DiagnosticPath::Workspace("src/sub/a.rs".to_owned())
+    );
+    assert_eq!(resolve(Some("../../outside.rs")), DiagnosticPath::External);
+    assert_eq!(
+        resolve(Some(&plain_path(&outside).to_string_lossy())),
+        DiagnosticPath::External
+    );
+    // Not an existing file: never claimed outside the Workspace.
+    assert_eq!(resolve(Some("deleted.rs")), DiagnosticPath::Unresolved);
+    assert_eq!(resolve(Some("missing.rs")), DiagnosticPath::Unresolved);
+    assert_eq!(
+        resolve(Some("/rustc/abc/library/core/src/x.rs")),
+        DiagnosticPath::Unresolved
+    );
+    assert_eq!(resolve(Some("<anon>")), DiagnosticPath::Unresolved);
+    assert_eq!(resolve(Some("sub")), DiagnosticPath::Unresolved);
+    // A diagnostic without a path summarizes as Absent.
+    let summary = summarize(
+        [parse(
+            DiagnosticFormat::CargoCompilerMessageJson,
+            &compiler_message(r#"{"code":null,"level":"error","message":"m","spans":[]}"#),
+        )],
+        &root,
+        &base,
+    );
+    assert_eq!(summary.items[0].path, DiagnosticPath::Absent);
+}
+
+/// Deterministic bytes: any value, newlines included.
+fn noise(len: usize, mut seed: u64) -> Vec<u8> {
+    (0..len)
+        .map(|_| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed >> 24) as u8
+        })
+        .collect()
+}
+
+#[test]
+fn arbitrary_output_is_counted_never_a_panic() {
+    let mut inputs = vec![noise(1 << 20, 0x9e37_79b9_7f4a_7c15)];
+    // Near-miss shapes, then one unbounded line without a newline.
+    let mut shaped = Vec::new();
+    for line in [
+        "a.rs:1:2: ",
+        ":::: ",
+        "x:1:1:1:1: ",
+        "{\"reason\":\"compiler-message\",\"message\":{",
+        "{\"a\":\"\\u",
+        "{\"a\":\"\\ud800\\u0041\"}",
+        "C:",
+        "\r\r",
+    ] {
+        shaped.extend_from_slice(line.as_bytes());
+        shaped.push(b'\n');
+    }
+    shaped.extend(std::iter::repeat_n(b'{', 3 * 1024 * 1024));
+    inputs.push(shaped);
+    for format in [
+        DiagnosticFormat::PathLineColumn,
+        DiagnosticFormat::CargoCompilerMessageJson,
+    ] {
+        for input in &inputs {
+            let mut parser = DiagnosticParser::new(format, Stream::Stdout);
+            for chunk in input.chunks(8 * 1024 + 7) {
+                parser.write(chunk);
+            }
+            // Every newline ends a line; so does EOF after a partial one.
+            let lines = input.iter().filter(|&&byte| byte == b'\n').count()
+                + usize::from(input.last().is_some_and(|&byte| byte != b'\n'));
+            let result = parser.finish(true);
+            assert_eq!(
+                result.kept.observed + result.parse_misses,
+                lines as u64,
+                "{format:?}"
+            );
+            assert!(result.kept.items.len() <= MAX_DIAGNOSTICS);
+        }
+    }
 }

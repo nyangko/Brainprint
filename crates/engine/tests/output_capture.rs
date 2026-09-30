@@ -10,7 +10,7 @@
 use std::{fs, io::Write, path::PathBuf, process::Command, thread, time::Duration};
 
 use brainprint_engine::{
-    diagnostics::{DiagnosticFormat, Severity, Stream},
+    diagnostics::{DiagnosticFormat, DiagnosticPath, Severity, Stream},
     output_capture::{
         CaptureRequest, CaptureStatus, CapturedRun, MAX_HEAD, MAX_TAIL, run_captured,
     },
@@ -196,10 +196,15 @@ fn diagnostics_are_apart_from_the_exit() {
     assert_eq!((summary.observed, summary.parse_misses), (1, 1));
     let item = &summary.items[0];
     assert_eq!(
-        (item.severity, item.path.as_deref(), item.line, item.column),
-        (Severity::Error, Some("src/main.rs"), Some(10), Some(4))
+        (item.severity, &item.path, item.line, item.column),
+        (
+            Severity::Error,
+            &DiagnosticPath::Workspace("src/main.rs".to_owned()),
+            Some(10),
+            Some(4)
+        )
     );
-    assert_eq!((item.stream, item.external), (Stream::Stderr, false));
+    assert_eq!(item.stream, Stream::Stderr);
 
     // Output the format cannot read never fails a command that passed.
     let passed = capture(
@@ -207,7 +212,7 @@ fn diagnostics_are_apart_from_the_exit() {
         Duration::from_secs(20),
         CaptureRequest {
             raw: false,
-            diagnostics: Some(DiagnosticFormat::RustcJson),
+            diagnostics: Some(DiagnosticFormat::CargoCompilerMessageJson),
         },
     );
     assert!(matches!(passed.output.end, RunEnd::Exited(status) if status.success()));
