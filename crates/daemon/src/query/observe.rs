@@ -6,6 +6,10 @@
 //! failed observation returns before `Job::Work`: nothing is written, and
 //! `Unknown` is never recorded in its place.
 
+// #52 grew `WorkFailureWire` (the per-command results) past the lint's
+// size; it is built once per Work request, never in a hot loop.
+#![allow(clippy::result_large_err)]
+
 use brainprint_core::{
     WorkspaceId,
     protocol::work::{
@@ -125,8 +129,5 @@ fn failure_wire(error: GitStatusError) -> GitObservationFailureWire {
 }
 
 const fn failure(error: WorkErrorWire) -> WorkFailureWire {
-    WorkFailureWire {
-        error,
-        created_work_item: None,
-    }
+    super::work::failure(error)
 }

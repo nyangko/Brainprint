@@ -6,6 +6,10 @@
 //! a `New` WorkItem is created only after the Workspace was seen able to
 //! take a baseline, so a failure leaves stored state as it was.
 
+// #52 grew `WorkFailureWire` (the per-command results) past the lint's
+// size; it is built once per Work request, never in a hot loop.
+#![allow(clippy::result_large_err)]
+
 use std::path::Path;
 
 use brainprint_core::{
@@ -58,16 +62,14 @@ pub(super) fn internal(message: &str) -> WorkResponse {
 }
 
 fn failed(error: WorkErrorWire) -> WorkResponse {
-    WorkResponse::Failed(WorkFailureWire {
-        error,
-        created_work_item: None,
-    })
+    WorkResponse::Failed(failure(error))
 }
 
-fn failure(error: WorkErrorWire) -> WorkFailureWire {
+pub(super) const fn failure(error: WorkErrorWire) -> WorkFailureWire {
     WorkFailureWire {
         error,
         created_work_item: None,
+        verification: None,
     }
 }
 
@@ -119,6 +121,7 @@ fn start_work(
         .map_err(|error| WorkFailureWire {
             error: work_error(error, Some(work_item)),
             created_work_item: created,
+            verification: None,
         })?;
     Ok(WorkResponse::Started(WorkStartedWire {
         workspace_id: workspace,
@@ -127,22 +130,43 @@ fn start_work(
     }))
 }
 
-fn record_result(
-    workspace: WorkspaceId,
-    paths: &WorkspacePaths,
-    input: WorkResultInputWire,
-) -> Result<WorkResponse, WorkFailureWire> {
-    let (remaining_dirty, _) =
-        git_observation::dirty_observation(&git_observation_in(input.git)?).map_err(observation)?;
-    let change_set_fingerprint = input
-        .change_set
+/// #52: every check `record_result` makes on the input alone, so a
+/// verification request is refused before a command runs. An `Observe`
+/// is checked once it is resolved, after the commands.
+pub(super) fn check_result_input(input: &WorkResultInputWire) -> Result<(), WorkFailureWire> {
+    if input.git != GitObservationWire::Observe {
+        git_observation::dirty_observation(&git_observation_in(input.git.clone())?)
+            .map_err(observation)?;
+    }
+    change_set_fingerprint(input.change_set.clone()).map(|_| ())
+}
+
+fn change_set_fingerprint(
+    change_set: Option<Vec<GitEntryWire>>,
+) -> Result<Option<String>, WorkFailureWire> {
+    change_set
         .map(|entries| {
             let entries: Vec<GitEntry> = entries.into_iter().map(git_entry_in).collect();
             git_observation::canonical_entries(&entries)
                 .map(|canonical| git_observation::fingerprint(&canonical))
         })
         .transpose()
-        .map_err(observation)?;
+        .map_err(observation)
+}
+
+fn record_result(
+    workspace: WorkspaceId,
+    paths: &WorkspacePaths,
+    input: WorkResultInputWire,
+) -> Result<WorkResponse, WorkFailureWire> {
+    if input.verification.is_some() {
+        return Err(failure(internal_message(
+            "a verification request reached the write unrun",
+        )));
+    }
+    let (remaining_dirty, _) =
+        git_observation::dirty_observation(&git_observation_in(input.git)?).map_err(observation)?;
+    let change_set_fingerprint = change_set_fingerprint(input.change_set)?;
     let observation = ResultObservation {
         summary: input.summary,
         commit_id: input.commit_id,
@@ -184,10 +208,14 @@ fn record_result(
         workspace_id: workspace,
         status: convert_out::work_item_status_wire(status),
         result: convert_out::work_result_wire(result),
+        verification: None,
     }))
 }
 
-fn open(workspace: WorkspaceId, paths: &WorkspacePaths) -> Result<WorkRuntime, WorkFailureWire> {
+pub(super) fn open(
+    workspace: WorkspaceId,
+    paths: &WorkspacePaths,
+) -> Result<WorkRuntime, WorkFailureWire> {
     WorkRuntime::open(workspace, &paths.workspace_db, &paths.index_db)
         .map_err(|error| failure(work_error(error, None)))
 }
@@ -206,7 +234,7 @@ fn observation(error: GitObservationError) -> WorkFailureWire {
 }
 
 /// `work_item` names the request's WorkItem for a not-found error.
-fn work_error(error: WorkError, work_item: Option<WorkItemId>) -> WorkErrorWire {
+pub(super) fn work_error(error: WorkError, work_item: Option<WorkItemId>) -> WorkErrorWire {
     if let (
         WorkError::Knowledge(KnowledgeError::NotFound {
             what: "work_item", ..
@@ -265,7 +293,7 @@ fn internal_error(operation: &str, error: &dyn std::error::Error) -> WorkErrorWi
     internal_message("internal daemon error; see daemon logs for detail")
 }
 
-fn internal_message(message: &str) -> WorkErrorWire {
+pub(super) fn internal_message(message: &str) -> WorkErrorWire {
     WorkErrorWire::Internal {
         message: message.to_owned(),
     }

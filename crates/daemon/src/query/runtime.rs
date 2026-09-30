@@ -38,7 +38,7 @@ use super::{
     convert_in, convert_out,
     lifecycle::{LifecycleStats, WatchFactory, WorkspaceLifecycle, notify_watch_factory},
     semantic::{SemanticStats, WorkspaceSemantic},
-    work,
+    verify, work,
 };
 
 /// How often an idle worker journals buffered watcher events: the
@@ -109,6 +109,8 @@ pub struct DaemonQueryRuntime {
     global_db: PathBuf,
     watch_factory: WatchFactory,
     workers: Mutex<HashMap<WorkspaceId, WorkerHandle>>,
+    /// #52: running verifications (never inside a worker).
+    verification_slots: verify::Slots,
 }
 
 impl std::fmt::Debug for DaemonQueryRuntime {
@@ -135,6 +137,7 @@ impl DaemonQueryRuntime {
             global_db: global_paths.global_db.clone(),
             watch_factory,
             workers: Mutex::new(HashMap::new()),
+            verification_slots: verify::Slots::default(),
         }
     }
 
@@ -186,6 +189,18 @@ impl DaemonQueryRuntime {
             Ok(Err(error)) => Err(convert_out::core_error(CoreError::Registry(error))),
             Err(error) => Err(convert_out::daemon_internal("workspace_root", &error)),
         }
+    }
+
+    pub(super) fn verification_slots(&self) -> &verify::Slots {
+        &self.verification_slots
+    }
+
+    /// #52: verification batches started since this daemon began
+    /// (acceptance introspection: a Result without `verification` never
+    /// starts one).
+    #[must_use]
+    pub fn verification_runs(&self) -> u64 {
+        self.verification_slots.started()
     }
 
     fn handle_for(&self, workspace: WorkspaceId) -> WorkerHandle {

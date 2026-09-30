@@ -41,5 +41,10 @@ serde.workspace = true
 # brainprint-daemon/-engine/-mcp).
 brainprint-agent = { path = "../agent" }
 
+# #52 step 3: the test binary is also the portable verification helper.
+[[test]]
+name = "i6_task3_verification_acceptance"
+harness = false
+
 [lints]
 workspace = true

@@ -10,7 +10,7 @@ use brainprint_core::{
             AckStatusWire, QueryAckRequest, QueryAckResponse, QueryErrorWire, QueryOutcomeWire,
             QueryRequest, QueryResponse, WorkspaceSelectorWire,
         },
-        work::{WorkErrorWire, WorkFailureWire, WorkRequest, WorkResponse},
+        work::{WorkErrorWire, WorkOperationWire, WorkRequest, WorkResponse},
     },
 };
 
@@ -86,19 +86,25 @@ pub async fn handle_query_ack(runtime: &DaemonQueryRuntime, request: QueryAckReq
 }
 
 /// #50: resolve the Workspace exactly as a query does, then run the write
-/// on that Workspace's worker.
-pub async fn handle_work(runtime: &DaemonQueryRuntime, request: WorkRequest) -> Response {
+/// on that Workspace's worker. #52: a Result with `verification` runs its
+/// commands first and is cancelled if `closed` (the client's connection
+/// ending) completes meanwhile; `None` is then "nothing to answer".
+pub async fn handle_work(
+    runtime: &DaemonQueryRuntime,
+    request: WorkRequest,
+    closed: impl Future<Output = ()>,
+) -> Option<Response> {
     let response = match resolve(runtime, request.workspace).await {
-        Ok(workspace_id) => {
-            match super::observe::resolve(runtime, workspace_id, request.operation).await {
+        Ok(workspace_id) => match request.operation {
+            WorkOperationWire::Result(input) if input.verification.is_some() => {
+                super::verify::run(runtime, workspace_id, input, closed).await?
+            }
+            operation => match super::observe::resolve(runtime, workspace_id, operation).await {
                 Ok(operation) => runtime.work(workspace_id, operation).await,
                 Err(failure) => WorkResponse::Failed(failure),
-            }
-        }
-        Err(error) => WorkResponse::Failed(WorkFailureWire {
-            error: WorkErrorWire::Workspace(error),
-            created_work_item: None,
-        }),
+            },
+        },
+        Err(error) => WorkResponse::Failed(super::work::failure(WorkErrorWire::Workspace(error))),
     };
-    Response::Work(response)
+    Some(Response::Work(response))
 }

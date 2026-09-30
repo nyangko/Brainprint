@@ -1,8 +1,9 @@
 //! Working State write wire (#50, I6 task 1): caller-observed Git state
 //! delivered to the #20 task 3 lifecycle.
 //!
-//! The caller observed HEAD, the changed entries and any verification;
-//! the daemon runs no command. It fingerprints the entries, maps paths
+//! The caller observed HEAD, the changed entries and any verification
+//! summary; the write itself runs no command (#51 `Observe` and #52
+//! `verification` run before it). It fingerprints the entries, maps paths
 //! onto ACTIVE Resources where index.db has them, and stores the
 //! observation through the existing `WorkRuntime`.
 
@@ -111,12 +112,74 @@ pub struct WorkResultInputWire {
     pub outcome: WorkOutcomeWire,
     pub summary: String,
     pub commit_id: Option<String>,
-    /// Stored as given; nothing is run to produce or check it.
+    /// Stored as given; nothing is run to produce or check it. Never
+    /// together with `verification`.
     pub verification_summary: Option<String>,
+    /// #52: caller-named commands the daemon runs before the write; their
+    /// compact summary becomes `verification_summary`.
+    pub verification: Option<VerificationWire>,
     /// Remaining dirty state after the task.
     pub git: GitObservationWire,
     /// What the task changed; fingerprinted like `git` entries.
     pub change_set: Option<Vec<GitEntryWire>>,
+}
+
+/// #52: the commands to run, in order. Mirrors
+/// `brainprint_engine::verification::VerificationCommand`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VerificationWire {
+    pub commands: Vec<VerificationCommandWire>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VerificationCommandWire {
+    pub label: String,
+    /// `argv[0]` is the program; no shell.
+    pub argv: Vec<String>,
+    /// Workspace-relative; `None` is the Workspace root.
+    pub cwd: Option<String>,
+    /// Overrides on top of the daemon's environment.
+    #[serde(default)]
+    pub env: Vec<(String, String)>,
+    pub timeout_secs: u32,
+}
+
+/// One command's result. argv, env, cwd and output are never echoed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommandResultWire {
+    pub label: String,
+    pub outcome: VerificationOutcomeWire,
+    pub duration_ms: u64,
+    pub stdout_bytes: u64,
+    pub stderr_bytes: u64,
+}
+
+/// Mirrors `brainprint_engine::verification::VerificationOutcome`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum VerificationOutcomeWire {
+    Passed,
+    Failed {
+        exit_code: i32,
+    },
+    /// Ended by a signal Brainprint did not send (unix).
+    Signaled {
+        signal: i32,
+    },
+    TimedOut,
+    NotStarted {
+        reason: NotStartedReasonWire,
+    },
+    /// An earlier command did not pass; this one never ran.
+    Skipped,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum NotStartedReasonWire {
+    NotFound,
+    PermissionDenied,
+    Other,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -140,6 +203,8 @@ pub struct WorkRecordedWire {
     pub workspace_id: WorkspaceId,
     pub status: WorkItemStatusWire,
     pub result: WorkResultWire,
+    /// #52: `Some` exactly when the request's verification ran.
+    pub verification: Option<Vec<CommandResultWire>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -148,6 +213,8 @@ pub struct WorkFailureWire {
     /// Set only if a `New` WorkItem was created and the start after it
     /// failed: it is OPEN, and a retry names it as `Existing`.
     pub created_work_item: Option<WorkItemId>,
+    /// #52: `Some` means the commands ran but nothing was stored.
+    pub verification: Option<Vec<CommandResultWire>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -170,6 +237,9 @@ pub enum WorkErrorWire {
     WorkspaceNotReady(WorkNotReadyWire),
     /// #51: `Observe` produced no observation; nothing was written.
     GitObservation(GitObservationFailureWire),
+    /// #52: a verification already runs for this Workspace, or the daemon
+    /// runs its limit. Nothing ran or was written; not queued.
+    VerificationBusy,
     /// A safe summary; storage detail stays in the daemon log.
     Internal {
         message: String,

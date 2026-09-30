@@ -18,7 +18,7 @@ use brainprint_core::{
     },
 };
 use brainprint_engine::paths::GlobalPaths;
-use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite};
 
 use crate::{
     client, handlers,
@@ -267,7 +267,17 @@ where
                 crate::query::handle_query_ack(&query_runtime, ack_request).await
             }
             Request::Work(work_request) => {
-                crate::query::handle_work(&query_runtime, work_request).await
+                // #52: one request at a time per connection (#24), so any
+                // read completing while a verification runs is the client
+                // leaving (EOF, error) or breaking that rule: either way
+                // the run is cancelled and the connection closed.
+                let closed = async {
+                    let _ = connection.read(&mut [0_u8; 1]).await;
+                };
+                match crate::query::handle_work(&query_runtime, work_request, closed).await {
+                    Some(response) => response,
+                    None => return Ok(()),
+                }
             }
         };
         protocol::framing::write_message(&mut connection, &response).await?;

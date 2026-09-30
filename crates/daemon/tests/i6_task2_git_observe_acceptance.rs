@@ -284,6 +284,7 @@ async fn observe_start_and_result_round_trip() {
             summary: "done".to_owned(),
             commit_id: None,
             verification_summary: None,
+            verification: None,
             git: GitObservationWire::Observe,
             change_set: None,
         }))
@@ -392,8 +393,9 @@ async fn an_unregistered_workspace_fails_before_git_runs() {
 // --------------------------------------------------------------- version
 
 #[tokio::test]
-async fn protocol_version_is_5() {
-    assert_eq!(PROTOCOL_VERSION, 5);
+async fn protocol_version_is_pinned() {
+    // #51 bumped it to 5, #52 to 6.
+    assert_eq!(PROTOCOL_VERSION, 6);
 }
 
 /// v4 client → v5 daemon: refused at handshake; an Observe request sent
@@ -413,7 +415,7 @@ async fn a_v4_client_is_refused_by_a_v5_daemon() {
     assert_eq!(
         handshake(&mut connection, 4).await,
         Response::Handshake(HandshakeResponse::VersionMismatch {
-            server_protocol_version: 5,
+            server_protocol_version: PROTOCOL_VERSION,
             client_protocol_version: 4,
         })
     );
@@ -427,6 +429,7 @@ async fn a_v4_client_is_refused_by_a_v5_daemon() {
             summary: "never".to_owned(),
             commit_id: None,
             verification_summary: None,
+            verification: None,
             git: GitObservationWire::Observe,
             change_set: None,
         }),
@@ -483,12 +486,12 @@ async fn a_v5_client_stops_at_a_v4_daemon() {
             error,
             brainprint_daemon::client::ClientError::VersionMismatch {
                 server_protocol_version: 4,
-                client_protocol_version: 5,
+                client_protocol_version: PROTOCOL_VERSION,
             }
         ),
         "{error:?}"
     );
-    assert_eq!(fake_v4.await.expect("fake daemon"), 5);
+    assert_eq!(fake_v4.await.expect("fake daemon"), PROTOCOL_VERSION);
 }
 
 // ------------------------------------------------------------------ CLI

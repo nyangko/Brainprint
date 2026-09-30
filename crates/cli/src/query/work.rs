@@ -1,7 +1,9 @@
 //! `brainprint work start|result` (#50, I6 task 1): send a caller-observed
 //! Git state to the Working State lifecycle. The input is one JSON
 //! document (`WorkStartWire` / `WorkResultInputWire`) from a file or
-//! stdin; this command runs no Git and parses no porcelain text.
+//! stdin; this command runs no Git and parses no porcelain text. #52: a
+//! Result's `verification` is run by the daemon; its per-command results
+//! are shown, and a recorded result exits 0 whatever they were.
 
 use std::io::{Read as _, Write as _};
 
@@ -9,8 +11,8 @@ use brainprint_core::protocol::{
     Request, Response,
     query::{DirtyObservationWire, WorkspaceSelectorWire},
     work::{
-        WorkErrorWire, WorkOperationWire, WorkRequest, WorkResponse, WorkResultInputWire,
-        WorkStartWire,
+        CommandResultWire, WorkErrorWire, WorkOperationWire, WorkRequest, WorkResponse,
+        WorkResultInputWire, WorkStartWire,
     },
 };
 use clap::{Args, Subcommand};
@@ -138,7 +140,8 @@ fn exit_for(error: &WorkErrorWire) -> Exit {
         WorkErrorWire::WorkItemNotFound { .. }
         | WorkErrorWire::InvalidTransition { .. }
         | WorkErrorWire::WorkspaceNotReady(_)
-        | WorkErrorWire::GitObservation(_) => Exit::QueryOrDeliveryFailure,
+        | WorkErrorWire::GitObservation(_)
+        | WorkErrorWire::VerificationBusy => Exit::QueryOrDeliveryFailure,
         WorkErrorWire::Internal { .. } => Exit::DaemonOrProtocolFailure,
     }
 }
@@ -158,6 +161,9 @@ fn describe(error: &WorkErrorWire) -> String {
         WorkErrorWire::GitObservation(reason) => format!(
             "Git observation failed ({reason:?}); nothing was written. Retry, or send an explicit \"Unknown\""
         ),
+        WorkErrorWire::VerificationBusy => {
+            "a verification is already running for this Workspace or the daemon is at its limit; nothing ran or was written, retry later".to_owned()
+        }
         WorkErrorWire::Internal { message } => message.clone(),
     }
 }
@@ -211,8 +217,32 @@ fn print_compact(response: &WorkResponse) -> std::io::Result<()> {
             if let Some(fingerprint) = &result.change_set_fingerprint {
                 writeln!(stdout, "  change set: {fingerprint}")?;
             }
+            print_verification(&mut stdout, recorded.verification.as_deref())?;
         }
-        WorkResponse::Failed(_) => {}
+        WorkResponse::Failed(failure) => {
+            if failure.verification.is_some() {
+                writeln!(stdout, "not recorded; the verification ran:")?;
+            }
+            print_verification(&mut stdout, failure.verification.as_deref())?;
+        }
     }
     stdout.flush()
+}
+
+fn print_verification(
+    stdout: &mut impl std::io::Write,
+    results: Option<&[CommandResultWire]>,
+) -> std::io::Result<()> {
+    for result in results.unwrap_or_default() {
+        writeln!(
+            stdout,
+            "  verification {}: {:?} {}ms stdout {}B stderr {}B",
+            result.label,
+            result.outcome,
+            result.duration_ms,
+            result.stdout_bytes,
+            result.stderr_bytes
+        )?;
+    }
+    Ok(())
 }

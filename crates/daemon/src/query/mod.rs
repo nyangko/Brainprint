@@ -15,6 +15,7 @@ mod runtime;
 pub mod semantic;
 #[cfg(test)]
 mod verification;
+mod verify;
 mod work;
 
 pub use handler::{handle_query, handle_query_ack, handle_work};
