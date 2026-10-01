@@ -587,13 +587,15 @@ impl DaemonQueryRuntime {
         let db = workspace_db(&self.managed_workspace(workspace).await?);
         let (rows, job, last_seq) = blocking(move || {
             let store = open(workspace, &db)?;
-            let rows = store
-                .events_after(job_id, after_seq, limit)
-                .map_err(storage)?;
+            // The Job first: its terminal state is stored with its last
+            // event, so a terminal Job read here has every event below.
             let job = store
                 .get_by_id(job_id)
                 .map_err(storage)?
                 .ok_or(ManagedError::JobNotFound)?;
+            let rows = store
+                .events_after(job_id, after_seq, limit)
+                .map_err(storage)?;
             Ok((rows, job, store.last_seq(job_id).map_err(storage)?))
         })
         .await?;
