@@ -8,5 +8,5 @@ pub use build::{BuildInfo, PACKAGE_VERSION, PRODUCT_NAME, PROTOCOL_VERSION};
 pub use id::{
     BlueprintApplicationId, BlueprintId, DecisionId, IndexIncarnationId, LogicalSymbolId,
     ParseStableIdError, PolicyId, ProjectId, ProjectStateId, PromotionId, ResourceId, SymbolId,
-    UserPreferenceId, WorkItemId, WorkNoteId, WorkspaceId,
+    UserPreferenceId, VerificationJobId, WorkItemId, WorkNoteId, WorkspaceId,
 };

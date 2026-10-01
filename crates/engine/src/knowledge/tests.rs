@@ -1617,7 +1617,7 @@ fn migrations_are_idempotent_on_reopen() {
     for (name, kind, expected) in [
         ("global.db", DbKind::Global, 4u32),
         ("project.db", DbKind::Project, 4),
-        ("workspace.db", DbKind::Workspace, 5),
+        ("workspace.db", DbKind::Workspace, 6),
     ] {
         let path = dir.db(name);
         for _ in 0..3 {
@@ -1697,6 +1697,8 @@ fn no_generic_knowledge_store_exists() {
         [
             "db_meta",
             "schema_migration",
+            "verification_job",
+            "verification_job_event",
             "work_handoff",
             "work_item",
             "work_note",

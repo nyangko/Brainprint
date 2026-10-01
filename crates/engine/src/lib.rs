@@ -65,4 +65,5 @@ pub mod trust;
 pub mod types;
 pub mod typescript_semantic;
 pub mod verification;
+pub mod verification_job;
 pub mod watch;

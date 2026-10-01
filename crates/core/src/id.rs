@@ -127,6 +127,11 @@ define_stable_id!(
 );
 define_stable_id!(WorkItemId, "Stable identity for one Workspace WorkItem.");
 define_stable_id!(
+    VerificationJobId,
+    "Stable identity for one Workspace managed verification Job (#54): never a path, \
+     process id or timestamp; the same across daemon restarts."
+);
+define_stable_id!(
     PromotionId,
     "Stable identity for one WorkNote promotion receipt in project.db."
 );

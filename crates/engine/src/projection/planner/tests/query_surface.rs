@@ -2230,7 +2230,7 @@ fn schema_versions_are_unchanged() {
         crate::schema::workspace::open(&fixture.paths.workspace_db)
             .expect("workspace")
             .schema_version,
-        5
+        6
     );
     assert_eq!(
         crate::schema::index::open(&fixture.paths.index_db)

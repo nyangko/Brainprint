@@ -25,6 +25,13 @@
 //!
 //! v5 (#20 task 3 correction) adds the index.db incarnation to the
 //! baseline and result generation references; pre-v5 rows keep NULL.
+//!
+//! v6 (#54) adds managed verification Jobs: `verification_job` (one row
+//! per accepted request, its idempotency key and request fingerprint --
+//! never argv, env, cwd or output) and its append-only
+//! `verification_job_event` log. Indexes match the access paths only:
+//! uid, idempotency key, `state` (stale RUNNING reconciliation) and the
+//! event `(job_id, seq)` key.
 
 use std::path::Path;
 
@@ -201,6 +208,45 @@ pub const WORKSPACE_MIGRATIONS: &[Migration] = &[
                    OR (typeof(result_index_incarnation_uid) = 'blob'
                        AND length(result_index_incarnation_uid) = 16
                        AND result_generation_no IS NOT NULL));
+    ",
+    },
+    Migration {
+        version: 6,
+        name: "create_managed_verification_jobs",
+        sql: "
+        CREATE TABLE verification_job (
+            id INTEGER PRIMARY KEY,
+            uid BLOB NOT NULL UNIQUE
+                CHECK (typeof(uid) = 'blob' AND length(uid) = 16),
+            idempotency_key TEXT NOT NULL UNIQUE
+                CHECK (typeof(idempotency_key) = 'text'
+                       AND length(idempotency_key) BETWEEN 1 AND 128),
+            request_fingerprint BLOB NOT NULL
+                CHECK (typeof(request_fingerprint) = 'blob'
+                       AND length(request_fingerprint) = 32),
+            state TEXT NOT NULL
+                CHECK (state IN ('RUNNING', 'FINISHED', 'CANCELLED', 'INTERRUPTED',
+                                 'INTERNAL_ERROR')),
+            command_count INTEGER NOT NULL CHECK (command_count BETWEEN 1 AND 16),
+            final_summary TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            finished_at TEXT,
+            CHECK ((state = 'RUNNING') = (finished_at IS NULL))
+        );
+        CREATE INDEX idx_verification_job_state ON verification_job (state);
+
+        CREATE TABLE verification_job_event (
+            job_id INTEGER NOT NULL REFERENCES verification_job (id),
+            seq INTEGER NOT NULL CHECK (seq >= 1),
+            kind TEXT NOT NULL
+                CHECK (kind IN ('JOB_STARTED', 'COMMAND_STARTED', 'COMMAND_FINISHED',
+                                'JOB_FINISHED', 'JOB_CANCELLED', 'JOB_INTERRUPTED',
+                                'JOB_INTERNAL_ERROR')),
+            payload_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (job_id, seq)
+        );
     ",
     },
 ];

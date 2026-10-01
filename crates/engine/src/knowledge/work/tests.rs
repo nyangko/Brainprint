@@ -651,7 +651,7 @@ fn legacy_rows_migrate_to_conservative_dirty_states() {
             |row| row.get(0),
         )
         .expect("version");
-    assert_eq!(version, 5);
+    assert_eq!(version, 6);
 }
 
 // =============================== pre-existing dirty (cases 18-20)
