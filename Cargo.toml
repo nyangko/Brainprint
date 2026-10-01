@@ -33,6 +33,9 @@ clap = { version = "4", features = ["derive"] }
 # #52: process group (unix) / Job Object (Windows) primitive for the
 # common bounded runner, so Brainprint code stays free of `unsafe`.
 command-group = "=5.0.1"
+# #53: RFC 4648 base64 of raw artifact bytes on the JSON wire. Default
+# (SIMD/unsafe) features off.
+base64 = { version = "=0.23.1", default-features = false, features = ["std"] }
 rusqlite = { version = "0.40", features = ["bundled"] }
 serde = { version = "1.0", features = ["derive"] }
 notify = "8"

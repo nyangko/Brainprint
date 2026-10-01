@@ -16,7 +16,7 @@
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     path::PathBuf,
-    sync::{Mutex, mpsc::RecvTimeoutError},
+    sync::{Arc, Mutex, mpsc::RecvTimeoutError},
     time::Duration,
 };
 
@@ -115,7 +115,7 @@ pub struct DaemonQueryRuntime {
     verification_slots: verify::Slots,
     /// #53: the one raw-output store of this daemon (never inside a
     /// worker either).
-    artifact_store: ArtifactStore,
+    artifact_store: Arc<ArtifactStore>,
 }
 
 impl std::fmt::Debug for DaemonQueryRuntime {
@@ -143,7 +143,7 @@ impl DaemonQueryRuntime {
             watch_factory,
             workers: Mutex::new(HashMap::new()),
             verification_slots: verify::Slots::default(),
-            artifact_store: ArtifactStore::new(&global_paths.runtime_root()),
+            artifact_store: Arc::new(ArtifactStore::new(&global_paths.runtime_root())),
         }
     }
 
@@ -202,6 +202,10 @@ impl DaemonQueryRuntime {
     #[must_use]
     pub fn artifacts(&self) -> &ArtifactStore {
         &self.artifact_store
+    }
+
+    pub(crate) fn artifact_store(&self) -> Arc<ArtifactStore> {
+        Arc::clone(&self.artifact_store)
     }
 
     pub(super) fn verification_slots(&self) -> &verify::Slots {

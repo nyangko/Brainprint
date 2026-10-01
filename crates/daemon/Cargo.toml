@@ -15,6 +15,7 @@ name = "brainprintd"
 path = "src/main.rs"
 
 [dependencies]
+base64.workspace = true
 brainprint-core.workspace = true
 brainprint-engine.workspace = true
 serde_json.workspace = true
@@ -44,6 +45,11 @@ brainprint-agent = { path = "../agent" }
 # #52 step 3: the test binary is also the portable verification helper.
 [[test]]
 name = "i6_task3_verification_acceptance"
+harness = false
+
+# #53 step 3: likewise its own portable helper.
+[[test]]
+name = "i6_task4_capture_acceptance"
 harness = false
 
 [lints]

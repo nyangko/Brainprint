@@ -296,9 +296,7 @@ impl ArtifactStore {
         self.reserve(bytes)?.commit(stdout, stderr)
     }
 
-    /// Up to `max_bytes` of one retained part from `offset` within it; a
-    /// head read never runs on into the tail. Empty past the part's end.
-    /// A successful read makes the artifact most recently used.
+    /// [`Self::read`]'s bytes alone.
     pub fn read_part(
         &self,
         handle: &str,
@@ -307,6 +305,21 @@ impl ArtifactStore {
         offset: u64,
         max_bytes: usize,
     ) -> Result<Vec<u8>, ArtifactError> {
+        self.read(handle, stream, part, offset, max_bytes)
+            .map(|read| read.data)
+    }
+
+    /// Up to `max_bytes` of one retained part from `offset` within it; a
+    /// head read never runs on into the tail. Empty past the part's end.
+    /// A successful read makes the artifact most recently used.
+    pub fn read(
+        &self,
+        handle: &str,
+        stream: ArtifactStream,
+        part: ArtifactPart,
+        offset: u64,
+        max_bytes: usize,
+    ) -> Result<PartRead, ArtifactError> {
         // ponytail: reads hold the store lock; bounded by the caller's
         // max_bytes (step 3: 512 KiB). Per-record locks if reads contend.
         let mut state = self.state();
@@ -317,11 +330,12 @@ impl ArtifactStore {
             ArtifactStream::Stdout => &record.stdout,
             ArtifactStream::Stderr => &record.stderr,
         };
-        let (start, len) = match part {
-            ArtifactPart::Head => (stream.offset, stream.meta.head_bytes),
+        let (start, len, original_start_offset) = match part {
+            ArtifactPart::Head => (stream.offset, stream.meta.head_bytes, 0),
             ArtifactPart::Tail => (
                 stream.offset + stream.meta.head_bytes,
                 stream.meta.tail_bytes,
+                stream.meta.tail_start_offset,
             ),
         };
         let take = len.saturating_sub(offset).min(max_bytes as u64);
@@ -340,7 +354,27 @@ impl ArtifactStore {
             read().map_err(|error| ArtifactError::Io(ArtifactIoOp::Read, error.kind()))?;
         }
         state.touch(handle);
-        Ok(data)
+        Ok(PartRead {
+            data,
+            part_bytes: len,
+            original_start_offset,
+        })
+    }
+
+    /// Whether `handle` is still stored. Not a read: recency unchanged.
+    #[must_use]
+    pub fn contains(&self, handle: &str) -> bool {
+        self.state().completed.contains_key(handle)
+    }
+
+    /// Drop one artifact now (an artifact no response will name).
+    pub fn remove(&self, handle: &str) {
+        let mut state = self.state();
+        if let Some(record) = state.completed.remove(handle) {
+            state.lru.retain(|entry| entry != handle);
+            state.completed_bytes -= record.bytes;
+            let _ = fs::remove_file(&record.file);
+        }
     }
 
     /// Completed artifacts and their raw bytes, plus in-flight
@@ -355,6 +389,16 @@ impl ArtifactStore {
             reserved_bytes: state.reserved_bytes,
         }
     }
+}
+
+/// One [`ArtifactStore::read`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PartRead {
+    pub data: Vec<u8>,
+    /// The whole part's size.
+    pub part_bytes: u64,
+    /// Where the part starts in the original stream.
+    pub original_start_offset: u64,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]

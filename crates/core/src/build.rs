@@ -22,8 +22,10 @@ pub const PACKAGE_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// `WorkErrorWire::GitObservation` are variants a v4 peer cannot decode.
 /// Bumped to 6 by #52: the Work Result `verification` input, the
 /// per-command results on `Recorded`/`Failed` and
-/// `WorkErrorWire::VerificationBusy`.
-pub const PROTOCOL_VERSION: u32 = 6;
+/// `WorkErrorWire::VerificationBusy`. Bumped to 7 by #53: the per-command
+/// `capture` request and result (compact diagnostics, raw artifact
+/// references) and the `ArtifactRead` request/response.
+pub const PROTOCOL_VERSION: u32 = 7;
 
 /// Minimal build identity that benchmark and runtime boundaries can record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

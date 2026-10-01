@@ -3,7 +3,7 @@
 //! and Windows. `harness = false` for the same reason as `process_runner`.
 //!
 //! Helper ops, run in order: `exit:<code>`, `sleep:<ms>`, `out:<bytes>`,
-//! `err:<bytes>`, `mark:<path>`, `abort`, `spawn [ ops… ]` (a child left
+//! `err:<bytes>`, `line:<text>` (one stdout line), `mark:<path>`, `abort`, `spawn [ ops… ]` (a child left
 //! running), `dump:<path>` (write argv after it, cwd and env as JSON to
 //! `<path>` and stop: the remaining argv is payload, not ops).
 
@@ -18,10 +18,12 @@ use std::{
 };
 
 use brainprint_engine::{
+    diagnostics::DiagnosticFormat,
+    output_capture::{CaptureRequest, CommandCapture},
     process_runner::Cancel,
     verification::{
-        Cancelled, CommandResult, NotStartedReason, VerificationCommand, VerificationOutcome,
-        VerificationReport, prepare,
+        Cancelled, CaptureConsumer, CommandResult, NotStartedReason, VerificationCommand,
+        VerificationOutcome, VerificationReport, prepare,
     },
 };
 
@@ -61,6 +63,19 @@ fn main() {
             "cancel_ends_the_tree_and_the_batch",
             cancel_ends_the_tree_and_the_batch,
         ),
+        (
+            "captures_are_handed_over_one_command_at_a_time",
+            captures_are_handed_over_one_command_at_a_time,
+        ),
+        (
+            "unstarted_and_skipped_commands_capture_nothing",
+            unstarted_and_skipped_commands_capture_nothing,
+        ),
+        (
+            "a_cancelled_capture_is_never_handed_over",
+            a_cancelled_capture_is_never_handed_over,
+        ),
+        ("the_report_holds_no_output", the_report_holds_no_output),
     ];
     let handles: Vec<_> = tests
         .iter()
@@ -108,6 +123,7 @@ fn helper(ops: &[String]) {
             "sleep" => thread::sleep(Duration::from_millis(value.parse().expect("ms"))),
             "out" => write_zeros(&mut std::io::stdout(), value),
             "err" => write_zeros(&mut std::io::stderr(), value),
+            "line" => println!("{value}"),
             "mark" => fs::write(value, b"").expect("marker"),
             "dump" => {
                 let env: BTreeMap<String, String> = std::env::vars_os()
@@ -203,6 +219,62 @@ fn command(label: &str, ops: &[&str]) -> VerificationCommand {
         cwd: None,
         env: Vec::new(),
         timeout_secs: 60,
+        capture: None,
+    }
+}
+
+fn capturing(label: &str, ops: &[&str], capture: CaptureRequest) -> VerificationCommand {
+    VerificationCommand {
+        capture: Some(capture),
+        ..command(label, ops)
+    }
+}
+
+const RAW: CaptureRequest = CaptureRequest {
+    raw: true,
+    diagnostics: None,
+};
+const DIAGNOSTICS: CaptureRequest = CaptureRequest {
+    raw: false,
+    diagnostics: Some(DiagnosticFormat::PathLineColumn),
+};
+
+/// What the consumer saw, in order. `marker` is written by a command
+/// between the captured ones: its presence tells when `after` ran.
+struct Log {
+    marker: PathBuf,
+    events: Vec<String>,
+}
+
+impl Log {
+    fn new(marker: &str) -> Self {
+        Self {
+            marker: PathBuf::from(marker),
+            events: Vec::new(),
+        }
+    }
+}
+
+impl CaptureConsumer for Log {
+    fn before(&mut self, index: usize, requested: CaptureRequest) -> CaptureRequest {
+        self.events.push(format!("before {index}"));
+        requested
+    }
+
+    fn after(&mut self, index: usize, capture: Option<CommandCapture>) {
+        let Some(capture) = capture else {
+            self.events.push(format!("after {index} not spawned"));
+            return;
+        };
+        if let Some(stdout) = &capture.stdout {
+            assert!(stdout.head().iter().all(|&byte| byte == 0));
+        }
+        self.events.push(format!(
+            "after {index} marker={} raw={:?} diagnostics={:?}",
+            self.marker.exists(),
+            capture.stdout.map(|stdout| stdout.observed_bytes),
+            capture.diagnostics.map(|summary| summary.items.len()),
+        ));
     }
 }
 
@@ -253,6 +325,15 @@ fn invalid_batches_run_nothing() {
         ("argv over 4 KiB", with(|c| c.argv.push("x".repeat(4097)))),
         ("empty argv[0]", with(|c| c.argv[0] = String::new())),
         ("NUL in argv", with(|c| c.argv.push("a\0b".to_owned()))),
+        (
+            "empty capture",
+            with(|c| {
+                c.capture = Some(CaptureRequest {
+                    raw: false,
+                    diagnostics: None,
+                });
+            }),
+        ),
         ("timeout 0", with(|c| c.timeout_secs = 0)),
         ("timeout 3601", with(|c| c.timeout_secs = 3601)),
         ("total over 3600", with(|c| c.timeout_secs = 3600 - 59)),
@@ -556,4 +637,117 @@ fn cancel_ends_the_tree_and_the_batch() {
     let prepared = prepare(&dir.0, &[command("first", &[&format!("mark:{first}")])]).expect("ok");
     assert_eq!(prepared.run(&cancel), Err(Cancelled));
     assert!(!Path::new(&first).exists());
+}
+
+/// #53: a capture reaches the consumer when its command ends, before the
+/// next command starts; a command without a request is never captured.
+fn captures_are_handed_over_one_command_at_a_time() {
+    let dir = TestDir::create("capturing");
+    let marker = dir.path("between");
+    let commands = [
+        capturing("raw", &["out:1000"], RAW),
+        command("plain", &[&format!("mark:{marker}")]),
+        capturing("diagnostics", &["line:x.rs:1:2: error: boom"], DIAGNOSTICS),
+    ];
+    let mut log = Log::new(&marker);
+    let report = prepare(&dir.0, &commands)
+        .expect("valid batch")
+        .run_capturing(&Cancel::default(), &mut log)
+        .expect("not cancelled");
+
+    assert_eq!(outcomes(&report), vec![VerificationOutcome::Passed; 3]);
+    assert_eq!(
+        log.events,
+        [
+            "before 0",
+            "after 0 marker=false raw=Some(1000) diagnostics=None",
+            "before 2",
+            "after 2 marker=true raw=None diagnostics=Some(1)",
+        ]
+    );
+    // The #52 path ignores capture requests altogether.
+    let plain = run(&dir.0, &commands);
+    assert_eq!(outcomes(&plain), outcomes(&report));
+}
+
+fn unstarted_and_skipped_commands_capture_nothing() {
+    let dir = TestDir::create("capture-not-run");
+    let mut missing = capturing("missing", &[], RAW);
+    missing.argv = vec![dir.path("no-such-program")];
+    let commands = [missing, capturing("skipped", &["out:10"], RAW)];
+    let mut log = Log::new(&dir.path("unused"));
+    let report = prepare(&dir.0, &commands)
+        .expect("valid batch")
+        .run_capturing(&Cancel::default(), &mut log)
+        .expect("not cancelled");
+
+    assert_eq!(
+        outcomes(&report),
+        [
+            VerificationOutcome::NotStarted {
+                reason: NotStartedReason::NotFound
+            },
+            VerificationOutcome::Skipped,
+        ]
+    );
+    assert_eq!(log.events, ["before 0", "after 0 not spawned"]);
+}
+
+fn a_cancelled_capture_is_never_handed_over() {
+    let dir = TestDir::create("capture-cancel");
+    let commands = [
+        capturing("first", &["out:10"], RAW),
+        capturing("slow", &[&format!("sleep:{LATE_MS}")], RAW),
+    ];
+    let prepared = prepare(&dir.0, &commands).expect("valid batch");
+    let cancel = Cancel::default();
+    let canceller = {
+        let cancel = cancel.clone();
+        thread::spawn(move || {
+            thread::sleep(Duration::from_millis(500));
+            cancel.cancel();
+        })
+    };
+    let mut log = Log::new(&dir.path("unused"));
+    let started = Instant::now();
+    assert_eq!(prepared.run_capturing(&cancel, &mut log), Err(Cancelled));
+    assert!(started.elapsed() < Duration::from_millis(LATE_MS));
+    canceller.join().expect("canceller");
+    assert_eq!(
+        log.events,
+        [
+            "before 0",
+            "after 0 marker=false raw=Some(10) diagnostics=None",
+            "before 1",
+        ]
+    );
+}
+
+/// API guard: a report is results and a summary, a result is counts. A
+/// field added to hold output fails this to compile.
+fn the_report_holds_no_output() {
+    let dir = TestDir::create("report-shape");
+    let mut log = Log::new(&dir.path("unused"));
+    let report = prepare(&dir.0, &[capturing("raw", &["out:10"], RAW)])
+        .expect("valid batch")
+        .run_capturing(&Cancel::default(), &mut log)
+        .expect("not cancelled");
+    let VerificationReport { results, summary } = report;
+    let [
+        CommandResult {
+            label,
+            outcome,
+            duration_ms: _,
+            stdout_bytes,
+            stderr_bytes,
+        },
+    ] = &results[..]
+    else {
+        panic!("one result")
+    };
+    assert_eq!(
+        (label.as_str(), *outcome, *stdout_bytes, *stderr_bytes),
+        ("raw", VerificationOutcome::Passed, 10, 0)
+    );
+    assert!(summary.starts_with("raw: passed"));
 }

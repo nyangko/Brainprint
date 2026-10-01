@@ -117,6 +117,8 @@ pub enum Request {
     QueryAck(QueryAckRequest),
     /// #50 (I6 task 1): a caller-observed Working State write.
     Work(super::work::WorkRequest),
+    /// #53: a bounded read of an ephemeral raw artifact.
+    ArtifactRead(super::artifact::ArtifactReadRequestWire),
 }
 
 /// An envelope for every response the daemon may send.
@@ -136,6 +138,7 @@ pub enum Response {
     Query(QueryResponse),
     QueryAck(QueryAckResponse),
     Work(super::work::WorkResponse),
+    ArtifactRead(super::artifact::ArtifactReadResponseWire),
 }
 
 /// A coarse, stable classification a client can act on without parsing

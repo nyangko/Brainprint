@@ -2,6 +2,7 @@
 //! shared budget/retention/continuation/output grammar (#24
 //! "Implementation contract locked").
 
+mod artifact;
 mod base64url;
 pub mod commands;
 mod delivery;
@@ -12,6 +13,7 @@ mod target;
 mod vocab;
 mod work;
 
+pub use artifact::ArtifactCommand;
 pub use commands::Cli;
 pub use exec::Exit;
 pub use work::WorkCommand;
@@ -29,6 +31,7 @@ pub async fn run_query_command(cli: Cli) -> Exit {
         Cli::Knowledge { mode } => exec::run_knowledge(mode).await,
         Cli::Structure(args) => exec::run_structure(args).await,
         Cli::Work { mode } => work::run_work(mode).await,
+        Cli::Artifact { mode } => artifact::run_artifact(mode).await,
         Cli::Install | Cli::Status | Cli::Init { .. } => {
             unreachable!("main.rs handles Install/Status/Init before dispatching here")
         }

@@ -118,7 +118,8 @@ pub async fn handshake(
         | Response::Init(_)
         | Response::Query(_)
         | Response::QueryAck(_)
-        | Response::Work(_) => Err(ClientError::UnexpectedResponse),
+        | Response::Work(_)
+        | Response::ArtifactRead(_) => Err(ClientError::UnexpectedResponse),
     }
 }
 
@@ -142,7 +143,8 @@ pub async fn status(connection: &mut ClientConnection) -> Result<StatusResponse,
         | Response::Init(_)
         | Response::Query(_)
         | Response::QueryAck(_)
-        | Response::Work(_) => Err(ClientError::UnexpectedResponse),
+        | Response::Work(_)
+        | Response::ArtifactRead(_) => Err(ClientError::UnexpectedResponse),
     }
 }
 

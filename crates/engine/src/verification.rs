@@ -7,6 +7,9 @@
 //! timeout and cwd) before anything runs; only a [`PreparedVerification`]
 //! can run. Commands run in order on the common runner, output counted,
 //! never kept; the first one that does not pass skips the rest.
+//! #53: [`PreparedVerification::run_capturing`] also captures what a
+//! command asked for and hands it to a [`CaptureConsumer`] before the next
+//! command starts; [`PreparedVerification::run`] never captures.
 //! argv, env and cwd are never echoed into results, summary or errors.
 
 use std::{
@@ -21,6 +24,7 @@ use std::{
 use crate::{
     git_observation::normalized_path,
     git_status::plain_path,
+    output_capture::{self, CaptureRequest, CommandCapture},
     process_runner::{self, Cancel, Capture, RunEnd},
 };
 
@@ -45,6 +49,8 @@ pub struct VerificationCommand {
     /// Overrides on top of the inherited environment.
     pub env: Vec<(String, String)>,
     pub timeout_secs: u32,
+    /// #53: what to capture; `None` counts output only (#52).
+    pub capture: Option<CaptureRequest>,
 }
 
 /// Why a batch was refused. Nothing ran. Names the command by position
@@ -107,6 +113,8 @@ pub struct CommandResult {
     pub stderr_bytes: u64,
 }
 
+/// Never holds output: a capture goes to the [`CaptureConsumer`] as each
+/// command ends.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerificationReport {
     pub results: Vec<CommandResult>,
@@ -118,6 +126,8 @@ pub struct VerificationReport {
 /// Workspace root.
 #[derive(Debug)]
 pub struct PreparedVerification {
+    /// The canonical Workspace root (diagnostic paths resolve under it).
+    root: PathBuf,
     commands: Vec<PreparedCommand>,
 }
 
@@ -128,6 +138,19 @@ struct PreparedCommand {
     cwd: PathBuf,
     env: Vec<(String, String)>,
     timeout: Duration,
+    capture: Option<CaptureRequest>,
+}
+
+/// Takes each command's capture before the next command runs (#53), so a
+/// batch never holds more than one command's capture. Called only for
+/// commands with a capture request that are actually tried: never for a
+/// skipped one, and not `after` a cancelled one.
+pub trait CaptureConsumer {
+    /// Right before command `index` spawns; returns what to capture
+    /// (e.g. no raw when there is no room for it).
+    fn before(&mut self, index: usize, requested: CaptureRequest) -> CaptureRequest;
+    /// Right after it ended; `None` when it never spawned.
+    fn after(&mut self, index: usize, capture: Option<CommandCapture>);
 }
 
 /// Check the whole batch against `workspace_root`. Any violation refuses
@@ -168,6 +191,14 @@ pub fn prepare(
         }
         check_argv(&command.argv).map_err(|reason| at(&reason))?;
         check_env(&command.env).map_err(|reason| at(&reason))?;
+        if command.capture
+            == Some(CaptureRequest {
+                raw: false,
+                diagnostics: None,
+            })
+        {
+            return Err(at("capture requests nothing"));
+        }
         if !(1..=MAX_TIMEOUT_SECS).contains(&command.timeout_secs) {
             return Err(at(&format!("timeout_secs must be 1..={MAX_TIMEOUT_SECS}")));
         }
@@ -179,6 +210,7 @@ pub fn prepare(
             cwd,
             env: command.env.clone(),
             timeout: Duration::from_secs(command.timeout_secs.into()),
+            capture: command.capture,
         });
     }
     if total_secs > MAX_TOTAL_TIMEOUT_SECS {
@@ -186,7 +218,10 @@ pub fn prepare(
             "total timeout {total_secs}s exceeds {MAX_TOTAL_TIMEOUT_SECS}s"
         ));
     }
-    Ok(PreparedVerification { commands: prepared })
+    Ok(PreparedVerification {
+        root,
+        commands: prepared,
+    })
 }
 
 fn valid_label(label: &str) -> bool {
@@ -258,11 +293,55 @@ impl PreparedVerification {
     /// Run the commands in order. `Err(Cancelled)` when `cancel` fires:
     /// the running tree is ended and nothing later runs.
     pub fn run(&self, cancel: &Cancel) -> Result<VerificationReport, Cancelled> {
+        self.run_each(|_, command| command.run(cancel))
+    }
+
+    /// [`Self::run`], and each command with a capture request is captured
+    /// and handed to `consumer` before the next command starts. Commands
+    /// without one run exactly as in [`Self::run`].
+    pub fn run_capturing(
+        &self,
+        cancel: &Cancel,
+        consumer: &mut dyn CaptureConsumer,
+    ) -> Result<VerificationReport, Cancelled> {
+        self.run_each(|index, command| {
+            let Some(requested) = command.capture else {
+                return command.run(cancel);
+            };
+            let request = consumer.before(index, requested);
+            let (result, capture) = command.run_captured(cancel, request, &self.root)?;
+            consumer.after(index, capture);
+            Ok(result)
+        })
+    }
+
+    /// Per command: whether it asked for capture.
+    #[must_use]
+    pub fn capture_requested(&self) -> Vec<bool> {
+        self.commands
+            .iter()
+            .map(|command| command.capture.is_some())
+            .collect()
+    }
+
+    /// Per command, in order.
+    #[must_use]
+    pub fn labels(&self) -> Vec<String> {
+        self.commands
+            .iter()
+            .map(|command| command.label.clone())
+            .collect()
+    }
+
+    fn run_each(
+        &self,
+        mut run: impl FnMut(usize, &PreparedCommand) -> Result<CommandResult, Cancelled>,
+    ) -> Result<VerificationReport, Cancelled> {
         let mut results = Vec::with_capacity(self.commands.len());
         let mut passing = true;
-        for command in &self.commands {
+        for (index, command) in self.commands.iter().enumerate() {
             let result = if passing {
-                command.run(cancel)?
+                run(index, command)?
             } else {
                 CommandResult {
                     label: command.label.clone(),
@@ -281,23 +360,60 @@ impl PreparedVerification {
 }
 
 impl PreparedCommand {
-    fn run(&self, cancel: &Cancel) -> Result<CommandResult, Cancelled> {
-        if cancel.is_cancelled() {
-            return Err(Cancelled);
-        }
+    fn command(&self) -> Command {
         let mut command = Command::new(&self.argv[0]);
         command
             .args(&self.argv[1..])
             .current_dir(plain_path(&self.cwd))
             .envs(self.env.iter().map(|(key, value)| (key, value)));
+        command
+    }
+
+    fn run(&self, cancel: &Cancel) -> Result<CommandResult, Cancelled> {
+        if cancel.is_cancelled() {
+            return Err(Cancelled);
+        }
         let started = Instant::now();
         let run = process_runner::run(
-            &mut command,
+            &mut self.command(),
             self.timeout,
             cancel,
             Capture::Count,
             Capture::Count,
         );
+        self.result(started, run)
+    }
+
+    /// `None` capture: the command never spawned.
+    fn run_captured(
+        &self,
+        cancel: &Cancel,
+        request: CaptureRequest,
+        root: &Path,
+    ) -> Result<(CommandResult, Option<CommandCapture>), Cancelled> {
+        if cancel.is_cancelled() {
+            return Err(Cancelled);
+        }
+        let started = Instant::now();
+        let run = output_capture::run_captured(
+            &mut self.command(),
+            self.timeout,
+            cancel,
+            request,
+            root,
+            &self.cwd,
+        );
+        match run {
+            Ok(run) => Ok((self.result(started, Ok(run.output))?, Some(run.capture))),
+            Err(error) => Ok((self.result(started, Err(error))?, None)),
+        }
+    }
+
+    fn result(
+        &self,
+        started: Instant,
+        run: io::Result<process_runner::RunOutput>,
+    ) -> Result<CommandResult, Cancelled> {
         let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         let (outcome, stdout_bytes, stderr_bytes) = match run {
             Err(error) => (

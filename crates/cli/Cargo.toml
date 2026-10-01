@@ -11,6 +11,7 @@ name = "brainprint"
 path = "src/main.rs"
 
 [dependencies]
+base64.workspace = true
 brainprint-core.workspace = true
 clap.workspace = true
 serde_json.workspace = true

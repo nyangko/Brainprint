@@ -14,6 +14,7 @@
 //! - [`endpoint`]: where that stream lives -- the one path derivation both
 //!   `brainprint-daemon` and `brainprint-cli` share (#15 task 10).
 
+pub mod artifact;
 pub mod endpoint;
 pub mod framing;
 pub mod messages;

@@ -144,6 +144,31 @@ pub struct VerificationCommandWire {
     #[serde(default)]
     pub env: Vec<(String, String)>,
     pub timeout_secs: u32,
+    /// #53: what to capture of this command's output; `None` keeps none
+    /// (#52). Asking for nothing (`raw: false`, no diagnostics) refuses
+    /// the batch.
+    #[serde(default)]
+    pub capture: Option<VerificationCaptureWire>,
+}
+
+/// #53: an explicit capture request. Brainprint never picks a parser by
+/// looking at the program, argv or output, and never adds argv.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VerificationCaptureWire {
+    /// Keep the head and tail of each stream as an ephemeral artifact.
+    pub raw: bool,
+    pub diagnostics: Option<DiagnosticFormatWire>,
+}
+
+/// Mirrors `brainprint_engine::diagnostics::DiagnosticFormat`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DiagnosticFormatWire {
+    /// Cargo's `--message-format=json` `compiler-message` lines only; a
+    /// direct `rustc --error-format=json` line is a parse miss.
+    CargoCompilerMessageJson,
+    /// `<path>:<line>:<column>: <message>`.
+    PathLineColumn,
 }
 
 /// One command's result. argv, env, cwd and output are never echoed.
@@ -154,6 +179,124 @@ pub struct CommandResultWire {
     pub duration_ms: u64,
     pub stdout_bytes: u64,
     pub stderr_bytes: u64,
+    /// #53: never changes `outcome`.
+    pub capture: CommandCaptureWire,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CommandCaptureWire {
+    /// The command had no capture request.
+    NotRequested,
+    /// Requested, but the command never spawned (`NotStarted`, `Skipped`).
+    NotRun,
+    /// The command spawned and its output was captured.
+    Captured {
+        stream_status: StreamStatusWire,
+        diagnostics: Option<DiagnosticSummaryWire>,
+        raw: RawAvailabilityWire,
+    },
+}
+
+/// Whether both streams were read to EOF; says nothing about storage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum StreamStatusWire {
+    Complete,
+    /// A stream ended with the run (deadline, a descendant holding the
+    /// pipe): what was captured stops there.
+    Partial,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RawAvailabilityWire {
+    NotRequested,
+    Available(RawArtifactRefWire),
+    /// Requested, but no usable handle: no room, a storage failure, or
+    /// already evicted when the response was built.
+    Unavailable,
+}
+
+/// An ephemeral raw artifact: read it with `Request::ArtifactRead` while
+/// the daemon keeps it (bounded LRU; a restart expires every handle).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RawArtifactRefWire {
+    /// Opaque; names no path, Workspace, argv or label.
+    pub handle: String,
+    pub stdout: RawStreamMetaWire,
+    pub stderr: RawStreamMetaWire,
+}
+
+/// One stream's retained parts. Not truncated: all of it is the head and
+/// the tail is empty. Truncated: head and tail are `omitted_bytes` apart
+/// in the original stream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RawStreamMetaWire {
+    pub observed_bytes: u64,
+    pub head_bytes: u64,
+    pub tail_bytes: u64,
+    pub omitted_bytes: u64,
+    pub truncated: bool,
+    pub tail_start_offset: u64,
+}
+
+/// Mirrors `brainprint_engine::diagnostics::DiagnosticSummary`, plus what
+/// the response's diagnostic budget left out.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiagnosticSummaryWire {
+    pub items: Vec<DiagnosticWire>,
+    /// Diagnostics parsed, duplicates included.
+    pub observed: u64,
+    /// Exact duplicates of a kept item; not a global unique count.
+    pub deduplicated: u64,
+    /// Beyond the per-command bound of 64.
+    pub omitted: u64,
+    /// Lines that are not a diagnostic of the format.
+    pub parse_misses: u64,
+    /// Kept by the parser but left out of this response by its 512 KiB
+    /// diagnostic budget. Never counted in `omitted`.
+    pub delivery_omitted: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiagnosticWire {
+    pub severity: DiagnosticSeverityWire,
+    pub code: Option<String>,
+    /// At most 2 KiB, cut at a UTF-8 boundary (`message_truncated`).
+    pub message: String,
+    pub path: DiagnosticPathWire,
+    pub line: Option<u32>,
+    pub column: Option<u32>,
+    pub stream: OutputStreamWire,
+    pub message_truncated: bool,
+}
+
+/// In delivery priority order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DiagnosticSeverityWire {
+    Error,
+    Warning,
+    Note,
+    Help,
+    Unknown,
+}
+
+/// Mirrors `brainprint_engine::diagnostics::DiagnosticPath`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DiagnosticPathWire {
+    /// The diagnostic named no path.
+    Absent,
+    /// An existing file in the Workspace, `/`-separated and relative.
+    Workspace { path: String },
+    /// An existing file outside the Workspace; its text is not sent.
+    External,
+    /// Named, but not an existing file (virtual, deleted, missing, a
+    /// directory); its text is not sent.
+    Unresolved,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum OutputStreamWire {
+    Stdout,
+    Stderr,
 }
 
 /// Mirrors `brainprint_engine::verification::VerificationOutcome`.

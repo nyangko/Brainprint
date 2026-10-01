@@ -6,6 +6,7 @@
 //! [`handler`] dispatches `Request::Query`/`Request::QueryAck` against it,
 //! and `Request::Work` (#50) onto the same per-Workspace worker.
 
+mod capture;
 mod convert_in;
 mod convert_out;
 mod handler;

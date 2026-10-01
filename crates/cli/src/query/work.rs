@@ -11,8 +11,8 @@ use brainprint_core::protocol::{
     Request, Response,
     query::{DirtyObservationWire, WorkspaceSelectorWire},
     work::{
-        CommandResultWire, WorkErrorWire, WorkOperationWire, WorkRequest, WorkResponse,
-        WorkResultInputWire, WorkStartWire,
+        CommandCaptureWire, CommandResultWire, RawAvailabilityWire, WorkErrorWire,
+        WorkOperationWire, WorkRequest, WorkResponse, WorkResultInputWire, WorkStartWire,
     },
 };
 use clap::{Args, Subcommand};
@@ -243,6 +243,23 @@ fn print_verification(
             result.stdout_bytes,
             result.stderr_bytes
         )?;
+        if let CommandCaptureWire::Captured {
+            stream_status,
+            diagnostics,
+            raw,
+        } = &result.capture
+        {
+            let raw = match raw {
+                RawAvailabilityWire::NotRequested => "not requested".to_owned(),
+                RawAvailabilityWire::Available(raw) => format!("handle {}", raw.handle),
+                RawAvailabilityWire::Unavailable => "unavailable".to_owned(),
+            };
+            write!(stdout, "    capture {stream_status:?}; raw {raw}")?;
+            if let Some(summary) = diagnostics {
+                write!(stdout, "; {} diagnostics", summary.items.len())?;
+            }
+            writeln!(stdout)?;
+        }
     }
     Ok(())
 }

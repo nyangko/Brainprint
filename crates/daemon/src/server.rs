@@ -14,13 +14,20 @@ use std::{error::Error, fmt, io, path::Path, sync::Arc, time::Duration};
 use brainprint_core::{
     BuildInfo,
     protocol::{
-        self, ErrorKind, ErrorResponse, HandshakeResponse, Request, Response, transport::Listener,
+        self, ErrorKind, ErrorResponse, HandshakeResponse, Request, Response,
+        artifact::{
+            ArtifactPartWire, ArtifactReadErrorWire, ArtifactReadRequestWire,
+            ArtifactReadResponseWire, MAX_ARTIFACT_READ_BYTES,
+        },
+        transport::Listener,
+        work::OutputStreamWire,
     },
 };
 use brainprint_engine::paths::GlobalPaths;
 use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite};
 
 use crate::{
+    artifacts::{ArtifactError, ArtifactPart, ArtifactStore, ArtifactStream},
     client, handlers,
     query::{DaemonQueryRuntime, lifecycle::WatchFactory},
     runtime_paths::{self, RuntimeEndpoint},
@@ -285,8 +292,72 @@ where
                     None => return Ok(()),
                 }
             }
+            Request::ArtifactRead(read_request) => Response::ArtifactRead(
+                artifact_read(query_runtime.artifact_store(), read_request).await,
+            ),
         };
         protocol::framing::write_message(&mut connection, &response).await?;
+    }
+}
+
+/// #53: a read-only lookup in the daemon's artifact store -- no
+/// Workspace, worker, ledger or Working State. A successful read makes the
+/// artifact most recently used.
+async fn artifact_read(
+    store: Arc<ArtifactStore>,
+    request: ArtifactReadRequestWire,
+) -> ArtifactReadResponseWire {
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+
+    let failed = |error| ArtifactReadResponseWire::Failed { error };
+    if !(1..=MAX_ARTIFACT_READ_BYTES).contains(&request.max_bytes) {
+        return failed(ArtifactReadErrorWire::InvalidRequest {
+            reason: format!("max_bytes must be 1..={MAX_ARTIFACT_READ_BYTES}"),
+        });
+    }
+    let ArtifactReadRequestWire {
+        handle,
+        stream,
+        part,
+        offset,
+        max_bytes,
+    } = request;
+    let read = tokio::task::spawn_blocking(move || {
+        store.read(
+            &handle,
+            match stream {
+                OutputStreamWire::Stdout => ArtifactStream::Stdout,
+                OutputStreamWire::Stderr => ArtifactStream::Stderr,
+            },
+            match part {
+                ArtifactPartWire::Head => ArtifactPart::Head,
+                ArtifactPartWire::Tail => ArtifactPart::Tail,
+            },
+            offset.into(),
+            max_bytes as usize,
+        )
+    })
+    .await;
+    match read {
+        Ok(Ok(read)) => {
+            // At most `max_bytes`, so within u32.
+            let returned_bytes = read.data.len() as u32;
+            let end = offset + returned_bytes;
+            ArtifactReadResponseWire::Data {
+                stream,
+                part,
+                original_start_offset: read.original_start_offset,
+                data_b64: STANDARD.encode(&read.data),
+                returned_bytes,
+                next_offset: (u64::from(end) < read.part_bytes).then_some(end),
+            }
+        }
+        Ok(Err(ArtifactError::Unavailable)) => failed(ArtifactReadErrorWire::ArtifactUnavailable),
+        Ok(Err(error)) => {
+            eprintln!("brainprintd: artifact read failed: {error}");
+            failed(ArtifactReadErrorWire::Internal)
+        }
+        Err(_) => failed(ArtifactReadErrorWire::Internal),
     }
 }
 

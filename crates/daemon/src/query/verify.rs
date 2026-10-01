@@ -8,6 +8,9 @@
 //! It is cancelled (process tree ended, nothing stored) when the client's
 //! connection closes or the daemon shuts down: dropping the waiting
 //! future fires the cancel. Nothing is queued or retried.
+//!
+//! #53: when a command asks for capture, the batch runs through
+//! [`capture::StoreConsumer`]; otherwise it is the #52 run unchanged.
 
 // #52 grew `WorkFailureWire` (the per-command results) past the lint's
 // size; it is built once per Work request, never in a hot loop.
@@ -24,9 +27,9 @@ use std::{
 use brainprint_core::{
     WorkspaceId,
     protocol::work::{
-        CommandResultWire, NotStartedReasonWire, VerificationOutcomeWire, VerificationWire,
-        WorkErrorWire, WorkFailureWire, WorkOperationWire, WorkOutcomeWire, WorkResponse,
-        WorkResultInputWire,
+        CommandCaptureWire, CommandResultWire, NotStartedReasonWire, VerificationOutcomeWire,
+        VerificationWire, WorkErrorWire, WorkFailureWire, WorkOperationWire, WorkOutcomeWire,
+        WorkResponse, WorkResultInputWire,
     },
 };
 use brainprint_engine::{
@@ -38,7 +41,11 @@ use brainprint_engine::{
     },
 };
 
-use super::{DaemonQueryRuntime, observe, work};
+use super::{
+    DaemonQueryRuntime,
+    capture::{self, Kept, StoreConsumer, Undelivered},
+    observe, work,
+};
 
 /// Verifications running at once in the whole daemon.
 pub(super) const DAEMON_LIMIT: usize = 4;
@@ -126,20 +133,31 @@ pub(super) async fn run(
 
     let cancel = Cancel::default();
     let _cancel_on_drop = CancelOnDrop(cancel.clone());
-    let task = tokio::task::spawn_blocking(move || {
-        let _slot = slot;
-        prepared.run(&cancel)
-    });
-    let report = tokio::select! {
+    let store = runtime.artifact_store();
+    let task = {
+        let store = Arc::clone(&store);
+        tokio::task::spawn_blocking(move || {
+            let _slot = slot;
+            run_batch(&prepared, &cancel, store)
+        })
+    };
+    // An abandoned task still finishes; its undelivered artifacts are
+    // removed when its output is dropped.
+    let ran = tokio::select! {
         joined = task => joined,
         () = closed => return None,
     };
-    let report = match report {
-        Ok(Ok(report)) => report,
+    let (report, kept, undelivered) = match ran {
+        Ok(Ok(ran)) => ran,
         Ok(Err(verification::Cancelled)) => return None,
         Err(_) => return Some(failed(work::internal_message("verification task panicked"))),
     };
-    let results: Vec<CommandResultWire> = report.results.into_iter().map(result_wire).collect();
+    let mut results: Vec<CommandResultWire> = report
+        .results
+        .into_iter()
+        .zip(capture::shape(kept))
+        .map(|(result, capture)| result_wire(result, capture))
+        .collect();
 
     input.verification_summary = Some(report.summary);
     let response =
@@ -147,6 +165,9 @@ pub(super) async fn run(
             Ok(operation) => runtime.work(workspace, operation).await,
             Err(failure) => WorkResponse::Failed(failure),
         };
+    capture::downgrade_evicted(&mut results, &store);
+    // Recorded or not, the response names the artifacts: they stay.
+    undelivered.deliver();
     Some(match response {
         WorkResponse::Recorded(mut recorded) => {
             recorded.verification = Some(results);
@@ -193,6 +214,7 @@ async fn preflight(
             cwd: command.cwd,
             env: command.env,
             timeout_secs: command.timeout_secs,
+            capture: command.capture.map(capture::request),
         })
         .collect();
     tokio::task::spawn_blocking(move || {
@@ -214,12 +236,32 @@ async fn preflight(
     })
 }
 
+/// The #52 run when no command asks for capture; otherwise each capture
+/// goes to the store as its command ends. `Kept` is per command.
+fn run_batch(
+    prepared: &verification::PreparedVerification,
+    cancel: &Cancel,
+    store: Arc<crate::artifacts::ArtifactStore>,
+) -> Result<(verification::VerificationReport, Vec<Kept>, Undelivered), verification::Cancelled> {
+    let requested = prepared.capture_requested();
+    let undelivered = Undelivered::new(Arc::clone(&store));
+    if !requested.contains(&true) {
+        let report = prepared.run(cancel)?;
+        let kept = requested.iter().map(|_| Kept::NotRequested).collect();
+        return Ok((report, kept, undelivered));
+    }
+    let labels = prepared.labels();
+    let mut consumer = StoreConsumer::new(&store, undelivered, &labels, &requested);
+    let report = prepared.run_capturing(cancel, &mut consumer)?;
+    Ok((report, consumer.kept, consumer.undelivered))
+}
+
 const fn failed(error: WorkErrorWire) -> WorkResponse {
     WorkResponse::Failed(work::failure(error))
 }
 
 /// Label and outcome only reach the daemon log; never argv, env or output.
-fn result_wire(result: CommandResult) -> CommandResultWire {
+fn result_wire(result: CommandResult, capture: CommandCaptureWire) -> CommandResultWire {
     eprintln!(
         "brainprintd: verification {}: {:?}",
         result.label, result.outcome
@@ -247,6 +289,7 @@ fn result_wire(result: CommandResult) -> CommandResultWire {
         duration_ms: result.duration_ms,
         stdout_bytes: result.stdout_bytes,
         stderr_bytes: result.stderr_bytes,
+        capture,
     }
 }
 

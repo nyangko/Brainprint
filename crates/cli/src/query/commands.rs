@@ -77,6 +77,11 @@ pub enum Cli {
         #[command(subcommand)]
         mode: super::WorkCommand,
     },
+    /// #53: read an ephemeral raw artifact a verification capture kept.
+    Artifact {
+        #[command(subcommand)]
+        mode: super::ArtifactCommand,
+    },
 }
 
 #[derive(Debug, Subcommand)]
