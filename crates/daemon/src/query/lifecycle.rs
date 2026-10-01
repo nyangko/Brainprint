@@ -15,18 +15,22 @@
 //! typed NOT_CURRENT -- never a stale generation as current.
 
 use std::{
+    collections::HashMap,
+    fmt,
     path::{Path, PathBuf},
     sync::Arc,
 };
 
-use brainprint_core::WorkspaceId;
+use brainprint_core::{IndexIncarnationId, ResourceId, WorkspaceId};
 use brainprint_engine::{
     config::{WorkspaceConfig, load_workspace_config},
+    generation::GenerationStore,
     paths::WorkspacePaths,
     query::{Currentness, QueryIndex},
     reconcile::Reconcile,
     refresh::{RefreshOutcome, TargetedRefresh},
     registry::GlobalRegistry,
+    resource::{Resource, ResourceState, ResourceStore},
     scan::BaselineScan,
     watch::{NotifyWatchSource, RawWatchEvent, WatchIngest, WatchSource, WatcherContinuity},
 };
@@ -71,6 +75,98 @@ pub struct LifecycleStats {
     pub refresh_deferrals: u64,
     pub journal_entries_ingested: u64,
     pub settle_failures: u64,
+}
+
+/// #55: which physical index, at which proven-current point, a command
+/// boundary is measured against. Only a STABLE generation whose basis is
+/// the current Workspace revision is ever a basis.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IndexBasis {
+    pub index_incarnation: IndexIncarnationId,
+    pub workspace_revision: String,
+    pub generation_no: i64,
+    pub generation_basis_revision: String,
+}
+
+/// #55: the current basis and every ACTIVE Resource's revision, taken
+/// before a command runs. Identity and revision only: no source bytes,
+/// paths or metadata. A command-time publication by the watcher cannot
+/// hide a change from the delta, because this predates it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommandBaseline {
+    pub basis: IndexBasis,
+    pub resources: HashMap<ResourceId, String>,
+}
+
+/// In report order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ResourceDeltaKind {
+    Created,
+    Updated,
+    Deleted,
+}
+
+/// One Resource that differs between a command's baseline and the
+/// verified basis after it. Not a claim that the command changed it:
+/// anything else that changed the Workspace meanwhile is here too. A move
+/// keeps its identity, so it is `Updated`; a metadata-only refresh keeps
+/// its revision, so it is not here at all.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResourceDelta {
+    pub resource_id: ResourceId,
+    pub kind: ResourceDeltaKind,
+    /// The current path; for `Deleted`, the tombstone's last path.
+    pub path: String,
+    /// The current revision; for `Deleted`, the deletion's.
+    pub resource_revision: String,
+}
+
+/// #55: the net change from a [`CommandBaseline`] to the basis a forced
+/// verified reconcile proved current after the command. Net, not a
+/// history: a Resource created and deleted in between is not here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PostCommandRefreshReport {
+    pub before: IndexBasis,
+    pub after: IndexBasis,
+    /// Created, Updated, Deleted; then by path, then by ResourceId.
+    pub changes: Vec<ResourceDelta>,
+    pub created_count: u64,
+    pub updated_count: u64,
+    pub deleted_count: u64,
+}
+
+impl PostCommandRefreshReport {
+    #[must_use]
+    pub fn total_changed(&self) -> u64 {
+        self.created_count + self.updated_count + self.deleted_count
+    }
+}
+
+/// Why no current basis could be proven. Detail stays here, for the log.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CommandBasisError {
+    /// Recovery failed or the Workspace is gone; the index is left DIRTY.
+    Refresh(String),
+    NotCurrent,
+    NoStableGeneration,
+    StableBasisMismatch,
+    /// The index.db was rebuilt since the baseline: its ResourceIds and
+    /// revisions are not the baseline's history.
+    IndexIncarnationChanged,
+}
+
+impl fmt::Display for CommandBasisError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Refresh(error) => write!(formatter, "workspace refresh failed: {error}"),
+            Self::NotCurrent => formatter.write_str("the index is not current"),
+            Self::NoStableGeneration => formatter.write_str("no stable generation"),
+            Self::StableBasisMismatch => {
+                formatter.write_str("the stable generation is behind the workspace revision")
+            }
+            Self::IndexIncarnationChanged => formatter.write_str("the index was rebuilt"),
+        }
+    }
 }
 
 pub struct WorkspaceLifecycle {
@@ -212,6 +308,85 @@ impl WorkspaceLifecycle {
         }
         self.require_present()?;
         self.settle(false)
+    }
+
+    /// #55: the pre-command baseline -- the query freshness barrier first,
+    /// then the basis it proved and the ACTIVE Resource revisions.
+    pub fn command_baseline(&mut self) -> Result<CommandBaseline, CommandBasisError> {
+        self.ensure_current().map_err(CommandBasisError::Refresh)?;
+        let (basis, active) = self.current_basis()?;
+        Ok(CommandBaseline {
+            basis,
+            resources: active
+                .into_iter()
+                .map(|resource| (resource.id, resource.resource_revision))
+                .collect(),
+        })
+    }
+
+    /// #55: after a command, prove currentness again without trusting the
+    /// watcher to have seen the command's writes: buffered events are
+    /// journaled, then a verified reconcile runs even with nothing
+    /// pending and the index already CURRENT (a write that kept size and
+    /// mtime, or one not delivered yet). Then the net delta from
+    /// `baseline`. Starts no semantic backend; persisted semantic
+    /// contributions are withdrawn as on every structural publication.
+    pub fn refresh_after_command(
+        &mut self,
+        baseline: &CommandBaseline,
+    ) -> Result<PostCommandRefreshReport, CommandBasisError> {
+        self.require_present()
+            .and_then(|()| self.ingest().map(|_| ()))
+            .map_err(CommandBasisError::Refresh)?;
+        self.settle(true).map_err(CommandBasisError::Refresh)?;
+        let (after, active) = self.current_basis()?;
+        if after.index_incarnation != baseline.basis.index_incarnation {
+            return Err(CommandBasisError::IndexIncarnationChanged);
+        }
+        let store = ResourceStore::open(&self.index_db).map_err(storage)?;
+        let changes = resource_delta(&baseline.resources, active, |id| {
+            store.get_by_id(id).map_err(storage)
+        })?;
+        let count = |kind| changes.iter().filter(|change| change.kind == kind).count() as u64;
+        Ok(PostCommandRefreshReport {
+            before: baseline.basis.clone(),
+            created_count: count(ResourceDeltaKind::Created),
+            updated_count: count(ResourceDeltaKind::Updated),
+            deleted_count: count(ResourceDeltaKind::Deleted),
+            after,
+            changes,
+        })
+    }
+
+    /// The basis and ACTIVE inventory, only if the index proves CURRENT on
+    /// a stable generation at the Workspace revision. Read on this worker,
+    /// so no publication interleaves.
+    fn current_basis(&self) -> Result<(IndexBasis, Vec<Resource>), CommandBasisError> {
+        if !self.index_current().map_err(CommandBasisError::Refresh)? {
+            return Err(CommandBasisError::NotCurrent);
+        }
+        let generations = GenerationStore::open(&self.index_db).map_err(storage)?;
+        let stable = generations
+            .current_stable()
+            .map_err(storage)?
+            .ok_or(CommandBasisError::NoStableGeneration)?;
+        let workspace_revision = generations
+            .current_workspace_revision()
+            .map_err(storage)?
+            .ok_or(CommandBasisError::NoStableGeneration)?;
+        if stable.basis_workspace_revision != workspace_revision {
+            return Err(CommandBasisError::StableBasisMismatch);
+        }
+        let basis = IndexBasis {
+            index_incarnation: generations.index_incarnation_id().map_err(storage)?,
+            workspace_revision,
+            generation_no: stable.generation_no,
+            generation_basis_revision: stable.basis_workspace_revision,
+        };
+        let active = ResourceStore::open(&self.index_db)
+            .and_then(|store| store.list_active())
+            .map_err(storage)?;
+        Ok((basis, active))
     }
 
     /// The engine's `open` creates a missing `index.db`; the runtime must
@@ -402,4 +577,51 @@ impl WorkspaceLifecycle {
             );
         }
     }
+}
+
+fn storage(error: impl fmt::Display) -> CommandBasisError {
+    CommandBasisError::Refresh(format!("index.db: {error}"))
+}
+
+/// The net delta from `baseline` to `active`, in report order. A
+/// baseline Resource no longer ACTIVE reads its tombstone through
+/// `stored`.
+fn resource_delta(
+    baseline: &HashMap<ResourceId, String>,
+    active: Vec<Resource>,
+    mut stored: impl FnMut(ResourceId) -> Result<Option<Resource>, CommandBasisError>,
+) -> Result<Vec<ResourceDelta>, CommandBasisError> {
+    let mut changes = Vec::new();
+    let mut remaining: HashMap<ResourceId, &String> = baseline
+        .iter()
+        .map(|(id, revision)| (*id, revision))
+        .collect();
+    for resource in active {
+        let kind = match remaining.remove(&resource.id) {
+            None => ResourceDeltaKind::Created,
+            Some(revision) if *revision != resource.resource_revision => ResourceDeltaKind::Updated,
+            Some(_) => continue,
+        };
+        changes.push(ResourceDelta {
+            resource_id: resource.id,
+            kind,
+            path: resource.path_rel,
+            resource_revision: resource.resource_revision,
+        });
+    }
+    for id in remaining.into_keys() {
+        let tombstone = stored(id)?
+            .filter(|resource| resource.state == ResourceState::Deleted)
+            .ok_or_else(|| {
+                CommandBasisError::Refresh("a baseline Resource has no tombstone".to_owned())
+            })?;
+        changes.push(ResourceDelta {
+            resource_id: id,
+            kind: ResourceDeltaKind::Deleted,
+            path: tombstone.path_rel,
+            resource_revision: tombstone.resource_revision,
+        });
+    }
+    changes.sort_by(|a, b| (a.kind, &a.path, a.resource_id).cmp(&(b.kind, &b.path, b.resource_id)));
+    Ok(changes)
 }

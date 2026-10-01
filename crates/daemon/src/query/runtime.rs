@@ -38,7 +38,10 @@ use crate::artifacts::ArtifactStore;
 
 use super::{
     convert_in, convert_out,
-    lifecycle::{LifecycleStats, WatchFactory, WorkspaceLifecycle, notify_watch_factory},
+    lifecycle::{
+        CommandBaseline, CommandBasisError, LifecycleStats, PostCommandRefreshReport, WatchFactory,
+        WorkspaceLifecycle, notify_watch_factory,
+    },
     managed_verification::Managed,
     semantic::{SemanticStats, WorkspaceSemantic},
     verify, work,
@@ -97,6 +100,15 @@ enum Job {
     },
     SemanticStats {
         reply: oneshot::Sender<Option<SemanticStats>>,
+    },
+    /// #55: the current basis a command is measured against.
+    CommandBaseline {
+        reply: oneshot::Sender<Result<CommandBaseline, CommandBasisError>>,
+    },
+    /// #55: the forced verified refresh after a command, and its delta.
+    PostCommandRefresh {
+        baseline: Box<CommandBaseline>,
+        reply: oneshot::Sender<Result<PostCommandRefreshReport, CommandBasisError>>,
     },
 }
 
@@ -313,6 +325,38 @@ impl DaemonQueryRuntime {
         receiver.await.ok().flatten()
     }
 
+    /// #55: take a pre-command baseline on `workspace`'s worker.
+    pub async fn command_baseline(
+        &self,
+        workspace: WorkspaceId,
+    ) -> Result<CommandBaseline, CommandBasisError> {
+        let handle = self.handle_for(workspace);
+        let (reply, receiver) = oneshot::channel();
+        if handle.jobs.send(Job::CommandBaseline { reply }).is_err() {
+            return Err(gone());
+        }
+        receiver.await.unwrap_or_else(|_| Err(gone()))
+    }
+
+    /// #55: the post-command refresh on `workspace`'s worker, serialized
+    /// with its queries and publications.
+    pub async fn post_command_refresh(
+        &self,
+        workspace: WorkspaceId,
+        baseline: CommandBaseline,
+    ) -> Result<PostCommandRefreshReport, CommandBasisError> {
+        let handle = self.handle_for(workspace);
+        let (reply, receiver) = oneshot::channel();
+        let job = Job::PostCommandRefresh {
+            baseline: Box::new(baseline),
+            reply,
+        };
+        if handle.jobs.send(job).is_err() {
+            return Err(gone());
+        }
+        receiver.await.unwrap_or_else(|_| Err(gone()))
+    }
+
     /// Acknowledge a pending receipt on `workspace`'s worker.
     pub async fn ack(&self, workspace: WorkspaceId, ack_token: String) -> AckOutcome {
         let handle = self.handle_for(workspace);
@@ -322,6 +366,10 @@ impl DaemonQueryRuntime {
         }
         receiver.await.unwrap_or(AckOutcome::UnknownOrExpired)
     }
+}
+
+fn gone() -> CommandBasisError {
+    CommandBasisError::Refresh("workspace worker is gone".to_owned())
 }
 
 fn worker_gone() -> QueryErrorWire {
@@ -510,6 +558,18 @@ fn worker_loop(
             }
             Job::SemanticStats { reply } => {
                 let _ = reply.send(semantic.as_ref().map(WorkspaceSemantic::stats));
+            }
+            Job::CommandBaseline { reply } => {
+                let _ = reply.send(match &mut lifecycle {
+                    Ok(lifecycle) => lifecycle.command_baseline(),
+                    Err(error) => Err(CommandBasisError::Refresh(error.clone())),
+                });
+            }
+            Job::PostCommandRefresh { baseline, reply } => {
+                let _ = reply.send(match &mut lifecycle {
+                    Ok(lifecycle) => lifecycle.refresh_after_command(&baseline),
+                    Err(error) => Err(CommandBasisError::Refresh(error.clone())),
+                });
             }
         }
     }
