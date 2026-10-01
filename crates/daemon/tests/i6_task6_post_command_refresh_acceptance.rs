@@ -431,11 +431,24 @@ async fn the_baseline_is_current_and_exact() {
     let again = fixture.baseline(workspace).await;
     assert_eq!(again, baseline);
 
-    fs::remove_dir_all(&root).expect("remove the workspace");
+    // No current basis to prove: an unregistered Workspace, and (where
+    // the OS lets a test remove a directory the daemon holds files in)
+    // one that went missing.
     assert!(matches!(
-        fixture.runtime.command_baseline(workspace).await,
+        fixture
+            .runtime
+            .command_baseline(WorkspaceId::generate())
+            .await,
         Err(CommandBasisError::Refresh(_))
     ));
+    #[cfg(unix)]
+    {
+        fs::remove_dir_all(&root).expect("remove the workspace");
+        assert!(matches!(
+            fixture.runtime.command_baseline(workspace).await,
+            Err(CommandBasisError::Refresh(_))
+        ));
+    }
 }
 
 /// Nothing delivered by the watcher, the index CURRENT: the refresh still
