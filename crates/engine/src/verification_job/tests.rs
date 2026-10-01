@@ -894,3 +894,61 @@ fn hot_queries_search_their_index() {
         [running.uid]
     );
 }
+
+// ------------------------------------------------------------- bound open
+
+#[test]
+fn open_bound_requires_the_exact_binding_and_creates_nothing() {
+    let dir = TestDir::create("bound");
+    let workspace = WorkspaceId::from_bytes([4; 16]);
+    let missing = matches!(
+        VerificationJobStore::open_bound(workspace, &dir.db()),
+        Err(VerificationJobError::MissingDatabase)
+    );
+    assert!(missing, "a missing workspace.db is refused");
+    assert!(
+        !dir.db().exists(),
+        "a missing workspace.db is never created"
+    );
+
+    drop(VerificationJobStore::open(&dir.db()).expect("unbound db"));
+    let unbound = matches!(
+        VerificationJobStore::open_bound(workspace, &dir.db()),
+        Err(VerificationJobError::UnboundWorkspace)
+    );
+    assert!(unbound, "an unbound workspace.db is refused");
+
+    let bind = |uid: [u8; 16]| {
+        Connection::open(dir.db())
+            .expect("db")
+            .execute(
+                "UPDATE db_meta SET workspace_uid = ?1 WHERE id = 0",
+                [uid.to_vec()],
+            )
+            .expect("bind");
+    };
+    bind([5; 16]);
+    let mismatch = VerificationJobStore::open_bound(workspace, &dir.db());
+    assert!(
+        matches!(
+            mismatch,
+            Err(VerificationJobError::WorkspaceMismatch { expected, found })
+                if expected == workspace && found == WorkspaceId::from_bytes([5; 16])
+        ),
+        "another Workspace's db is refused"
+    );
+    let still = Connection::open(dir.db())
+        .expect("db")
+        .query_row(
+            "SELECT workspace_uid FROM db_meta WHERE id = 0",
+            [],
+            |row| row.get::<_, Vec<u8>>(0),
+        )
+        .expect("binding");
+    assert_eq!(still, vec![5; 16], "nothing is rebound");
+
+    bind([4; 16]);
+    let mut store = VerificationJobStore::open_bound(workspace, &dir.db()).expect("bound");
+    let job = create(&mut store, "bound");
+    assert_eq!(store.last_seq(job.uid).expect("last seq"), 1);
+}

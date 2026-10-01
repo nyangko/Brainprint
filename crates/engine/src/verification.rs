@@ -10,6 +10,8 @@
 //! #53: [`PreparedVerification::run_capturing`] also captures what a
 //! command asked for and hands it to a [`CaptureConsumer`] before the next
 //! command starts; [`PreparedVerification::run`] never captures.
+//! #54: [`PreparedVerification::run_managed`] reports each command's
+//! lifecycle to a fallible [`ManagedObserver`] (a durable event log).
 //! argv, env and cwd are never echoed into results, summary or errors.
 
 use std::{
@@ -151,6 +153,46 @@ pub trait CaptureConsumer {
     fn before(&mut self, index: usize, requested: CaptureRequest) -> CaptureRequest;
     /// Right after it ended; `None` when it never spawned.
     fn after(&mut self, index: usize, capture: Option<CommandCapture>);
+}
+
+/// #54: a managed run's per-command lifecycle. Indexes are 0-based, the
+/// batch order. A command that is tried (spawned, or it failed to spawn:
+/// `NotStarted`) gets [`Self::started`] right before the spawn attempt and
+/// [`Self::finished`] after it ended and its capture went through
+/// [`Self::capture`]/`finished`; a `Skipped` command gets only
+/// `finished`. A cancelled command gets no `finished`. An `Err` stops the
+/// batch: from `started`, that command never spawns; from `finished`, no
+/// later command runs.
+pub trait ManagedObserver {
+    fn started(&mut self, index: usize, label: &str) -> Result<(), ObserverFailed>;
+    /// Right before a command with a capture request spawns (after
+    /// `started`); what to capture, as [`CaptureConsumer::before`].
+    fn capture(&mut self, index: usize, requested: CaptureRequest) -> CaptureRequest;
+    /// `capture`: `None` without a capture request, when skipped, or when
+    /// it never spawned.
+    fn finished(
+        &mut self,
+        index: usize,
+        result: &CommandResult,
+        capture: Option<CommandCapture>,
+    ) -> Result<(), ObserverFailed>;
+}
+
+/// A [`ManagedObserver`] could not record a lifecycle step.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ObserverFailed;
+
+/// Why [`PreparedVerification::run_managed`] has no report.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ManagedStop {
+    Cancelled,
+    ObserverFailed,
+}
+
+impl From<Cancelled> for ManagedStop {
+    fn from(_: Cancelled) -> Self {
+        Self::Cancelled
+    }
 }
 
 /// Check the whole batch against `workspace_root`. Any violation refuses
@@ -315,6 +357,43 @@ impl PreparedVerification {
         })
     }
 
+    /// #54: [`Self::run_capturing`]'s commands, skip rule and capture, each
+    /// command's lifecycle reported to `observer` (see [`ManagedObserver`]).
+    pub fn run_managed(
+        &self,
+        cancel: &Cancel,
+        observer: &mut dyn ManagedObserver,
+    ) -> Result<VerificationReport, ManagedStop> {
+        let mut results = Vec::with_capacity(self.commands.len());
+        let mut passing = true;
+        for (index, command) in self.commands.iter().enumerate() {
+            let (result, capture) = if passing {
+                if cancel.is_cancelled() {
+                    return Err(ManagedStop::Cancelled);
+                }
+                observer
+                    .started(index, &command.label)
+                    .map_err(|ObserverFailed| ManagedStop::ObserverFailed)?;
+                match command.capture {
+                    None => (command.run(cancel)?, None),
+                    Some(requested) => {
+                        let request = observer.capture(index, requested);
+                        command.run_captured(cancel, request, &self.root)?
+                    }
+                }
+            } else {
+                (command.skipped(), None)
+            };
+            observer
+                .finished(index, &result, capture)
+                .map_err(|ObserverFailed| ManagedStop::ObserverFailed)?;
+            passing = result.outcome == VerificationOutcome::Passed;
+            results.push(result);
+        }
+        let summary = summary(&results);
+        Ok(VerificationReport { results, summary })
+    }
+
     /// Per command: whether it asked for capture.
     #[must_use]
     pub fn capture_requested(&self) -> Vec<bool> {
@@ -343,13 +422,7 @@ impl PreparedVerification {
             let result = if passing {
                 run(index, command)?
             } else {
-                CommandResult {
-                    label: command.label.clone(),
-                    outcome: VerificationOutcome::Skipped,
-                    duration_ms: 0,
-                    stdout_bytes: 0,
-                    stderr_bytes: 0,
-                }
+                command.skipped()
             };
             passing = result.outcome == VerificationOutcome::Passed;
             results.push(result);
@@ -360,6 +433,16 @@ impl PreparedVerification {
 }
 
 impl PreparedCommand {
+    fn skipped(&self) -> CommandResult {
+        CommandResult {
+            label: self.label.clone(),
+            outcome: VerificationOutcome::Skipped,
+            duration_ms: 0,
+            stdout_bytes: 0,
+            stderr_bytes: 0,
+        }
+    }
+
     fn command(&self) -> Command {
         let mut command = Command::new(&self.argv[0]);
         command

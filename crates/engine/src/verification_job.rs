@@ -14,13 +14,14 @@
 
 use std::{fmt, path::Path};
 
-use brainprint_core::VerificationJobId;
+use brainprint_core::{VerificationJobId, WorkspaceId};
 use rusqlite::{Connection, OptionalExtension, Row, TransactionBehavior, params};
 use sha2::{Digest, Sha256};
 
 use crate::{
     db::{self, DbOpenError},
     diagnostics::DiagnosticFormat,
+    knowledge::{KnowledgeError, WorkspaceKnowledgeStore},
     output_capture::CaptureRequest,
     schema,
     verification::VerificationCommand,
@@ -315,6 +316,17 @@ pub enum VerificationJobError {
     InvalidLimit(usize),
     /// A stored value outside its shape.
     Corrupt(&'static str),
+    /// [`VerificationJobStore::open_bound`]: workspace.db does not exist;
+    /// it is never created.
+    MissingDatabase,
+    /// [`VerificationJobStore::open_bound`]: init never bound workspace.db.
+    UnboundWorkspace,
+    /// [`VerificationJobStore::open_bound`]: workspace.db belongs to
+    /// another Workspace.
+    WorkspaceMismatch {
+        expected: WorkspaceId,
+        found: WorkspaceId,
+    },
 }
 
 impl fmt::Display for VerificationJobError {
@@ -333,6 +345,14 @@ impl fmt::Display for VerificationJobError {
                 write!(formatter, "limit {limit} is not 1..={MAX_EVENTS_PER_READ}")
             }
             Self::Corrupt(what) => write!(formatter, "corrupt {what}"),
+            Self::MissingDatabase => formatter.write_str("workspace.db does not exist"),
+            Self::UnboundWorkspace => {
+                formatter.write_str("workspace.db is not bound to a Workspace")
+            }
+            Self::WorkspaceMismatch { expected, found } => write!(
+                formatter,
+                "workspace.db belongs to Workspace {found}, not {expected}"
+            ),
         }
     }
 }
@@ -405,10 +425,33 @@ pub struct VerificationJobStore {
 }
 
 impl VerificationJobStore {
+    /// The storage primitive: creates a missing workspace.db. The daemon
+    /// opens through [`Self::open_bound`] instead.
     pub fn open(path: &Path) -> Result<Self, VerificationJobError> {
         Ok(Self::from_connection(
             schema::workspace::open(path)?.connection,
         ))
+    }
+
+    /// `workspace`'s Job store: its workspace.db must exist (it is never
+    /// created) and be bound by init to exactly `workspace` -- the
+    /// `WorkRuntime::open` rule. Nothing is repaired or rebound.
+    pub fn open_bound(
+        workspace: WorkspaceId,
+        workspace_db: &Path,
+    ) -> Result<Self, VerificationJobError> {
+        if !workspace_db.is_file() {
+            return Err(VerificationJobError::MissingDatabase);
+        }
+        let store = WorkspaceKnowledgeStore::open(workspace_db).map_err(knowledge)?;
+        match store.bound_workspace_id().map_err(knowledge)? {
+            None => Err(VerificationJobError::UnboundWorkspace),
+            Some(found) if found != workspace => Err(VerificationJobError::WorkspaceMismatch {
+                expected: workspace,
+                found,
+            }),
+            Some(_) => Ok(Self::from_connection(store.into_connection())),
+        }
     }
 
     #[must_use]
@@ -576,6 +619,12 @@ impl VerificationJobStore {
         Ok(interrupted)
     }
 
+    /// The Job's latest event `seq` (its `JOB_STARTED` is 1).
+    pub fn last_seq(&self, uid: VerificationJobId) -> Result<u64, VerificationJobError> {
+        let (id, _) = id_and_state(&self.connection, uid)?;
+        Ok(next_seq(&self.connection, id)? as u64 - 1)
+    }
+
     /// Up to `limit` (1..=64) events with `seq > after_seq`, ascending.
     pub fn events_after(
         &self,
@@ -610,6 +659,14 @@ impl VerificationJobStore {
             })
         })
         .collect()
+    }
+}
+
+fn knowledge(error: KnowledgeError) -> VerificationJobError {
+    match error {
+        KnowledgeError::Open(error) => VerificationJobError::Open(error),
+        KnowledgeError::Sqlite(error) => VerificationJobError::Sqlite(error),
+        _ => VerificationJobError::Corrupt("db_meta.workspace_uid"),
     }
 }
 

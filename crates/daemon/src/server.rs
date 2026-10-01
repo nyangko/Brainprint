@@ -171,9 +171,19 @@ impl Server {
         }
     }
 
+    /// Clean shutdown (#54): every running managed verification Job is
+    /// stopped and waited for until it is stored INTERRUPTED, then
+    /// [`Self::cleanup`] -- the raw-output store goes only after them.
+    pub async fn shutdown(&self) {
+        self.query_runtime.managed_shutdown().await;
+        self.cleanup();
+    }
+
     /// Remove this instance's runtime artifacts (raw-output store,
-    /// socket/pipe file, lock file). Call after a clean shutdown; a crash simply leaves them for
-    /// the next start's stale-recovery pass (#13 task 4 §14-15).
+    /// socket/pipe file, lock file). File cleanup only: it does not end
+    /// running managed Jobs -- [`Self::shutdown`] does, then calls this. A
+    /// crash simply leaves them for the next start's stale-recovery pass
+    /// (#13 task 4 §14-15).
     pub fn cleanup(&self) {
         self.query_runtime.artifacts().shutdown();
         #[cfg(unix)]

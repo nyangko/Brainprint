@@ -11,6 +11,7 @@ mod convert_in;
 mod convert_out;
 mod handler;
 pub mod lifecycle;
+mod managed_verification;
 mod observe;
 mod runtime;
 pub mod semantic;
@@ -20,4 +21,9 @@ mod verify;
 mod work;
 
 pub use handler::{handle_query, handle_query_ack, handle_work};
+pub use managed_verification::{
+    CaptureProgress, CommandFinishedPayload, CommandStartedPayload, DiagnosticCounts, EndReason,
+    JobEndedPayload, JobFinishedPayload, JobStartedPayload, MANAGED_JOB_EVENT_PAYLOAD_VERSION,
+    MAX_PAYLOAD_BYTES, ManagedError, ManagedEvent, ManagedEventPayload, ManagedPoll, ManagedStart,
+};
 pub use runtime::DaemonQueryRuntime;

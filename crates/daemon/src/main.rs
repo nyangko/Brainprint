@@ -58,5 +58,5 @@ async fn run_foreground() {
         }
     }
 
-    server.cleanup();
+    server.shutdown().await;
 }

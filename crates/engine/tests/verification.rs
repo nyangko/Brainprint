@@ -22,8 +22,8 @@ use brainprint_engine::{
     output_capture::{CaptureRequest, CommandCapture},
     process_runner::Cancel,
     verification::{
-        Cancelled, CaptureConsumer, CommandResult, NotStartedReason, VerificationCommand,
-        VerificationOutcome, VerificationReport, prepare,
+        Cancelled, CaptureConsumer, CommandResult, ManagedObserver, ManagedStop, NotStartedReason,
+        ObserverFailed, VerificationCommand, VerificationOutcome, VerificationReport, prepare,
     },
 };
 
@@ -76,6 +76,18 @@ fn main() {
             a_cancelled_capture_is_never_handed_over,
         ),
         ("the_report_holds_no_output", the_report_holds_no_output),
+        (
+            "managed_lifecycle_started_before_spawn_finished_after",
+            managed_lifecycle_started_before_spawn_finished_after,
+        ),
+        (
+            "a_managed_observer_failure_stops_the_batch",
+            a_managed_observer_failure_stops_the_batch,
+        ),
+        (
+            "a_cancelled_managed_command_gets_no_finished",
+            a_cancelled_managed_command_gets_no_finished,
+        ),
     ];
     let handles: Vec<_> = tests
         .iter()
@@ -275,6 +287,46 @@ impl CaptureConsumer for Log {
             capture.stdout.map(|stdout| stdout.observed_bytes),
             capture.diagnostics.map(|summary| summary.items.len()),
         ));
+    }
+}
+
+/// #54: the managed lifecycle as seen, in order; `fail_at` makes that
+/// event (e.g. `"started 1"`) fail.
+#[derive(Default)]
+struct Lifecycle {
+    events: Vec<String>,
+    fail_at: Option<&'static str>,
+}
+
+impl Lifecycle {
+    fn record(&mut self, event: String) -> Result<(), ObserverFailed> {
+        let failed = self.fail_at == Some(event.as_str());
+        self.events.push(event);
+        if failed { Err(ObserverFailed) } else { Ok(()) }
+    }
+}
+
+impl ManagedObserver for Lifecycle {
+    fn started(&mut self, index: usize, label: &str) -> Result<(), ObserverFailed> {
+        self.record(format!("started {index} {label}"))
+    }
+
+    fn capture(&mut self, index: usize, requested: CaptureRequest) -> CaptureRequest {
+        self.events.push(format!("capture {index}"));
+        requested
+    }
+
+    fn finished(
+        &mut self,
+        index: usize,
+        result: &CommandResult,
+        capture: Option<CommandCapture>,
+    ) -> Result<(), ObserverFailed> {
+        self.record(format!(
+            "finished {index} {:?} captured={}",
+            result.outcome,
+            capture.is_some()
+        ))
     }
 }
 
@@ -750,4 +802,125 @@ fn the_report_holds_no_output() {
         ("raw", VerificationOutcome::Passed, 10, 0)
     );
     assert!(summary.starts_with("raw: passed"));
+}
+
+/// #54: `started` right before each spawn attempt (so `NotStarted` has
+/// both), `finished` after the result and its capture; a `Skipped` command
+/// gets only `finished`. The report is `run_capturing`'s.
+fn managed_lifecycle_started_before_spawn_finished_after() {
+    let dir = TestDir::create("managed-lifecycle");
+    let commands = [
+        capturing("raw", &["out:10"], RAW),
+        command("fails", &["exit:3"]),
+        command("skipped", &["exit:0"]),
+    ];
+    let prepared = prepare(&dir.0, &commands).expect("valid batch");
+    let mut lifecycle = Lifecycle::default();
+    let report = prepared
+        .run_managed(&Cancel::default(), &mut lifecycle)
+        .expect("ran");
+    assert_eq!(
+        lifecycle.events,
+        [
+            "started 0 raw",
+            "capture 0",
+            "finished 0 Passed captured=true",
+            "started 1 fails",
+            "finished 1 Failed { exit_code: 3 } captured=false",
+            "finished 2 Skipped captured=false",
+        ]
+    );
+    let mut log = Log::new(&dir.path("unused"));
+    let capturing_report = prepared
+        .run_capturing(&Cancel::default(), &mut log)
+        .expect("ran");
+    assert_eq!(outcomes(&report), outcomes(&capturing_report));
+
+    let mut missing = capturing("missing", &[], RAW);
+    missing.argv = vec![dir.path("no-such-program")];
+    let mut lifecycle = Lifecycle::default();
+    prepare(&dir.0, &[missing, command("later", &["exit:0"])])
+        .expect("valid batch")
+        .run_managed(&Cancel::default(), &mut lifecycle)
+        .expect("ran");
+    assert_eq!(
+        lifecycle.events,
+        [
+            "started 0 missing",
+            "capture 0",
+            "finished 0 NotStarted { reason: NotFound } captured=false",
+            "finished 1 Skipped captured=false",
+        ]
+    );
+}
+
+/// A failed `started` spawns nothing; a failed `finished` runs nothing
+/// later.
+fn a_managed_observer_failure_stops_the_batch() {
+    let dir = TestDir::create("managed-observer-failure");
+    let (first, second) = (dir.path("first"), dir.path("second"));
+    let commands = [
+        command("first", &[&format!("mark:{first}")]),
+        command("second", &[&format!("mark:{second}")]),
+    ];
+    let prepared = prepare(&dir.0, &commands).expect("valid batch");
+
+    let mut lifecycle = Lifecycle {
+        fail_at: Some("started 0 first"),
+        ..Lifecycle::default()
+    };
+    assert_eq!(
+        prepared.run_managed(&Cancel::default(), &mut lifecycle),
+        Err(ManagedStop::ObserverFailed)
+    );
+    assert_eq!(lifecycle.events, ["started 0 first"]);
+    assert!(
+        !Path::new(&first).exists(),
+        "spawned after a failed started"
+    );
+
+    let mut lifecycle = Lifecycle {
+        fail_at: Some("finished 0 Passed captured=false"),
+        ..Lifecycle::default()
+    };
+    assert_eq!(
+        prepared.run_managed(&Cancel::default(), &mut lifecycle),
+        Err(ManagedStop::ObserverFailed)
+    );
+    assert!(Path::new(&first).exists());
+    assert!(!Path::new(&second).exists(), "ran after a failed finished");
+}
+
+fn a_cancelled_managed_command_gets_no_finished() {
+    let dir = TestDir::create("managed-cancel");
+    let commands = [
+        command("first", &["exit:0"]),
+        capturing("slow", &[&format!("sleep:{LATE_MS}")], RAW),
+    ];
+    let prepared = prepare(&dir.0, &commands).expect("valid batch");
+    let cancel = Cancel::default();
+    let canceller = {
+        let cancel = cancel.clone();
+        thread::spawn(move || {
+            thread::sleep(Duration::from_millis(500));
+            cancel.cancel();
+        })
+    };
+    let mut lifecycle = Lifecycle::default();
+    let started = Instant::now();
+    assert_eq!(
+        prepared.run_managed(&cancel, &mut lifecycle),
+        Err(ManagedStop::Cancelled)
+    );
+    assert!(started.elapsed() < Duration::from_millis(LATE_MS));
+    canceller.join().expect("canceller");
+    assert_eq!(
+        lifecycle.events,
+        [
+            "started 0 first",
+            "finished 0 Passed captured=false",
+            "started 1 slow",
+            "capture 1",
+        ]
+    );
 }

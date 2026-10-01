@@ -39,6 +39,7 @@ use crate::artifacts::ArtifactStore;
 use super::{
     convert_in, convert_out,
     lifecycle::{LifecycleStats, WatchFactory, WorkspaceLifecycle, notify_watch_factory},
+    managed_verification::Managed,
     semantic::{SemanticStats, WorkspaceSemantic},
     verify, work,
 };
@@ -58,7 +59,7 @@ const TOMBSTONE_BOUND: usize = 256;
 /// so a query never mints/stores a pending receipt for a page it is about
 /// to refuse to send.
 const ENVELOPE_HEADROOM_BYTES: usize = 4096;
-const MAX_RESULT_BYTES: usize =
+pub(super) const MAX_RESULT_BYTES: usize =
     brainprint_core::protocol::framing::MAX_MESSAGE_BYTES as usize - ENVELOPE_HEADROOM_BYTES;
 
 pub enum AckOutcome {
@@ -116,6 +117,8 @@ pub struct DaemonQueryRuntime {
     /// #53: the one raw-output store of this daemon (never inside a
     /// worker either).
     artifact_store: Arc<ArtifactStore>,
+    /// #54: managed verification Jobs (never inside a worker).
+    managed: Managed,
 }
 
 impl std::fmt::Debug for DaemonQueryRuntime {
@@ -144,6 +147,7 @@ impl DaemonQueryRuntime {
             workers: Mutex::new(HashMap::new()),
             verification_slots: verify::Slots::default(),
             artifact_store: Arc::new(ArtifactStore::new(&global_paths.runtime_root())),
+            managed: Managed::default(),
         }
     }
 
@@ -210,6 +214,10 @@ impl DaemonQueryRuntime {
 
     pub(super) fn verification_slots(&self) -> &verify::Slots {
         &self.verification_slots
+    }
+
+    pub(super) const fn managed(&self) -> &Managed {
+        &self.managed
     }
 
     /// #52: verification batches started since this daemon began

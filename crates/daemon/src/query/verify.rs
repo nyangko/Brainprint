@@ -205,18 +205,7 @@ async fn preflight(
         WorkOutcomeWire::Complete => ResultOutcome::Complete,
         WorkOutcomeWire::Abandon => ResultOutcome::Abandon,
     };
-    let commands: Vec<VerificationCommand> = verification
-        .commands
-        .into_iter()
-        .map(|command| VerificationCommand {
-            label: command.label,
-            argv: command.argv,
-            cwd: command.cwd,
-            env: command.env,
-            timeout_secs: command.timeout_secs,
-            capture: command.capture.map(capture::request),
-        })
-        .collect();
+    let commands = commands(verification);
     tokio::task::spawn_blocking(move || {
         let prepared = verification::prepare(&root, &commands).map_err(|error| {
             work::failure(WorkErrorWire::InvalidObservation {
@@ -234,6 +223,23 @@ async fn preflight(
             "verification preflight panicked",
         )))
     })
+}
+
+/// The caller's commands as the engine takes them; shared with the #54
+/// managed Jobs.
+pub(super) fn commands(verification: VerificationWire) -> Vec<VerificationCommand> {
+    verification
+        .commands
+        .into_iter()
+        .map(|command| VerificationCommand {
+            label: command.label,
+            argv: command.argv,
+            cwd: command.cwd,
+            env: command.env,
+            timeout_secs: command.timeout_secs,
+            capture: command.capture.map(capture::request),
+        })
+        .collect()
 }
 
 /// The #52 run when no command asks for capture; otherwise each capture
@@ -261,35 +267,35 @@ const fn failed(error: WorkErrorWire) -> WorkResponse {
 }
 
 /// Label and outcome only reach the daemon log; never argv, env or output.
-fn result_wire(result: CommandResult, capture: CommandCaptureWire) -> CommandResultWire {
+pub(super) fn result_wire(result: CommandResult, capture: CommandCaptureWire) -> CommandResultWire {
     eprintln!(
         "brainprintd: verification {}: {:?}",
         result.label, result.outcome
     );
     CommandResultWire {
         label: result.label,
-        outcome: match result.outcome {
-            VerificationOutcome::Passed => VerificationOutcomeWire::Passed,
-            VerificationOutcome::Failed { exit_code } => {
-                VerificationOutcomeWire::Failed { exit_code }
-            }
-            VerificationOutcome::Signaled { signal } => {
-                VerificationOutcomeWire::Signaled { signal }
-            }
-            VerificationOutcome::TimedOut => VerificationOutcomeWire::TimedOut,
-            VerificationOutcome::NotStarted { reason } => VerificationOutcomeWire::NotStarted {
-                reason: match reason {
-                    NotStartedReason::NotFound => NotStartedReasonWire::NotFound,
-                    NotStartedReason::PermissionDenied => NotStartedReasonWire::PermissionDenied,
-                    NotStartedReason::Other => NotStartedReasonWire::Other,
-                },
-            },
-            VerificationOutcome::Skipped => VerificationOutcomeWire::Skipped,
-        },
+        outcome: outcome_wire(result.outcome),
         duration_ms: result.duration_ms,
         stdout_bytes: result.stdout_bytes,
         stderr_bytes: result.stderr_bytes,
         capture,
+    }
+}
+
+pub(super) const fn outcome_wire(outcome: VerificationOutcome) -> VerificationOutcomeWire {
+    match outcome {
+        VerificationOutcome::Passed => VerificationOutcomeWire::Passed,
+        VerificationOutcome::Failed { exit_code } => VerificationOutcomeWire::Failed { exit_code },
+        VerificationOutcome::Signaled { signal } => VerificationOutcomeWire::Signaled { signal },
+        VerificationOutcome::TimedOut => VerificationOutcomeWire::TimedOut,
+        VerificationOutcome::NotStarted { reason } => VerificationOutcomeWire::NotStarted {
+            reason: match reason {
+                NotStartedReason::NotFound => NotStartedReasonWire::NotFound,
+                NotStartedReason::PermissionDenied => NotStartedReasonWire::PermissionDenied,
+                NotStartedReason::Other => NotStartedReasonWire::Other,
+            },
+        },
+        VerificationOutcome::Skipped => VerificationOutcomeWire::Skipped,
     }
 }
 

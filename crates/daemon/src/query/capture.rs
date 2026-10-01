@@ -69,6 +69,11 @@ impl Undelivered {
 
     /// The response is going out: keep the artifacts it names.
     pub(super) fn deliver(mut self) {
+        self.keep();
+    }
+
+    /// #54: what was stored so far is named by a durable event: keep it.
+    pub(super) fn keep(&mut self) {
         self.handles.clear();
     }
 }

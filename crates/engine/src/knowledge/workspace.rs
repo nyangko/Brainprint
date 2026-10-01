@@ -211,6 +211,11 @@ impl WorkspaceKnowledgeStore {
         Self { connection }
     }
 
+    /// #54: the bound-checked connection, for the managed Job store.
+    pub(crate) fn into_connection(self) -> Connection {
+        self.connection
+    }
+
     /// The Workspace this workspace.db was bound to by init, if any.
     pub fn bound_workspace_id(&self) -> Result<Option<WorkspaceId>, KnowledgeError> {
         let bound: Option<Vec<u8>> = self.connection.query_row(

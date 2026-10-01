@@ -18,6 +18,8 @@ path = "src/main.rs"
 base64.workspace = true
 brainprint-core.workspace = true
 brainprint-engine.workspace = true
+# #54: the managed Job event payloads are typed serde structs.
+serde.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt-multi-thread", "signal", "time"] }
 uuid.workspace = true
@@ -35,7 +37,6 @@ rusqlite.workspace = true
 # touch the shipped `brainprint-mcp` binary at all.
 brainprint-mcp = { path = "../mcp" }
 rmcp = { workspace = true, features = ["server"] }
-serde.workspace = true
 # #26 Task 13: the real end-to-end adoption acceptance drives the
 # brainprint-agent gateway/bridges against this daemon. Test-only and the
 # opposite of the forbidden direction (brainprint-agent never depends on
@@ -50,6 +51,11 @@ harness = false
 # #53 step 3: likewise its own portable helper.
 [[test]]
 name = "i6_task4_capture_acceptance"
+harness = false
+
+# #54 step 2: likewise its own portable helper.
+[[test]]
+name = "i6_task5_managed_verification_acceptance"
 harness = false
 
 [lints]
