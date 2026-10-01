@@ -1003,8 +1003,12 @@ fn clean_shutdown_interrupts_and_restart_reruns_nothing() {
             endpoint,
             paths,
             workspace,
+            connection,
             ..
         } = fixture;
+        // Windows: an open client keeps its pipe instance -- and so the
+        // pipe name -- claimed, refusing the restart's bind.
+        drop(connection);
         stop.send(()).expect("server running");
         let server = server.await.expect("server task");
         let began = Instant::now();
