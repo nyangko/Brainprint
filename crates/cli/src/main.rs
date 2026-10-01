@@ -19,7 +19,8 @@ async fn main() {
             | Cli::Knowledge { .. }
             | Cli::Structure(_)
             | Cli::Work { .. }
-            | Cli::Artifact { .. }),
+            | Cli::Artifact { .. }
+            | Cli::Verification { .. }),
         ) => query::run_query_command(cli).await.into(),
         Err(error) => {
             // clap prints its own usage/help text to stdout/stderr as

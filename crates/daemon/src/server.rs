@@ -305,6 +305,17 @@ where
             Request::ArtifactRead(read_request) => Response::ArtifactRead(
                 artifact_read(query_runtime.artifact_store(), read_request).await,
             ),
+            // #54: a start returns once its Job exists; the Job runs on
+            // whatever becomes of this connection.
+            Request::VerificationJobStart(request) => {
+                crate::query::handle_verification_job_start(&query_runtime, request).await
+            }
+            Request::VerificationJobPoll(request) => {
+                crate::query::handle_verification_job_poll(&query_runtime, request).await
+            }
+            Request::VerificationJobCancel(request) => {
+                crate::query::handle_verification_job_cancel(&query_runtime, request).await
+            }
         };
         protocol::framing::write_message(&mut connection, &response).await?;
     }

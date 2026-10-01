@@ -116,7 +116,7 @@ pub async fn run_work(mode: WorkCommand) -> Exit {
     }
 }
 
-fn read_input(input: &str) -> Result<String, String> {
+pub(super) fn read_input(input: &str) -> Result<String, String> {
     let mut text = String::new();
     let read = if input == "-" {
         std::io::stdin().read_to_string(&mut text)

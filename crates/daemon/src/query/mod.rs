@@ -12,6 +12,7 @@ mod convert_out;
 mod handler;
 pub mod lifecycle;
 mod managed_verification;
+mod managed_wire;
 mod observe;
 mod runtime;
 pub mod semantic;
@@ -25,5 +26,8 @@ pub use managed_verification::{
     CaptureProgress, CommandFinishedPayload, CommandStartedPayload, DiagnosticCounts, EndReason,
     JobEndedPayload, JobFinishedPayload, JobStartedPayload, MANAGED_JOB_EVENT_PAYLOAD_VERSION,
     MAX_PAYLOAD_BYTES, ManagedError, ManagedEvent, ManagedEventPayload, ManagedPoll, ManagedStart,
+};
+pub use managed_wire::{
+    handle_verification_job_cancel, handle_verification_job_poll, handle_verification_job_start,
 };
 pub use runtime::DaemonQueryRuntime;

@@ -58,5 +58,10 @@ harness = false
 name = "i6_task5_managed_verification_acceptance"
 harness = false
 
+# #54 step 3: likewise its own portable helper.
+[[test]]
+name = "i6_task5_managed_cli_acceptance"
+harness = false
+
 [lints]
 workspace = true

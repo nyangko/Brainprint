@@ -10,12 +10,14 @@ mod exec;
 mod knowledge;
 mod render;
 mod target;
+mod verification;
 mod vocab;
 mod work;
 
 pub use artifact::ArtifactCommand;
 pub use commands::Cli;
 pub use exec::Exit;
+pub use verification::VerificationCommand;
 pub use work::WorkCommand;
 
 /// Dispatches every `Cli` variant except `Install`/`Status`/`Init`, which
@@ -32,6 +34,7 @@ pub async fn run_query_command(cli: Cli) -> Exit {
         Cli::Structure(args) => exec::run_structure(args).await,
         Cli::Work { mode } => work::run_work(mode).await,
         Cli::Artifact { mode } => artifact::run_artifact(mode).await,
+        Cli::Verification { mode } => verification::run_verification(mode).await,
         Cli::Install | Cli::Status | Cli::Init { .. } => {
             unreachable!("main.rs handles Install/Status/Init before dispatching here")
         }

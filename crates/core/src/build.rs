@@ -24,8 +24,9 @@ pub const PACKAGE_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// per-command results on `Recorded`/`Failed` and
 /// `WorkErrorWire::VerificationBusy`. Bumped to 7 by #53: the per-command
 /// `capture` request and result (compact diagnostics, raw artifact
-/// references) and the `ArtifactRead` request/response.
-pub const PROTOCOL_VERSION: u32 = 7;
+/// references) and the `ArtifactRead` request/response. Bumped to 8 by
+/// #54: the `VerificationJobStart`/`Poll`/`Cancel` requests and responses.
+pub const PROTOCOL_VERSION: u32 = 8;
 
 /// Minimal build identity that benchmark and runtime boundaries can record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

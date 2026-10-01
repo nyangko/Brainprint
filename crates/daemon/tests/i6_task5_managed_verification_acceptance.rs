@@ -117,8 +117,8 @@ fn main() {
             invalid_requests_create_nothing,
         ),
         (
-            "protocol_stays_7_and_workspace_schema_6",
-            protocol_stays_7_and_workspace_schema_6,
+            "protocol_is_8_and_workspace_schema_6",
+            protocol_is_8_and_workspace_schema_6,
         ),
     ];
     let handles: Vec<_> = tests
@@ -1434,8 +1434,8 @@ fn invalid_requests_create_nothing() {
     });
 }
 
-fn protocol_stays_7_and_workspace_schema_6() {
-    assert_eq!(PROTOCOL_VERSION, 7);
+fn protocol_is_8_and_workspace_schema_6() {
+    assert_eq!(PROTOCOL_VERSION, 8);
     assert_eq!(
         brainprint_engine::schema::workspace::WORKSPACE_MIGRATIONS.len(),
         6

@@ -82,6 +82,12 @@ pub enum Cli {
         #[command(subcommand)]
         mode: super::ArtifactCommand,
     },
+    /// #54: a daemon-managed verification Job -- start it, poll its
+    /// events, cancel it. One request per call.
+    Verification {
+        #[command(subcommand)]
+        mode: super::VerificationCommand,
+    },
 }
 
 #[derive(Debug, Subcommand)]

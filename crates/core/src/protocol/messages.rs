@@ -119,6 +119,12 @@ pub enum Request {
     Work(super::work::WorkRequest),
     /// #53: a bounded read of an ephemeral raw artifact.
     ArtifactRead(super::artifact::ArtifactReadRequestWire),
+    /// #54: start (or replay) a managed verification Job.
+    VerificationJobStart(super::verification_job::VerificationJobStartRequestWire),
+    /// #54: a managed Job's durable events after a cursor.
+    VerificationJobPoll(super::verification_job::VerificationJobPollRequestWire),
+    /// #54: cancel a managed Job.
+    VerificationJobCancel(super::verification_job::VerificationJobCancelRequestWire),
 }
 
 /// An envelope for every response the daemon may send.
@@ -139,6 +145,9 @@ pub enum Response {
     QueryAck(QueryAckResponse),
     Work(super::work::WorkResponse),
     ArtifactRead(super::artifact::ArtifactReadResponseWire),
+    VerificationJobStart(super::verification_job::VerificationJobStartResponseWire),
+    VerificationJobPoll(super::verification_job::VerificationJobPollResponseWire),
+    VerificationJobCancel(super::verification_job::VerificationJobCancelResponseWire),
 }
 
 /// A coarse, stable classification a client can act on without parsing

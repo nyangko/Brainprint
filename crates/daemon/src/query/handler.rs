@@ -26,7 +26,7 @@ fn unresolved_workspace_sentinel() -> WorkspaceId {
     WorkspaceId::from_bytes([0; 16])
 }
 
-async fn resolve(
+pub(super) async fn resolve(
     runtime: &DaemonQueryRuntime,
     selector: WorkspaceSelectorWire,
 ) -> Result<WorkspaceId, QueryErrorWire> {

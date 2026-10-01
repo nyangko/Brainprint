@@ -119,7 +119,10 @@ pub async fn handshake(
         | Response::Query(_)
         | Response::QueryAck(_)
         | Response::Work(_)
-        | Response::ArtifactRead(_) => Err(ClientError::UnexpectedResponse),
+        | Response::ArtifactRead(_)
+        | Response::VerificationJobStart(_)
+        | Response::VerificationJobPoll(_)
+        | Response::VerificationJobCancel(_) => Err(ClientError::UnexpectedResponse),
     }
 }
 
@@ -144,7 +147,10 @@ pub async fn status(connection: &mut ClientConnection) -> Result<StatusResponse,
         | Response::Query(_)
         | Response::QueryAck(_)
         | Response::Work(_)
-        | Response::ArtifactRead(_) => Err(ClientError::UnexpectedResponse),
+        | Response::ArtifactRead(_)
+        | Response::VerificationJobStart(_)
+        | Response::VerificationJobPoll(_)
+        | Response::VerificationJobCancel(_) => Err(ClientError::UnexpectedResponse),
     }
 }
 

@@ -101,14 +101,14 @@ fn main() {
             "the_cli_runs_verification_and_maps_exit_codes",
             the_cli_runs_verification_and_maps_exit_codes,
         ),
-        ("protocol_version_is_7", protocol_version_is_7),
+        ("protocol_version_is_8", protocol_version_is_8),
         (
-            "a_v6_client_is_refused_by_a_v7_daemon",
-            a_v6_client_is_refused_by_a_v7_daemon,
+            "a_v7_client_is_refused_by_a_v8_daemon",
+            a_v7_client_is_refused_by_a_v8_daemon,
         ),
         (
-            "a_v7_client_stops_at_a_v6_daemon",
-            a_v7_client_stops_at_a_v6_daemon,
+            "a_v8_client_stops_at_a_v7_daemon",
+            a_v8_client_stops_at_a_v7_daemon,
         ),
         (
             "mcp_tools_list_is_byte_identical",
@@ -1280,21 +1280,21 @@ fn the_cli_runs_verification_and_maps_exit_codes() {
 
 // ------------------------------------------------------------- protocol
 
-fn protocol_version_is_7() {
-    assert_eq!(PROTOCOL_VERSION, 7);
+fn protocol_version_is_8() {
+    assert_eq!(PROTOCOL_VERSION, 8);
 }
 
-/// v6 client → v7 daemon: refused at handshake; a verification request
+/// v7 client → v8 daemon: refused at handshake; a verification request
 /// sent anyway is never served and runs nothing.
-fn a_v6_client_is_refused_by_a_v7_daemon() {
+fn a_v7_client_is_refused_by_a_v8_daemon() {
     block_on(async {
-        let fixture = Fixture::new("v6-client", false).await;
+        let fixture = Fixture::new("v7-client", false).await;
         let mut connection = connect(&fixture.endpoint).await;
         assert_eq!(
-            handshake(&mut connection, 6).await,
+            handshake(&mut connection, 7).await,
             Response::Handshake(HandshakeResponse::VersionMismatch {
-                server_protocol_version: 7,
-                client_protocol_version: 6,
+                server_protocol_version: 8,
+                client_protocol_version: 7,
             })
         );
         let request = work_request(
@@ -1314,10 +1314,10 @@ fn a_v6_client_is_refused_by_a_v7_daemon() {
     });
 }
 
-/// v7 client → v6 daemon: the client reports the mismatch and stops.
-fn a_v7_client_stops_at_a_v6_daemon() {
+/// v8 client → v7 daemon: the client reports the mismatch and stops.
+fn a_v8_client_stops_at_a_v7_daemon() {
     block_on(async {
-        let home = TestDir::create("v6-daemon");
+        let home = TestDir::create("v7-daemon");
         let endpoint = runtime_paths::resolve(&GlobalPaths::from_home(home.path()));
         #[cfg(unix)]
         let listener = {
@@ -1326,7 +1326,7 @@ fn a_v7_client_stops_at_a_v6_daemon() {
         };
         #[cfg(windows)]
         let listener = protocol::Listener::bind(&endpoint.pipe_name).expect("listener");
-        let fake_v6 = tokio::spawn(async move {
+        let fake_v7 = tokio::spawn(async move {
             let mut listener = listener;
             let mut connection = listener.accept().await.expect("accept");
             let request: Request = protocol::framing::read_message(&mut connection)
@@ -1338,7 +1338,7 @@ fn a_v7_client_stops_at_a_v6_daemon() {
             protocol::framing::write_message(
                 &mut connection,
                 &Response::Handshake(HandshakeResponse::VersionMismatch {
-                    server_protocol_version: 6,
+                    server_protocol_version: 7,
                     client_protocol_version: handshake.protocol_version,
                 }),
             )
@@ -1351,18 +1351,18 @@ fn a_v7_client_stops_at_a_v6_daemon() {
             .expect("connect");
         let error = brainprint_daemon::client::handshake(&mut connection, "i6-task3-test")
             .await
-            .expect_err("a v6 daemon must be refused");
+            .expect_err("a v7 daemon must be refused");
         assert!(
             matches!(
                 error,
                 brainprint_daemon::client::ClientError::VersionMismatch {
-                    server_protocol_version: 6,
-                    client_protocol_version: 7,
+                    server_protocol_version: 7,
+                    client_protocol_version: 8,
                 }
             ),
             "{error:?}"
         );
-        assert_eq!(fake_v6.await.expect("fake daemon"), 7);
+        assert_eq!(fake_v7.await.expect("fake daemon"), 8);
     });
 }
 
