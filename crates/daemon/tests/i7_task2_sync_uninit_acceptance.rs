@@ -860,15 +860,12 @@ async fn uninit_of_the_project_home_leaves_its_worktree_untouched() {
     git(&["commit", "-q", "-m", "init"], main.path());
     let parent = TestDir::create("wt-parent");
     let secondary = parent.path().join("feature");
+    // Git cannot create directories under a Windows verbatim (`\\?\`)
+    // path, which `canonicalize` returns there.
+    let target = secondary.to_string_lossy().into_owned();
+    let target = target.strip_prefix(r"\\?\").unwrap_or(&target);
     git(
-        &[
-            "worktree",
-            "add",
-            "-q",
-            "-b",
-            "feature",
-            &secondary.to_string_lossy(),
-        ],
+        &["worktree", "add", "-q", "-b", "feature", target],
         main.path(),
     );
     let secondary = secondary.canonicalize().expect("canonical");
