@@ -129,6 +129,10 @@ pub enum Request {
     Doctor(super::maintenance::DoctorRequest),
     /// #56: rebuild the Workspace's rebuildable index from current source.
     Rebuild(super::maintenance::RebuildRequest),
+    /// #57: explicit manual reconcile of the Workspace with the filesystem.
+    Sync(super::maintenance::SyncRequest),
+    /// #57: release the Workspace from active management.
+    Uninit(super::maintenance::UninitRequest),
 }
 
 /// An envelope for every response the daemon may send.
@@ -154,6 +158,8 @@ pub enum Response {
     VerificationJobCancel(super::verification_job::VerificationJobCancelResponseWire),
     Doctor(super::maintenance::DoctorResponse),
     Rebuild(super::maintenance::RebuildResponse),
+    Sync(super::maintenance::SyncResponse),
+    Uninit(super::maintenance::UninitResponse),
 }
 
 /// A coarse, stable classification a client can act on without parsing

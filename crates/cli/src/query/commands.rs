@@ -72,6 +72,25 @@ pub enum Cli {
         #[arg(long)]
         json: bool,
     },
+    /// #57: reconcile the Workspace with the filesystem now -- manual
+    /// recovery after a suspected missed change (checkout, rebase, a
+    /// stopped daemon). Not needed after ordinary edits: the daemon keeps
+    /// the index current.
+    Sync {
+        path: Option<String>,
+        /// Machine-readable output: the `Sync` response JSON on stdout.
+        #[arg(long)]
+        json: bool,
+    },
+    /// #57: release the Workspace from Brainprint management (watcher and
+    /// runtime stop). Source, `.brainprint/`, durable knowledge and the
+    /// index are kept; `brainprint init` attaches it again.
+    Uninit {
+        path: Option<String>,
+        /// Machine-readable output: the `Uninit` response JSON on stdout.
+        #[arg(long)]
+        json: bool,
+    },
     Find {
         #[command(subcommand)]
         mode: FindCommand,

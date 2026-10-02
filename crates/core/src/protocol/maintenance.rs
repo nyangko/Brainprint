@@ -4,6 +4,11 @@
 //! `doctor` reports only what the daemon actually observed; a check it
 //! could not make is an explicit [`CheckWire::NotMeasured`], never a
 //! guessed `Ok`. `rebuild` re-derives the rebuildable `index.db` only.
+//!
+//! #57 (I7 task 2): `sync` is the explicit manual correctness recovery --
+//! a verified reconcile of the filesystem against the index, reported as
+//! #55's refresh delta. `uninit` releases the Workspace from active
+//! management (detach, not erase).
 
 use serde::{Deserialize, Serialize};
 
@@ -181,4 +186,51 @@ pub struct RebuildResponse {
     /// Semantic facts are re-derived on demand from this index, as after
     /// `init`; this is each family's availability for that.
     pub semantic: Vec<BackendCheckWire>,
+}
+
+/// #57: explicitly reconcile the Workspace at `path` with the filesystem.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SyncRequest {
+    /// Absolute, resolved by the client (as `InitRequest::path`).
+    pub path: String,
+}
+
+/// A completed sync. A sync that proved nothing current is
+/// `Response::Error`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SyncResponse {
+    pub project_id: String,
+    pub workspace_id: String,
+    pub workspace_root: String,
+    /// Always `Current`: the stored basis before the sync, the verified
+    /// one after it and the net Resource delta between them (#55's
+    /// vocabulary). No change leaves the basis where it was.
+    pub refresh: super::work::PostCommandRefreshWire,
+    pub watcher: WatcherCheckWire,
+}
+
+/// #57: release the Workspace at `path` from active management.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UninitRequest {
+    /// Absolute, resolved by the client (as `InitRequest::path`).
+    pub path: String,
+}
+
+/// A detached Workspace. Source, `.brainprint/` and every database are
+/// kept; `init` attaches it again with the same identity.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UninitResponse {
+    pub project_id: String,
+    pub workspace_id: String,
+    pub workspace_root: String,
+    pub is_project_home: bool,
+    /// It was already detached: nothing changed.
+    pub already_detached: bool,
+    /// This daemon held a runtime (watcher, index handles) for it, now
+    /// stopped.
+    pub runtime_stopped: bool,
 }

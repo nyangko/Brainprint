@@ -1,5 +1,6 @@
-//! `brainprint doctor` / `brainprint rebuild` (#56): one request each,
-//! rendered compactly. `--json` prints the daemon's response as it is.
+//! `brainprint doctor` / `brainprint rebuild` (#56) and `brainprint sync` /
+//! `brainprint uninit` (#57): one request each, rendered compactly.
+//! `--json` prints the daemon's response as it is.
 
 use std::io::Write as _;
 
@@ -8,8 +9,9 @@ use brainprint_core::protocol::{
     maintenance::{
         BackendCheckWire, BackendStateWire, CheckWire, DatabaseCheckWire, DatabaseStateWire,
         DoctorRequest, DoctorWorkspaceWire, IndexCheckWire, RebuildRequest, RuntimeCheckWire,
-        SchemaCheckWire, WatcherCheckWire,
+        SchemaCheckWire, SyncRequest, UninitRequest, WatcherCheckWire,
     },
+    work::{PostCommandRefreshWire, ResourceDeltaKindWire},
 };
 
 use super::exec::{Exit, absolute_workspace};
@@ -122,6 +124,130 @@ pub async fn run_rebuild(path: Option<String>, json: bool) -> Exit {
     line(&mut out, "  index", &index(&response.index));
     line(&mut out, "  watcher", &watcher_state(&response.watcher));
     semantic(&mut out, &response.semantic);
+    write_out(&out, Exit::Ok)
+}
+
+/// Changed Resources listed by `sync` before the rest is only counted.
+const SYNC_LISTED_CHANGES: usize = 20;
+
+pub async fn run_sync(path: Option<String>, json: bool) -> Exit {
+    let path = absolute_workspace(path.as_deref().unwrap_or("."));
+    let mut connection = match client::connect_and_handshake().await {
+        Ok(connection) => connection,
+        Err(error) => {
+            eprintln!("brainprint: {error}");
+            return Exit::DaemonOrProtocolFailure;
+        }
+    };
+    let response = match client::send(&mut connection, Request::Sync(SyncRequest { path })).await {
+        Ok(Response::Sync(response)) => response,
+        other => return unexpected("Sync", other),
+    };
+    if json {
+        return print_json(serde_json::to_string(&response));
+    }
+
+    let mut out = Vec::new();
+    line(&mut out, "synced", &response.workspace_root);
+    line(&mut out, "  project", &response.project_id);
+    line(&mut out, "  workspace", &response.workspace_id);
+    let PostCommandRefreshWire::Current {
+        before,
+        after,
+        created_count,
+        updated_count,
+        deleted_count,
+        total_changed,
+        changes,
+        ..
+    } = &response.refresh
+    else {
+        eprintln!("brainprint: daemon sent a sync without a current basis");
+        return Exit::DaemonOrProtocolFailure;
+    };
+    line(
+        &mut out,
+        "  revision",
+        &format!(
+            "{} -> {}",
+            before.workspace_revision, after.workspace_revision
+        ),
+    );
+    line(
+        &mut out,
+        "  generation",
+        &format!("{} -> {}", before.generation_no, after.generation_no),
+    );
+    line(
+        &mut out,
+        "  changes",
+        &format!(
+            "{total_changed} (created {created_count}, updated {updated_count}, deleted {deleted_count})"
+        ),
+    );
+    for change in changes.iter().take(SYNC_LISTED_CHANGES) {
+        let kind = match change.kind {
+            ResourceDeltaKindWire::Created => "created",
+            ResourceDeltaKindWire::Updated => "updated",
+            ResourceDeltaKindWire::Deleted => "deleted",
+        };
+        let _ = writeln!(out, "    {kind:<12}{}", change.path);
+    }
+    let unlisted = total_changed.saturating_sub(changes.len().min(SYNC_LISTED_CHANGES) as u64);
+    if unlisted > 0 {
+        let _ = writeln!(
+            out,
+            "    ... {unlisted} more (--json lists {})",
+            changes.len()
+        );
+    }
+    line(&mut out, "  index", "current");
+    line(&mut out, "  watcher", &watcher_state(&response.watcher));
+    write_out(&out, Exit::Ok)
+}
+
+pub async fn run_uninit(path: Option<String>, json: bool) -> Exit {
+    let path = absolute_workspace(path.as_deref().unwrap_or("."));
+    let mut connection = match client::connect_and_handshake().await {
+        Ok(connection) => connection,
+        Err(error) => {
+            eprintln!("brainprint: {error}");
+            return Exit::DaemonOrProtocolFailure;
+        }
+    };
+    let response =
+        match client::send(&mut connection, Request::Uninit(UninitRequest { path })).await {
+            Ok(Response::Uninit(response)) => response,
+            other => return unexpected("Uninit", other),
+        };
+    if json {
+        return print_json(serde_json::to_string(&response));
+    }
+
+    let mut out = Vec::new();
+    let state = if response.already_detached {
+        "already detached"
+    } else {
+        "detached"
+    };
+    line(&mut out, state, &response.workspace_root);
+    line(&mut out, "  project", &response.project_id);
+    line(&mut out, "  workspace", &response.workspace_id);
+    line(
+        &mut out,
+        "  runtime",
+        if response.runtime_stopped {
+            "stopped (watcher detached)"
+        } else {
+            "none was running"
+        },
+    );
+    line(
+        &mut out,
+        "  kept",
+        "source, .brainprint/, durable knowledge, index",
+    );
+    line(&mut out, "  next", "brainprint init (attaches it again)");
     write_out(&out, Exit::Ok)
 }
 

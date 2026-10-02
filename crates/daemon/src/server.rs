@@ -336,6 +336,8 @@ where
             Request::Rebuild(request) => {
                 crate::query::handle_rebuild(&query_runtime, request).await
             }
+            Request::Sync(request) => crate::query::handle_sync(&query_runtime, request).await,
+            Request::Uninit(request) => crate::query::handle_uninit(&query_runtime, request).await,
         };
         protocol::framing::write_message(&mut connection, &response).await?;
     }

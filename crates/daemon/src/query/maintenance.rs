@@ -7,6 +7,12 @@
 //! the live one, validates it, and only then swaps it in; project.db,
 //! workspace.db, the registry, config and source are never opened for
 //! write by it.
+//!
+//! #57 (I7 task 2): `sync` runs the explicit verified reconcile on the
+//! Workspace worker and reports #55's refresh delta; the normal path stays
+//! the watcher's incremental refresh. `uninit` marks the registry entry
+//! DETACHED, then stops the runtime; source, `.brainprint/` and every
+//! database are left exactly as they are (#13 task 9 §9-11).
 
 use std::{
     ffi::OsString,
@@ -21,8 +27,8 @@ use brainprint_core::{
         maintenance::{
             BackendCheckWire, BackendStateWire, CheckWire, DatabaseCheckWire, DatabaseStateWire,
             DoctorRequest, DoctorResponse, DoctorWorkspaceWire, IndexCheckWire, RebuildRequest,
-            RebuildResponse, RuntimeCheckWire, SchemaCheckWire, WatcherCheckWire,
-            WorkspaceDoctorWire,
+            RebuildResponse, RuntimeCheckWire, SchemaCheckWire, SyncRequest, SyncResponse,
+            UninitRequest, UninitResponse, WatcherCheckWire, WorkspaceDoctorWire,
         },
     },
 };
@@ -33,13 +39,15 @@ use brainprint_engine::{
     paths::{GlobalPaths, WorkspacePaths},
     query::Currentness,
     query_surface::{CoreError, CoreQuerySurface},
-    registry::{GlobalRegistry, WorkspaceRegistryEntry},
+    registry::{GlobalRegistry, RegistryState, WorkspaceRegistryEntry},
     scan::BaselineScan,
     schema,
 };
 
 use super::{
+    PostCommandRefreshStored,
     lifecycle::{INITIAL_WORKSPACE_REVISION, LifecycleStats, WorkspaceLifecycle},
+    managed_wire::refresh_wire,
     runtime::DaemonQueryRuntime,
     semantic::{SemanticStats, WorkspaceSemantic},
 };
@@ -93,6 +101,116 @@ pub async fn handle_rebuild(runtime: &DaemonQueryRuntime, request: RebuildReques
                 message: format!("rebuild failed: {message}"),
             })
         }
+    }
+}
+
+pub async fn handle_sync(runtime: &DaemonQueryRuntime, request: SyncRequest) -> Response {
+    let workspace = match runtime.resolve_workspace(PathBuf::from(request.path)).await {
+        Ok(workspace) => workspace,
+        Err(error) => {
+            return Response::Error(ErrorResponse {
+                kind: ErrorKind::InvalidRequest,
+                message: error.message,
+            });
+        }
+    };
+    let global_db = runtime.global_paths().global_db.clone();
+    let entry = match tokio::task::spawn_blocking(move || registered(&global_db, workspace)).await {
+        Ok(Ok(entry)) => entry,
+        Ok(Err(error)) => return Response::Error(error),
+        Err(error) => return Response::Error(internal("sync", &error)),
+    };
+    match runtime.sync(workspace).await {
+        Ok((report, stats)) => Response::Sync(SyncResponse {
+            project_id: entry.project_id.to_string(),
+            workspace_id: workspace.to_string(),
+            workspace_root: entry.locator.display().to_string(),
+            refresh: refresh_wire(PostCommandRefreshStored::current(&report)),
+            watcher: watcher_check(&stats),
+        }),
+        Err(error) => {
+            eprintln!("brainprintd: workspace {workspace} sync failed: {error}");
+            Response::Error(ErrorResponse {
+                kind: ErrorKind::DaemonInternal,
+                message: format!("sync failed: {error}"),
+            })
+        }
+    }
+}
+
+pub async fn handle_uninit(runtime: &DaemonQueryRuntime, request: UninitRequest) -> Response {
+    let global_db = runtime.global_paths().global_db.clone();
+    let locator = PathBuf::from(request.path);
+    let detached = tokio::task::spawn_blocking(move || detach(&global_db, &locator)).await;
+    let (entry, already_detached) = match detached {
+        Ok(Ok(detached)) => detached,
+        Ok(Err(error)) => return Response::Error(error),
+        Err(error) => return Response::Error(internal("uninit", &error)),
+    };
+    // After the registry write: a request racing this one can no longer
+    // bind the Workspace, so no runtime outlives the detach.
+    let runtime_stopped = runtime.detach(entry.workspace_id).await;
+    Response::Uninit(UninitResponse {
+        project_id: entry.project_id.to_string(),
+        workspace_id: entry.workspace_id.to_string(),
+        workspace_root: entry.locator.display().to_string(),
+        is_project_home: entry.is_project_home,
+        already_detached,
+        runtime_stopped,
+    })
+}
+
+fn registered(
+    global_db: &Path,
+    workspace: WorkspaceId,
+) -> Result<WorkspaceRegistryEntry, ErrorResponse> {
+    GlobalRegistry::open(global_db)
+        .and_then(|registry| registry.get_workspace(workspace))
+        .map_err(|error| internal("registry", &error))?
+        .ok_or_else(|| ErrorResponse {
+            kind: ErrorKind::Conflict,
+            message: format!("workspace {workspace} is no longer registered"),
+        })
+}
+
+/// Mark the one Workspace at `locator` DETACHED. Only the registry row's
+/// state changes; an already detached one is left as it is.
+fn detach(
+    global_db: &Path,
+    locator: &Path,
+) -> Result<(WorkspaceRegistryEntry, bool), ErrorResponse> {
+    let not_initialized = || ErrorResponse {
+        kind: ErrorKind::InvalidRequest,
+        message: format!(
+            "not initialized: no Workspace is registered at {}",
+            locator.display()
+        ),
+    };
+    if !global_db.is_file() {
+        return Err(not_initialized());
+    }
+    let registry = GlobalRegistry::open(global_db).map_err(|error| internal("registry", &error))?;
+    let (detached, managed): (Vec<_>, Vec<_>) = registry
+        .find_by_locator(locator)
+        .map_err(|error| internal("registry", &error))?
+        .workspaces
+        .into_iter()
+        .partition(|entry| entry.state == RegistryState::Detached);
+    match (managed.as_slice(), detached.as_slice()) {
+        ([one], _) => registry
+            .mark_workspace_detached(one.workspace_id)
+            .map(|entry| (entry, false))
+            .map_err(|error| internal("registry", &error)),
+        ([], [one]) => Ok((one.clone(), true)),
+        ([], []) => Err(not_initialized()),
+        _ => Err(ErrorResponse {
+            kind: ErrorKind::InvalidRequest,
+            message: format!(
+                "{} Workspaces are registered at {}",
+                managed.len() + detached.len(),
+                locator.display()
+            ),
+        }),
     }
 }
 

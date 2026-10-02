@@ -123,6 +123,15 @@ enum Job {
     Rebuild {
         reply: oneshot::Sender<Result<RebuildResponse, String>>,
     },
+    /// #57: the explicit verified reconcile and its delta, with the
+    /// lifecycle's facts after it.
+    Sync {
+        reply:
+            oneshot::Sender<Result<(PostCommandRefreshReport, LifecycleStats), CommandBasisError>>,
+    },
+    /// #57 `uninit`: drop watcher, semantic runtime and every index
+    /// handle, then end the worker.
+    Detach { reply: oneshot::Sender<()> },
 }
 
 /// One Workspace worker's queue. Cloneable, so a task that outlives its
@@ -403,6 +412,38 @@ impl DaemonQueryRuntime {
             .unwrap_or_else(|_| Err("workspace worker is gone".to_owned()))
     }
 
+    /// #57: the explicit sync on `workspace`'s worker, serialized with its
+    /// queries and publications.
+    pub(super) async fn sync(
+        &self,
+        workspace: WorkspaceId,
+    ) -> Result<(PostCommandRefreshReport, LifecycleStats), CommandBasisError> {
+        let handle = self.handle_for(workspace);
+        let (reply, receiver) = oneshot::channel();
+        if handle.jobs.send(Job::Sync { reply }).is_err() {
+            return Err(gone());
+        }
+        receiver.await.unwrap_or_else(|_| Err(gone()))
+    }
+
+    /// #57 `uninit`: stop `workspace`'s runtime, if this daemon runs one,
+    /// and forget it; the next `init` starts a fresh one. Whether one ran.
+    pub(super) async fn detach(&self, workspace: WorkspaceId) -> bool {
+        let Some(handle) = self
+            .workers
+            .lock()
+            .expect("worker map mutex poisoned")
+            .remove(&workspace)
+        else {
+            return false;
+        };
+        let (reply, receiver) = oneshot::channel();
+        if handle.jobs.send(Job::Detach { reply }).is_ok() {
+            let _ = receiver.await;
+        }
+        true
+    }
+
     /// The Workspace's factual semantic runtime counters (#39), if its
     /// runtime exists and bound.
     pub async fn semantic_stats(&self, workspace: WorkspaceId) -> Option<SemanticStats> {
@@ -669,6 +710,25 @@ fn worker_loop(
                 ledger = new_ledger();
                 pending = PendingAcks::new();
                 let _ = reply.send(outcome);
+            }
+            Job::Sync { reply } => {
+                let outcome = match (&surface, &mut lifecycle) {
+                    (Err(error), _) => Err(CommandBasisError::Refresh(
+                        convert_out::core_error(clone_core_error(error)).message,
+                    )),
+                    (Ok(_), Ok(lifecycle)) => {
+                        lifecycle.sync().map(|report| (report, lifecycle.stats()))
+                    }
+                    (Ok(_), Err(error)) => Err(CommandBasisError::Refresh(error.clone())),
+                };
+                let _ = reply.send(outcome);
+            }
+            Job::Detach { reply } => {
+                // Watcher, semantic backends and index handles all close
+                // before the reply; the thread ends with them.
+                drop((surface, lifecycle, semantic));
+                let _ = reply.send(());
+                return;
             }
         }
     }

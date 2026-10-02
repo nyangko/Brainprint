@@ -39,6 +39,10 @@ use crate::{
 pub enum RegistryState {
     Active,
     Missing,
+    /// #57 `uninit`: released from active management by an explicit
+    /// request. The locator and every local file stay; only an explicit
+    /// `init` attaches it again (#13 task 9 §9).
+    Detached,
 }
 
 impl RegistryState {
@@ -46,6 +50,7 @@ impl RegistryState {
         match self {
             Self::Active => "ACTIVE",
             Self::Missing => "MISSING",
+            Self::Detached => "DETACHED",
         }
     }
 
@@ -53,6 +58,7 @@ impl RegistryState {
         match raw {
             "ACTIVE" => Ok(Self::Active),
             "MISSING" => Ok(Self::Missing),
+            "DETACHED" => Ok(Self::Detached),
             other => Err(RegistryError::UnknownState {
                 raw: other.to_owned(),
             }),
@@ -481,6 +487,29 @@ impl GlobalRegistry {
             params![
                 RegistryState::Active.as_str(),
                 now,
+                workspace_id.to_bytes().to_vec()
+            ],
+        )?;
+        if changed == 0 {
+            return Err(RegistryError::UnknownWorkspace { workspace_id });
+        }
+        self.get_workspace(workspace_id)?
+            .ok_or(RegistryError::UnknownWorkspace { workspace_id })
+    }
+
+    /// #57 `uninit`: mark a Workspace as released from active
+    /// management. Identity, locator and `last_seen_at` are kept; a later
+    /// `register_workspace` for the same identity and locator (explicit
+    /// `init`) marks it active again.
+    pub fn mark_workspace_detached(
+        &self,
+        workspace_id: WorkspaceId,
+    ) -> Result<WorkspaceRegistryEntry, RegistryError> {
+        let changed = self.connection.execute(
+            "UPDATE workspace_registry SET state = ?1, updated_at = ?2 WHERE workspace_uid = ?3",
+            params![
+                RegistryState::Detached.as_str(),
+                db::now_millis_text(),
                 workspace_id.to_bytes().to_vec()
             ],
         )?;
@@ -1170,6 +1199,44 @@ mod tests {
             .mark_workspace_active(workspace_id)
             .expect("marking active should succeed");
         assert_eq!(active.state, RegistryState::Active);
+    }
+
+    #[test]
+    fn a_detached_workspace_keeps_its_row_until_reregistered() {
+        let dir = TestDir::create("workspace-detached");
+        let registry = GlobalRegistry::open(&dir.db_path()).expect("registry should open");
+        let project_id = ProjectId::generate();
+        let workspace_id = WorkspaceId::generate();
+        registry
+            .register_project(project_id, Path::new("/repo/main"))
+            .expect("project should register");
+        let registered = registry
+            .register_workspace(workspace_id, project_id, Path::new("/repo/main"), true)
+            .expect("workspace should register");
+
+        let detached = registry
+            .mark_workspace_detached(workspace_id)
+            .expect("detaching should succeed");
+        assert_eq!(detached.state, RegistryState::Detached);
+        assert_eq!(detached.locator, registered.locator);
+        assert_eq!(detached.last_seen_at, registered.last_seen_at);
+        let found = registry
+            .find_by_locator(Path::new("/repo/main"))
+            .expect("lookup should succeed");
+        assert_eq!(found.workspaces[0].state, RegistryState::Detached);
+        assert_eq!(
+            registry
+                .get_project(project_id)
+                .expect("project lookup")
+                .expect("project row")
+                .state,
+            RegistryState::Active
+        );
+
+        let reattached = registry
+            .register_workspace(workspace_id, project_id, Path::new("/repo/main"), true)
+            .expect("re-registering the same locator should succeed");
+        assert_eq!(reattached.state, RegistryState::Active);
     }
 
     #[test]

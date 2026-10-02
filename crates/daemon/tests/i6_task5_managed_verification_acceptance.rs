@@ -1452,7 +1452,7 @@ fn invalid_requests_create_nothing() {
 }
 
 fn protocol_is_9_and_workspace_schema_7() {
-    assert_eq!(PROTOCOL_VERSION, 11);
+    assert_eq!(PROTOCOL_VERSION, 12);
     assert_eq!(
         brainprint_engine::schema::workspace::WORKSPACE_MIGRATIONS.len(),
         7
