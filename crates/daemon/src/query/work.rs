@@ -13,7 +13,7 @@
 use std::path::Path;
 
 use brainprint_core::{
-    WorkItemId, WorkspaceId,
+    VerificationJobId, WorkItemId, WorkspaceId,
     protocol::{
         query::{QueryErrorWire, WorkItemSourceKindWire},
         work::{
@@ -28,27 +28,61 @@ use brainprint_engine::{
         self, GitEntry, GitEntryStatus, GitObservation, GitObservationError, ResolvedPaths,
     },
     knowledge::{
-        KnowledgeError, NewWorkItem, NotReady, ResultObservation, StartObservation, WorkError,
-        WorkItemSourceKind, WorkRuntime, WorkspaceKnowledgeStore,
+        ExpectedResultBasis, KnowledgeError, NewWorkItem, NotReady, ResultObservation,
+        StartObservation, WorkError, WorkItemSourceKind, WorkRuntime, WorkspaceKnowledgeStore,
     },
     paths::WorkspacePaths,
     query_surface::{CoreError, NotInitialized},
     resource::ResourceStore,
 };
 
-use super::convert_out;
+use super::{convert_out, lifecycle::IndexBasis};
+
+/// #55: what a verified result is held to, beside its wire input. Empty
+/// for every ordinary write.
+#[derive(Debug, Clone, Default)]
+pub(super) struct WorkContext {
+    /// The basis the verification proved current; the write happens only
+    /// at exactly it.
+    pub expected_basis: Option<ExpectedResultBasis>,
+    /// The managed Job the result's verification summary came from.
+    pub verification_job: Option<VerificationJobId>,
+}
+
+impl WorkContext {
+    pub(super) fn at(basis: &IndexBasis) -> Self {
+        Self {
+            expected_basis: Some(ExpectedResultBasis {
+                index_incarnation: basis.index_incarnation,
+                workspace_revision: basis.workspace_revision.clone(),
+                generation_no: basis.generation_no,
+            }),
+            verification_job: None,
+        }
+    }
+}
 
 pub(super) fn run(
     workspace: WorkspaceId,
     root: &Path,
     operation: WorkOperationWire,
+    context: WorkContext,
 ) -> WorkResponse {
     let paths = WorkspacePaths::from_root(root);
     let outcome = match operation {
         WorkOperationWire::Start(start) => start_work(workspace, &paths, start),
-        WorkOperationWire::Result(input) => record_result(workspace, &paths, input),
+        WorkOperationWire::Result(input) => record_result(workspace, &paths, input, context),
     };
     outcome.unwrap_or_else(WorkResponse::Failed)
+}
+
+/// #55, protocol 8: the Workspace is no longer at the basis a
+/// verification proved; nothing was stored. A fixed message, no detail.
+pub(super) const BASIS_CHANGED: &str =
+    "the workspace changed since the verification; nothing was stored";
+
+pub(super) fn basis_changed() -> WorkResponse {
+    internal(BASIS_CHANGED)
 }
 
 pub(super) fn workspace_error(error: QueryErrorWire) -> WorkResponse {
@@ -158,6 +192,7 @@ fn record_result(
     workspace: WorkspaceId,
     paths: &WorkspacePaths,
     input: WorkResultInputWire,
+    context: WorkContext,
 ) -> Result<WorkResponse, WorkFailureWire> {
     if input.verification.is_some() {
         return Err(failure(internal_message(
@@ -173,6 +208,8 @@ fn record_result(
         change_set_fingerprint,
         verification_summary: input.verification_summary,
         remaining_dirty,
+        verification_job: context.verification_job,
+        expected_basis: context.expected_basis,
     };
     let runtime = open(workspace, paths)?;
     let work_item = input.work_item;
@@ -279,6 +316,7 @@ pub(super) fn work_error(error: WorkError, work_item: Option<WorkItemId>) -> Wor
         WorkError::BoundExceeded { what } => WorkErrorWire::BoundExceeded {
             what: what.to_owned(),
         },
+        WorkError::ResultBasisChanged => internal_message(BASIS_CHANGED),
         WorkError::Knowledge(KnowledgeError::InvalidTransition { what, reason }) => {
             WorkErrorWire::InvalidTransition {
                 reason: format!("{what}: {reason}"),

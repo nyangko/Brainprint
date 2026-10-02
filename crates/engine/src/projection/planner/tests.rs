@@ -1520,6 +1520,8 @@ fn resume_projects_the_explicit_snapshot_and_nothing_else() {
             change_set_fingerprint: None,
             verification_summary: None,
             remaining_dirty: DirtyObservation::Unknown,
+            verification_job: None,
+            expected_basis: None,
         },
     )
     .expect("partial");

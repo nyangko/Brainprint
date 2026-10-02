@@ -117,8 +117,8 @@ fn main() {
             invalid_requests_create_nothing,
         ),
         (
-            "protocol_is_8_and_workspace_schema_6",
-            protocol_is_8_and_workspace_schema_6,
+            "protocol_is_8_and_workspace_schema_7",
+            protocol_is_8_and_workspace_schema_7,
         ),
     ];
     let handles: Vec<_> = tests
@@ -1025,10 +1025,13 @@ fn clean_shutdown_interrupts_and_restart_reruns_nothing() {
             .filter(|event| format!("{:?}", event.kind) == "JobInterrupted")
             .collect();
         assert_eq!(interrupted.len(), 1);
-        assert_eq!(
-            interrupted[0].payload_json,
-            r#"{"v":1,"reason":"daemon_shutdown"}"#
-        );
+        // #55: v2, the refresh deferred to the next daemon.
+        let payload: serde_json::Value =
+            serde_json::from_str(&interrupted[0].payload_json).expect("json");
+        assert_eq!(payload["v"], 2);
+        assert_eq!(payload["reason"], "daemon_shutdown");
+        assert_eq!(payload["refresh"]["status"], "deferred_daemon_shutdown");
+        assert!(payload["refresh"]["before"].is_object());
         assert!(
             !artifacts.join("verification").exists(),
             "raw store not purged"
@@ -1300,6 +1303,19 @@ fn request_values_are_never_stored() {
         let fixture = Fixture::new("secrets").await;
         let cwd = fixture.root.path().join("SECRET_CWD_MARKER");
         fs::create_dir_all(&cwd).expect("cwd");
+        // The cwd is also a Workspace directory: indexed before the Job, so
+        // the Job's post-command Resource delta (#55) has no reason to name
+        // it.
+        let baseline = fixture
+            .runtime
+            .command_baseline(fixture.workspace)
+            .await
+            .expect("baseline");
+        fixture
+            .runtime
+            .post_command_refresh(fixture.workspace, baseline)
+            .await
+            .expect("indexed");
         let mut secret = command(
             "secret-label",
             &[&fixture.mark("ran"), "line:SECRET_ARG_MARKER"],
@@ -1434,11 +1450,11 @@ fn invalid_requests_create_nothing() {
     });
 }
 
-fn protocol_is_8_and_workspace_schema_6() {
+fn protocol_is_8_and_workspace_schema_7() {
     assert_eq!(PROTOCOL_VERSION, 8);
     assert_eq!(
         brainprint_engine::schema::workspace::WORKSPACE_MIGRATIONS.len(),
-        6
+        7
     );
     let _ = EndReason::DaemonRestart;
 }

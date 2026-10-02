@@ -9,7 +9,7 @@
 
 use std::path::Path;
 
-use brainprint_core::{WorkItemId, WorkNoteId, WorkspaceId};
+use brainprint_core::{VerificationJobId, WorkItemId, WorkNoteId, WorkspaceId};
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, params};
 
 use super::{
@@ -100,7 +100,11 @@ fn decode_work_resource(row: &Row<'_>) -> Result<WorkResource, KnowledgeError> {
 const WORK_RESULT_COLUMNS: &str = "w.uid, r.result_status, r.result_summary, r.commit_id, \
     r.change_set_fingerprint, r.verification_summary, r.result_workspace_revision, \
     r.result_generation_no, r.remaining_dirty_state, r.remaining_dirty_fingerprint, r.created_at, \
-    r.result_index_incarnation_uid";
+    r.result_index_incarnation_uid, j.uid";
+
+/// `work_result` with the stable ID of its managed Job, if any.
+const WORK_RESULT_FROM: &str = "work_item w JOIN work_result r ON r.work_item_id = w.id \
+    LEFT JOIN verification_job j ON j.id = r.verification_job_id";
 
 fn decode_work_result(row: &Row<'_>) -> Result<WorkResult, KnowledgeError> {
     Ok(WorkResult {
@@ -114,6 +118,7 @@ fn decode_work_result(row: &Row<'_>) -> Result<WorkResult, KnowledgeError> {
         result_index_incarnation: optional_uid_column(row, 11, "work_result")?,
         result_generation_no: row.get(7)?,
         remaining_dirty: dirty_columns(row, 8)?,
+        verification_job: optional_uid_column(row, 12, "work_result")?,
         created_at: row.get(10)?,
     })
 }
@@ -244,6 +249,21 @@ impl WorkspaceKnowledgeStore {
             .optional()?
             .ok_or(KnowledgeError::NotFound {
                 what: "work_item",
+                uid: uid.to_string(),
+            })
+    }
+
+    /// The local row of a stable Job ID; the FK never leaves this file.
+    fn verification_job_row_id(&self, uid: VerificationJobId) -> Result<i64, KnowledgeError> {
+        self.connection
+            .query_row(
+                "SELECT id FROM verification_job WHERE uid = ?1",
+                params![blob(uid)],
+                |row| row.get(0),
+            )
+            .optional()?
+            .ok_or(KnowledgeError::NotFound {
+                what: "verification_job",
                 uid: uid.to_string(),
             })
     }
@@ -591,12 +611,16 @@ impl WorkspaceKnowledgeStore {
             });
         }
         let work_item_id = self.work_item_row_id(result.work_item)?;
+        let verification_job_id = result
+            .verification_job
+            .map(|job| self.verification_job_row_id(job))
+            .transpose()?;
         self.connection.execute(
             "INSERT INTO work_result (work_item_id, result_status, result_summary, commit_id, \
                change_set_fingerprint, verification_summary, result_workspace_revision, \
                result_generation_no, remaining_dirty_state, remaining_dirty_fingerprint, \
-               created_at, result_index_incarnation_uid) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12) \
+               created_at, result_index_incarnation_uid, verification_job_id) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13) \
              ON CONFLICT (work_item_id) DO UPDATE SET \
                result_status = excluded.result_status, result_summary = excluded.result_summary, \
                commit_id = excluded.commit_id, \
@@ -607,7 +631,8 @@ impl WorkspaceKnowledgeStore {
                result_index_incarnation_uid = excluded.result_index_incarnation_uid, \
                remaining_dirty_state = excluded.remaining_dirty_state, \
                remaining_dirty_fingerprint = excluded.remaining_dirty_fingerprint, \
-               created_at = excluded.created_at",
+               created_at = excluded.created_at, \
+               verification_job_id = excluded.verification_job_id",
             params![
                 work_item_id,
                 result.result_status.as_str(),
@@ -621,6 +646,7 @@ impl WorkspaceKnowledgeStore {
                 result.remaining_dirty.fingerprint(),
                 db::now_millis_text(),
                 result.result_index_incarnation.map(blob),
+                verification_job_id,
             ],
         )?;
         self.get_work_result(result.work_item)?
@@ -636,10 +662,7 @@ impl WorkspaceKnowledgeStore {
     ) -> Result<Option<WorkResult>, KnowledgeError> {
         query_one(
             &self.connection,
-            &format!(
-                "SELECT {WORK_RESULT_COLUMNS} FROM work_item w \
-                 JOIN work_result r ON r.work_item_id = w.id WHERE w.uid = ?1"
-            ),
+            &format!("SELECT {WORK_RESULT_COLUMNS} FROM {WORK_RESULT_FROM} WHERE w.uid = ?1"),
             params![blob(work_item)],
             decode_work_result,
         )

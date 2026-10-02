@@ -18,7 +18,7 @@
 
 use std::{error::Error, fmt, path::Path};
 
-use brainprint_core::{IndexIncarnationId, ResourceId, WorkItemId, WorkspaceId};
+use brainprint_core::{IndexIncarnationId, ResourceId, VerificationJobId, WorkItemId, WorkspaceId};
 
 use super::{
     DirtyObservation, KnowledgeError, NewWorkItem, WorkHandoff, WorkItem, WorkItemStatus,
@@ -96,6 +96,9 @@ pub enum WorkError {
     BoundExceeded {
         what: &'static str,
     },
+    /// #55: the index basis is not the one the result was verified
+    /// against; nothing was written.
+    ResultBasisChanged,
 }
 
 impl fmt::Display for WorkError {
@@ -121,6 +124,9 @@ impl fmt::Display for WorkError {
             }
             Self::InvalidObservation(reason) => write!(formatter, "invalid observation: {reason}"),
             Self::BoundExceeded { what } => write!(formatter, "{what} exceed the work bound"),
+            Self::ResultBasisChanged => {
+                formatter.write_str("the index basis moved since the result was verified")
+            }
         }
     }
 }
@@ -199,6 +205,22 @@ pub struct ResultObservation {
     pub change_set_fingerprint: Option<String>,
     pub verification_summary: Option<String>,
     pub remaining_dirty: DirtyObservation,
+    /// #55: the managed Job `verification_summary` is from. Requires
+    /// `expected_basis`: a Job's summary is only true at its basis.
+    pub verification_job: Option<VerificationJobId>,
+    /// #55: the basis a verification proved current. The write happens
+    /// only if index.db is still exactly there, checked right before it.
+    pub expected_basis: Option<ExpectedResultBasis>,
+}
+
+/// #55: a proven-current index basis, as the result write rechecks it:
+/// the same index.db incarnation and Workspace revision, and a STABLE
+/// generation of this number built for exactly that revision.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExpectedResultBasis {
+    pub index_incarnation: IndexIncarnationId,
+    pub workspace_revision: String,
+    pub generation_no: i64,
 }
 
 /// Whether a stored generation value reference still names the same
@@ -463,7 +485,7 @@ impl WorkRuntime {
         work_item: WorkItemId,
         observation: &ResultObservation,
     ) -> Result<WorkResult, WorkError> {
-        let observed = self.observe()?;
+        let observed = self.observe_for(observation)?;
         let transaction = self.store.begin()?;
         self.started_state(work_item)?;
         let result = self.store.record_work_result(&result_row(
@@ -683,6 +705,26 @@ impl WorkRuntime {
         })
     }
 
+    /// [`Self::observe`] for a result write: with an expected basis, only
+    /// if index.db is still exactly at it (the caller serializes this with
+    /// index publications).
+    fn observe_for(&self, observation: &ResultObservation) -> Result<Observed, WorkError> {
+        if observation.verification_job.is_some() && observation.expected_basis.is_none() {
+            return Err(WorkError::InvalidObservation(
+                "a managed verification Job needs its proven basis".to_owned(),
+            ));
+        }
+        let observed = self.observe()?;
+        if let Some(expected) = &observation.expected_basis
+            && (observed.revision != expected.workspace_revision
+                || observed.matching_generation()
+                    != Some((expected.index_incarnation, expected.generation_no)))
+        {
+            return Err(WorkError::ResultBasisChanged);
+        }
+        Ok(observed)
+    }
+
     /// Compare a stored reference with index.db. The incarnation is checked
     /// first: a number from another (or an unknown) incarnation is never
     /// looked up in this one.
@@ -780,7 +822,7 @@ impl WorkRuntime {
                 "handoff names a different WorkItem".to_owned(),
             ));
         }
-        let observed = self.observe()?;
+        let observed = self.observe_for(observation)?;
         let transaction = self.store.begin()?;
         self.store.record_work_result(&result_row(
             work_item,
@@ -871,6 +913,7 @@ fn result_row(
         result_index_incarnation: generation.map(|(incarnation, _)| incarnation),
         result_generation_no: generation.map(|(_, number)| number),
         remaining_dirty: observation.remaining_dirty.clone(),
+        verification_job: observation.verification_job,
         created_at: String::new(),
     }
 }

@@ -937,7 +937,7 @@ fn contract_has_no_sql_store_source_read_or_backend() {
 fn schema_versions_are_unchanged() {
     assert_eq!(schema::global::GLOBAL_MIGRATIONS.len(), 4);
     assert_eq!(schema::project::PROJECT_MIGRATIONS.len(), 4);
-    assert_eq!(schema::workspace::WORKSPACE_MIGRATIONS.len(), 6);
+    assert_eq!(schema::workspace::WORKSPACE_MIGRATIONS.len(), 7);
     assert_eq!(schema::index::INDEX_MIGRATIONS.len(), 10);
 }
 

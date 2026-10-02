@@ -23,9 +23,11 @@ mod work;
 
 pub use handler::{handle_query, handle_query_ack, handle_work};
 pub use managed_verification::{
-    CaptureProgress, CommandFinishedPayload, CommandStartedPayload, DiagnosticCounts, EndReason,
-    JobEndedPayload, JobFinishedPayload, JobStartedPayload, MANAGED_JOB_EVENT_PAYLOAD_VERSION,
-    MAX_PAYLOAD_BYTES, ManagedError, ManagedEvent, ManagedEventPayload, ManagedPoll, ManagedStart,
+    AttachError, CaptureProgress, CommandFinishedPayload, CommandStartedPayload, DiagnosticCounts,
+    EndReason, JobEndedPayload, JobFinishedPayload, JobStartedPayload,
+    MANAGED_JOB_EVENT_PAYLOAD_VERSION, MAX_PAYLOAD_BYTES, MAX_REFRESH_DELTA_WIRE_BYTES,
+    ManagedError, ManagedEvent, ManagedEventPayload, ManagedPoll, ManagedStart,
+    ManagedVerificationEvidence, PostCommandRefreshStored, RefreshFailure,
 };
 pub use managed_wire::{
     handle_verification_job_cancel, handle_verification_job_poll, handle_verification_job_start,

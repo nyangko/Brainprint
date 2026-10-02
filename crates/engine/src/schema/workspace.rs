@@ -32,6 +32,11 @@
 //! `verification_job_event` log. Indexes match the access paths only:
 //! uid, idempotency key, `state` (stale RUNNING reconciliation) and the
 //! event `(job_id, seq)` key.
+//!
+//! v7 (#55) adds `work_result.verification_job_id`: the managed Job a
+//! result's verification summary came from, a local FK into the same
+//! file. NULL for caller-summary, synchronous or no verification. No
+//! index: results are read by WorkItem, never by Job.
 
 use std::path::Path;
 
@@ -247,6 +252,14 @@ pub const WORKSPACE_MIGRATIONS: &[Migration] = &[
             created_at TEXT NOT NULL,
             PRIMARY KEY (job_id, seq)
         );
+    ",
+    },
+    Migration {
+        version: 7,
+        name: "add_work_result_verification_job",
+        sql: "
+        ALTER TABLE work_result ADD COLUMN verification_job_id INTEGER
+            REFERENCES verification_job (id);
     ",
     },
 ];

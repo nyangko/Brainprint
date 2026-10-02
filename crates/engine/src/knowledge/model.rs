@@ -14,7 +14,7 @@ use std::{collections::BTreeSet, fmt};
 
 use brainprint_core::{
     BlueprintApplicationId, BlueprintId, DecisionId, IndexIncarnationId, PolicyId, ProjectStateId,
-    ResourceId, UserPreferenceId, WorkItemId, WorkNoteId, WorkspaceId,
+    ResourceId, UserPreferenceId, VerificationJobId, WorkItemId, WorkNoteId, WorkspaceId,
 };
 use serde::{Deserialize, Serialize};
 
@@ -874,6 +874,10 @@ pub struct WorkResult {
     pub result_generation_no: Option<i64>,
     /// Dirty state observed when the result was recorded.
     pub remaining_dirty: DirtyObservation,
+    /// #55: the managed Job `verification_summary` came from; `None` for a
+    /// caller's summary, a synchronous verification or none. Replaced
+    /// with the rest of the result.
+    pub verification_job: Option<VerificationJobId>,
     pub created_at: String,
 }
 

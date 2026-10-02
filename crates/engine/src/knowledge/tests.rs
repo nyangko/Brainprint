@@ -1086,6 +1086,7 @@ fn work_result_and_handoff_typed_reads() {
             result_index_incarnation: Some(brainprint_core::IndexIncarnationId::generate()),
             result_generation_no: Some(9),
             remaining_dirty: DirtyObservation::Unknown,
+            verification_job: None,
             created_at: String::new(),
         })
         .expect("result");
@@ -1617,7 +1618,7 @@ fn migrations_are_idempotent_on_reopen() {
     for (name, kind, expected) in [
         ("global.db", DbKind::Global, 4u32),
         ("project.db", DbKind::Project, 4),
-        ("workspace.db", DbKind::Workspace, 6),
+        ("workspace.db", DbKind::Workspace, 7),
     ] {
         let path = dir.db(name);
         for _ in 0..3 {

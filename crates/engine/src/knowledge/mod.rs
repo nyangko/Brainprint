@@ -34,7 +34,8 @@ use std::{error::Error, fmt, path::PathBuf};
 
 use brainprint_core::{
     BlueprintApplicationId, BlueprintId, DecisionId, IndexIncarnationId, PolicyId, ProjectId,
-    ProjectStateId, PromotionId, ResourceId, UserPreferenceId, WorkItemId, WorkNoteId, WorkspaceId,
+    ProjectStateId, PromotionId, ResourceId, UserPreferenceId, VerificationJobId, WorkItemId,
+    WorkNoteId, WorkspaceId,
 };
 use rusqlite::{Connection, OptionalExtension, Params, Row, params};
 
@@ -53,9 +54,9 @@ pub use resolve::{
     ShadowedItem, WorkItemEvidence, resolve,
 };
 pub use work::{
-    GenerationReference, GenerationReferenceState, NotReady, ResourceEvidence, ResourceObservation,
-    ResultObservation, ResultOutcome, Staleness, StartObservation, WorkError, WorkOverlap,
-    WorkProgress, WorkRuntime, WorkSnapshot,
+    ExpectedResultBasis, GenerationReference, GenerationReferenceState, NotReady, ResourceEvidence,
+    ResourceObservation, ResultObservation, ResultOutcome, Staleness, StartObservation, WorkError,
+    WorkOverlap, WorkProgress, WorkRuntime, WorkSnapshot,
 };
 pub use workspace::WorkspaceKnowledgeStore;
 
@@ -219,7 +220,8 @@ impl_uid!(
     ProjectId,
     WorkspaceId,
     IndexIncarnationId,
-    PromotionId
+    PromotionId,
+    VerificationJobId
 );
 
 pub(crate) fn blob<T: Uid>(id: T) -> Vec<u8> {

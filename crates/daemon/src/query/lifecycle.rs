@@ -34,6 +34,7 @@ use brainprint_engine::{
     scan::BaselineScan,
     watch::{NotifyWatchSource, RawWatchEvent, WatchIngest, WatchSource, WatcherContinuity},
 };
+use serde::{Deserialize, Serialize};
 
 /// #38 §2: the initial Workspace revision, used only when no
 /// `workspace_clock` exists yet ("baseline before the first confirmed
@@ -80,7 +81,8 @@ pub struct LifecycleStats {
 /// #55: which physical index, at which proven-current point, a command
 /// boundary is measured against. Only a STABLE generation whose basis is
 /// the current Workspace revision is ever a basis.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct IndexBasis {
     pub index_incarnation: IndexIncarnationId,
     pub workspace_revision: String,
@@ -99,7 +101,8 @@ pub struct CommandBaseline {
 }
 
 /// In report order.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ResourceDeltaKind {
     Created,
     Updated,
@@ -111,7 +114,8 @@ pub enum ResourceDeltaKind {
 /// anything else that changed the Workspace meanwhile is here too. A move
 /// keeps its identity, so it is `Updated`; a metadata-only refresh keeps
 /// its revision, so it is not here at all.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ResourceDelta {
     pub resource_id: ResourceId,
     pub kind: ResourceDeltaKind,
@@ -356,6 +360,13 @@ impl WorkspaceLifecycle {
             after,
             changes,
         })
+    }
+
+    /// #55: whether the index proves CURRENT right now; read on this
+    /// worker, so no publication interleaves.
+    #[must_use]
+    pub fn is_current(&self) -> bool {
+        self.index_current().unwrap_or(false)
     }
 
     /// The basis and ACTIVE inventory, only if the index proves CURRENT on

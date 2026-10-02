@@ -1845,6 +1845,8 @@ fn resume_is_the_stored_state_without_repository_reads() {
             change_set_fingerprint: None,
             verification_summary: None,
             remaining_dirty: DirtyObservation::Unknown,
+            verification_job: None,
+            expected_basis: None,
         },
     )
     .expect("partial");
@@ -1888,6 +1890,8 @@ fn equivalent_status_sets_give_the_same_canonical_listing() {
                 change_set_fingerprint: None,
                 verification_summary: None,
                 remaining_dirty: DirtyObservation::Unknown,
+                verification_job: None,
+                expected_basis: None,
             },
             None,
         )
@@ -2230,7 +2234,7 @@ fn schema_versions_are_unchanged() {
         crate::schema::workspace::open(&fixture.paths.workspace_db)
             .expect("workspace")
             .schema_version,
-        6
+        7
     );
     assert_eq!(
         crate::schema::index::open(&fixture.paths.index_db)

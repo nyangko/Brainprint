@@ -8,7 +8,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use brainprint_core::{IndexIncarnationId, ResourceId, WorkItemId, WorkspaceId};
+use brainprint_core::{IndexIncarnationId, ResourceId, VerificationJobId, WorkItemId, WorkspaceId};
 use rusqlite::{Connection, params};
 
 use super::*;
@@ -150,6 +150,8 @@ fn result(summary: &str, commit: Option<&str>, remaining: DirtyObservation) -> R
         change_set_fingerprint: None,
         verification_summary: None,
         remaining_dirty: remaining,
+        verification_job: None,
+        expected_basis: None,
     }
 }
 
@@ -651,7 +653,7 @@ fn legacy_rows_migrate_to_conservative_dirty_states() {
             |row| row.get(0),
         )
         .expect("version");
-    assert_eq!(version, 6);
+    assert_eq!(version, 7);
 }
 
 // =============================== pre-existing dirty (cases 18-20)
@@ -751,6 +753,8 @@ fn a_committed_partial_result_does_not_complete_the_item() {
             uid,
             &ResultObservation {
                 remaining_dirty: dirty("wip"),
+                verification_job: None,
+                expected_basis: None,
                 ..result(
                     "parser changes committed",
                     Some("abc123"),
@@ -829,6 +833,8 @@ fn completion_writes_result_status_snapshot_and_handoff_together() {
                 change_set_fingerprint: Some("cs-1".to_owned()),
                 verification_summary: Some("cargo test ok".to_owned()),
                 remaining_dirty: DirtyObservation::Clean,
+                verification_job: None,
+                expected_basis: None,
             },
             Some(&WorkHandoff {
                 remaining_summary: Some("docs".to_owned()),
@@ -1762,6 +1768,7 @@ fn new_generation_references_always_carry_their_incarnation() {
         result_index_incarnation: incarnation,
         result_generation_no: generation_no,
         remaining_dirty: DirtyObservation::Unknown,
+        verification_job: None,
         created_at: String::new(),
     };
     assert!(store.record_work_result(&unpaired(None, Some(1))).is_err());
@@ -1992,4 +1999,133 @@ fn check_result_allowed_matches_the_write_and_writes_nothing() {
             Err(WorkError::Knowledge(KnowledgeError::NotFound { .. }))
         ));
     }
+}
+
+// ------------------------------------------------- #55 basis / provenance
+
+fn expected(fixture: &Fixture, revision: &str, generation_no: i64) -> ExpectedResultBasis {
+    ExpectedResultBasis {
+        index_incarnation: fixture.incarnation(),
+        workspace_revision: revision.to_owned(),
+        generation_no,
+    }
+}
+
+fn managed_job(fixture: &Fixture) -> VerificationJobId {
+    use crate::verification_job::{
+        IdempotencyKey, NewVerificationJob, RequestFingerprint, VerificationJobStore,
+    };
+    let uid = VerificationJobId::generate();
+    VerificationJobStore::open_bound(fixture.id, &fixture.paths.workspace_db)
+        .expect("jobs")
+        .create(&NewVerificationJob {
+            uid,
+            idempotency_key: &IdempotencyKey::parse(&uid.to_string()).expect("key"),
+            request_fingerprint: RequestFingerprint([1; 32]),
+            command_count: 1,
+            started_payload_json: r#"{"v":2}"#,
+        })
+        .expect("job");
+    uid
+}
+
+/// A result verified at a basis is written only while index.db is still
+/// exactly there: a later publication, a stable generation behind the
+/// clock or another incarnation refuses it with nothing written.
+#[test]
+fn a_result_write_is_guarded_by_its_expected_basis() {
+    let fixture = Fixture::new("expected-basis");
+    let generation = fixture.publish("1");
+    let runtime = fixture.runtime();
+    let work_item = started(&runtime, "guarded");
+    let mut observation = result("checked", None, DirtyObservation::Unknown);
+    observation.expected_basis = Some(expected(&fixture, "1", generation));
+    let recorded = runtime
+        .record_partial(work_item, &observation)
+        .expect("at its basis");
+    assert_eq!(recorded.result_workspace_revision, "1");
+    assert_eq!(recorded.result_generation_no, Some(generation));
+    assert_eq!(
+        recorded.result_index_incarnation,
+        Some(fixture.incarnation())
+    );
+
+    let next = fixture.publish("2");
+    observation.summary = "late".to_owned();
+    for refused in [
+        runtime.record_partial(work_item, &observation).map(|_| ()),
+        runtime.complete(work_item, &observation, None).map(|_| ()),
+    ] {
+        assert!(matches!(refused, Err(WorkError::ResultBasisChanged)));
+    }
+    let snapshot = runtime.snapshot(work_item, None).expect("snapshot");
+    assert_eq!(snapshot.item.status, WorkItemStatus::Active);
+    assert_eq!(snapshot.result, Some(recorded));
+
+    // Clock ahead of the stable generation: no exact basis.
+    fixture.advance("3");
+    observation.expected_basis = Some(expected(&fixture, "3", next));
+    assert!(matches!(
+        runtime.record_partial(work_item, &observation),
+        Err(WorkError::ResultBasisChanged)
+    ));
+    // Without an expectation the ordinary write is unchanged.
+    observation.expected_basis = None;
+    runtime
+        .record_partial(work_item, &observation)
+        .expect("no expectation");
+}
+
+/// The managed Job is stored by its stable ID, read back as it, and
+/// replaced with the rest of the result: a later result without one
+/// clears it. An unknown Job, or a Job without a basis, writes nothing.
+#[test]
+fn managed_provenance_round_trips_and_is_replaced() {
+    let fixture = Fixture::new("provenance");
+    let generation = fixture.publish("1");
+    let runtime = fixture.runtime();
+    let work_item = started(&runtime, "attach");
+    let job = managed_job(&fixture);
+    let mut observation = result("from a job", None, DirtyObservation::Unknown);
+    observation.verification_summary = Some("1 passed".to_owned());
+    observation.verification_job = Some(job);
+    observation.expected_basis = Some(expected(&fixture, "1", generation));
+    let recorded = runtime
+        .record_partial(work_item, &observation)
+        .expect("attached");
+    assert_eq!(recorded.verification_job, Some(job));
+    let stored = runtime.snapshot(work_item, None).expect("snapshot").result;
+    assert_eq!(stored.as_ref(), Some(&recorded));
+
+    for invalid in [
+        ResultObservation {
+            verification_job: Some(VerificationJobId::generate()),
+            ..observation.clone()
+        },
+        ResultObservation {
+            expected_basis: None,
+            ..observation.clone()
+        },
+    ] {
+        assert!(runtime.record_partial(work_item, &invalid).is_err());
+        assert_eq!(
+            runtime.snapshot(work_item, None).expect("snapshot").result,
+            stored
+        );
+    }
+
+    let replaced = runtime
+        .record_partial(
+            work_item,
+            &result("by hand", None, DirtyObservation::Unknown),
+        )
+        .expect("replaced");
+    assert_eq!(replaced.verification_job, None);
+    let column: Option<i64> = Connection::open(&fixture.paths.workspace_db)
+        .expect("workspace.db")
+        .query_row("SELECT verification_job_id FROM work_result", [], |row| {
+            row.get(0)
+        })
+        .expect("row");
+    assert_eq!(column, None, "the old FK must not survive the upsert");
 }

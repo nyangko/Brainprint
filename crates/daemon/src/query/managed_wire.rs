@@ -240,7 +240,11 @@ fn reason(reason: EndReason) -> JobEndReasonWire {
         EndReason::DaemonRestart => JobEndReasonWire::DaemonRestart,
         EndReason::EventPersistence => JobEndReasonWire::EventPersistence,
         EndReason::EventPayload => JobEndReasonWire::EventPayload,
-        EndReason::RunnerFailure => JobEndReasonWire::RunnerFailure,
+        // #55: protocol 8 has no baseline category; the run failed before
+        // any command, which is what it reads as until protocol 9.
+        EndReason::RunnerFailure | EndReason::BaselineCurrentness => {
+            JobEndReasonWire::RunnerFailure
+        }
     }
 }
 

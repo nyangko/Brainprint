@@ -87,8 +87,11 @@ enum Job {
     },
     /// #50: a Working State write, serialized with this Workspace's index
     /// publications so the baseline it reads cannot move underneath it.
+    /// #55: with an expected basis, the freshness barrier runs first and
+    /// the write happens only at exactly that basis.
     Work {
         operation: WorkOperationWire,
+        context: work::WorkContext,
         reply: oneshot::Sender<WorkResponse>,
     },
     /// #38 init: bring the Workspace to structural READY.
@@ -112,9 +115,59 @@ enum Job {
     },
 }
 
+/// One Workspace worker's queue. Cloneable, so a task that outlives its
+/// request (#55: a verification's refresh) still reaches the worker.
 #[derive(Clone)]
-struct WorkerHandle {
+pub(super) struct WorkerHandle {
     jobs: std::sync::mpsc::Sender<Job>,
+}
+
+impl WorkerHandle {
+    /// #55: take a pre-command baseline on this worker.
+    pub(super) async fn command_baseline(&self) -> Result<CommandBaseline, CommandBasisError> {
+        let (reply, receiver) = oneshot::channel();
+        if self.jobs.send(Job::CommandBaseline { reply }).is_err() {
+            return Err(gone());
+        }
+        receiver.await.unwrap_or_else(|_| Err(gone()))
+    }
+
+    /// #55: the post-command refresh on this worker, serialized with its
+    /// queries and publications.
+    pub(super) async fn post_command_refresh(
+        &self,
+        baseline: CommandBaseline,
+    ) -> Result<PostCommandRefreshReport, CommandBasisError> {
+        let (reply, receiver) = oneshot::channel();
+        let job = Job::PostCommandRefresh {
+            baseline: Box::new(baseline),
+            reply,
+        };
+        if self.jobs.send(job).is_err() {
+            return Err(gone());
+        }
+        receiver.await.unwrap_or_else(|_| Err(gone()))
+    }
+
+    /// #50/#55: a Working State write on this worker.
+    pub(super) async fn work(
+        &self,
+        operation: WorkOperationWire,
+        context: work::WorkContext,
+    ) -> WorkResponse {
+        let (reply, receiver) = oneshot::channel();
+        let job = Job::Work {
+            operation,
+            context,
+            reply,
+        };
+        if self.jobs.send(job).is_err() {
+            return work::internal("workspace worker is gone");
+        }
+        receiver
+            .await
+            .unwrap_or_else(|_| work::internal("workspace worker is gone"))
+    }
 }
 
 /// The daemon's whole query runtime: a short-lived lock around worker
@@ -240,7 +293,7 @@ impl DaemonQueryRuntime {
         self.verification_slots.started()
     }
 
-    fn handle_for(&self, workspace: WorkspaceId) -> WorkerHandle {
+    pub(super) fn handle_for(&self, workspace: WorkspaceId) -> WorkerHandle {
         let mut workers = self.workers.lock().expect("worker map mutex poisoned");
         if let Some(handle) = workers.get(&workspace) {
             return handle.clone();
@@ -279,14 +332,9 @@ impl DaemonQueryRuntime {
 
     /// #50: run a Working State write on `workspace`'s worker.
     pub async fn work(&self, workspace: WorkspaceId, operation: WorkOperationWire) -> WorkResponse {
-        let handle = self.handle_for(workspace);
-        let (reply, receiver) = oneshot::channel();
-        if handle.jobs.send(Job::Work { operation, reply }).is_err() {
-            return work::internal("workspace worker is gone");
-        }
-        receiver
+        self.handle_for(workspace)
+            .work(operation, work::WorkContext::default())
             .await
-            .unwrap_or_else(|_| work::internal("workspace worker is gone"))
     }
 
     /// #38: run the Workspace's activation (watcher, baseline or
@@ -330,12 +378,7 @@ impl DaemonQueryRuntime {
         &self,
         workspace: WorkspaceId,
     ) -> Result<CommandBaseline, CommandBasisError> {
-        let handle = self.handle_for(workspace);
-        let (reply, receiver) = oneshot::channel();
-        if handle.jobs.send(Job::CommandBaseline { reply }).is_err() {
-            return Err(gone());
-        }
-        receiver.await.unwrap_or_else(|_| Err(gone()))
+        self.handle_for(workspace).command_baseline().await
     }
 
     /// #55: the post-command refresh on `workspace`'s worker, serialized
@@ -345,16 +388,9 @@ impl DaemonQueryRuntime {
         workspace: WorkspaceId,
         baseline: CommandBaseline,
     ) -> Result<PostCommandRefreshReport, CommandBasisError> {
-        let handle = self.handle_for(workspace);
-        let (reply, receiver) = oneshot::channel();
-        let job = Job::PostCommandRefresh {
-            baseline: Box::new(baseline),
-            reply,
-        };
-        if handle.jobs.send(job).is_err() {
-            return Err(gone());
-        }
-        receiver.await.unwrap_or_else(|_| Err(gone()))
+        self.handle_for(workspace)
+            .post_command_refresh(baseline)
+            .await
     }
 
     /// Acknowledge a pending receipt on `workspace`'s worker.
@@ -514,14 +550,28 @@ fn worker_loop(
                 let outcome = pending.ack(&ack_token, &mut ledger);
                 let _ = reply.send(outcome);
             }
-            Job::Work { operation, reply } => {
-                // No freshness recovery here: a baseline is taken only from
-                // a stable generation that is already current (#50).
-                let response = match (&surface, &lifecycle) {
+            Job::Work {
+                operation,
+                context,
+                reply,
+            } => {
+                // No freshness recovery for an ordinary write: a baseline is
+                // taken only from a stable generation that is already
+                // current (#50). A verified result (#55) is held to its
+                // basis against an index proven current first.
+                let response = match (&surface, &mut lifecycle) {
                     (Err(error), _) => {
                         work::workspace_error(convert_out::core_error(clone_core_error(error)))
                     }
-                    (Ok(_), Ok(lifecycle)) => work::run(workspace, lifecycle.root(), operation),
+                    (Ok(_), Ok(lifecycle)) => {
+                        if context.expected_basis.is_some()
+                            && (lifecycle.ensure_current().is_err() || !lifecycle.is_current())
+                        {
+                            work::basis_changed()
+                        } else {
+                            work::run(workspace, lifecycle.root(), operation, context)
+                        }
+                    }
                     (Ok(_), Err(error)) => {
                         eprintln!(
                             "brainprintd: workspace {workspace} runtime unavailable: {error}"

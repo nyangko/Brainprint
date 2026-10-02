@@ -1,13 +1,17 @@
 //! #52: a Work Result's `verification` — the caller's commands run before
 //! the unchanged #50 write, in this order: input checks, `prepare`, the
-//! read-only transition preflight, a concurrency slot, the run, the
-//! optional #51 `Observe`, then `Job::Work`.
+//! read-only transition preflight, a concurrency slot, the #55
+//! pre-command baseline, the run, the #55 post-command refresh, the
+//! optional #51 `Observe`, then `Job::Work` held to the refreshed basis.
+//! The slot is held from before the baseline until after the write.
 //!
 //! Everything that can refuse the request is checked before a command
 //! runs. The run is on the blocking pool, never on the Workspace worker.
-//! It is cancelled (process tree ended, nothing stored) when the client's
-//! connection closes or the daemon shuts down: dropping the waiting
-//! future fires the cancel. Nothing is queued or retried.
+//! It is cancelled (process tree ended, nothing stored, no answer) when
+//! the client's connection closes or the daemon shuts down: dropping the
+//! waiting future fires the cancel. Baseline, run and refresh belong to a
+//! daemon task, not to the request: a cancelled run is still followed by
+//! its refresh before the slot is freed. Nothing is queued or retried.
 //!
 //! #53: when a command asks for capture, the batch runs through
 //! [`capture::StoreConsumer`]; otherwise it is the #52 run unchanged.
@@ -44,7 +48,10 @@ use brainprint_engine::{
 use super::{
     DaemonQueryRuntime,
     capture::{self, Kept, StoreConsumer, Undelivered},
-    observe, work,
+    lifecycle::IndexBasis,
+    observe,
+    runtime::WorkerHandle,
+    work::{self, WorkContext},
 };
 
 /// Verifications running at once in the whole daemon.
@@ -112,6 +119,39 @@ impl Drop for CancelOnDrop {
     }
 }
 
+/// #55, protocol 8: no current basis before the commands; none ran.
+const BASELINE_FAILED: &str =
+    "the workspace could not be proven current before the verification; nothing ran";
+/// #55, protocol 8: no current basis after the commands; nothing stored.
+const REFRESH_FAILED: &str =
+    "the workspace could not be proven current after the verification; nothing was stored";
+
+/// #55: whether a command's outcome means a process was spawned (and so
+/// may have changed the Workspace). `NotStarted`/`Skipped` never were.
+pub(super) const fn spawned(outcome: VerificationOutcome) -> bool {
+    !matches!(
+        outcome,
+        VerificationOutcome::NotStarted { .. } | VerificationOutcome::Skipped
+    )
+}
+
+/// A finished batch handed back to the request, with the slot: it is
+/// freed after the write, or here if the request is gone.
+struct Ran {
+    slot: Slot,
+    report: verification::VerificationReport,
+    kept: Vec<Kept>,
+    undelivered: Undelivered,
+    /// The post-command basis (the baseline's if nothing was spawned).
+    refreshed: Result<IndexBasis, ()>,
+}
+
+enum Stopped {
+    Baseline,
+    Cancelled,
+    Panicked,
+}
+
 /// `None`: the client left while the commands ran; they were cancelled
 /// and nothing was stored or can be answered.
 pub(super) async fn run(
@@ -134,23 +174,36 @@ pub(super) async fn run(
     let cancel = Cancel::default();
     let _cancel_on_drop = CancelOnDrop(cancel.clone());
     let store = runtime.artifact_store();
-    let task = {
-        let store = Arc::clone(&store);
-        tokio::task::spawn_blocking(move || {
-            let _slot = slot;
-            run_batch(&prepared, &cancel, store)
-        })
-    };
-    // An abandoned task still finishes; its undelivered artifacts are
-    // removed when its output is dropped.
-    let ran = tokio::select! {
-        joined = task => joined,
+    let worker = runtime.handle_for(workspace);
+    let (handback, handed) = tokio::sync::oneshot::channel();
+    tokio::spawn(continuation(
+        worker.clone(),
+        slot,
+        prepared,
+        cancel,
+        Arc::clone(&store),
+        handback,
+    ));
+    // A request that leaves stops waiting; the continuation still ends
+    // the tree, refreshes and frees the slot. Its undelivered artifacts
+    // are removed when its output is dropped.
+    let handed = tokio::select! {
+        handed = handed => handed,
         () = closed => return None,
     };
-    let (report, kept, undelivered) = match ran {
+    let Ran {
+        slot,
+        report,
+        kept,
+        undelivered,
+        refreshed,
+    } = match handed {
         Ok(Ok(ran)) => ran,
-        Ok(Err(verification::Cancelled)) => return None,
-        Err(_) => return Some(failed(work::internal_message("verification task panicked"))),
+        Ok(Err(Stopped::Cancelled)) => return None,
+        Ok(Err(Stopped::Baseline)) => return Some(failed(work::internal_message(BASELINE_FAILED))),
+        Ok(Err(Stopped::Panicked)) | Err(_) => {
+            return Some(failed(work::internal_message("verification task panicked")));
+        }
     };
     let mut results: Vec<CommandResultWire> = report
         .results
@@ -159,12 +212,19 @@ pub(super) async fn run(
         .map(|(result, capture)| result_wire(result, capture))
         .collect();
 
-    input.verification_summary = Some(report.summary);
-    let response =
-        match observe::resolve(runtime, workspace, WorkOperationWire::Result(input)).await {
-            Ok(operation) => runtime.work(workspace, operation).await,
-            Err(failure) => WorkResponse::Failed(failure),
-        };
+    let response = match refreshed {
+        // A command may have changed the Workspace and its basis is
+        // unknown: no result is stored against a stale one.
+        Err(()) => failed(work::internal_message(REFRESH_FAILED)),
+        Ok(after) => {
+            input.verification_summary = Some(report.summary);
+            match observe::resolve(runtime, workspace, WorkOperationWire::Result(input)).await {
+                Ok(operation) => worker.work(operation, WorkContext::at(&after)).await,
+                Err(failure) => WorkResponse::Failed(failure),
+            }
+        }
+    };
+    drop(slot);
     capture::downgrade_evicted(&mut results, &store);
     // Recorded or not, the response names the artifacts: they stay.
     undelivered.deliver();
@@ -223,6 +283,64 @@ async fn preflight(
             "verification preflight panicked",
         )))
     })
+}
+
+/// #55: the part of a synchronous verification the request does not own:
+/// baseline, run, then -- whatever became of the request -- the refresh
+/// after a run that may have spawned anything. The slot is held across
+/// all of it.
+async fn continuation(
+    worker: WorkerHandle,
+    slot: Slot,
+    prepared: verification::PreparedVerification,
+    cancel: Cancel,
+    store: Arc<crate::artifacts::ArtifactStore>,
+    handback: tokio::sync::oneshot::Sender<Result<Ran, Stopped>>,
+) {
+    // The daemon's own shutdown drops this task: the tree still ends.
+    let _cancel_on_drop = CancelOnDrop(cancel.clone());
+    let baseline = match worker.command_baseline().await {
+        Ok(baseline) => baseline,
+        Err(error) => {
+            eprintln!("brainprintd: verification baseline failed: {error}");
+            let _ = handback.send(Err(Stopped::Baseline));
+            return;
+        }
+    };
+    if cancel.is_cancelled() {
+        // Gone before any command: nothing to refresh.
+        let _ = handback.send(Err(Stopped::Cancelled));
+        return;
+    }
+    let batch = {
+        let cancel = cancel.clone();
+        tokio::task::spawn_blocking(move || run_batch(&prepared, &cancel, store)).await
+    };
+    // A cancelled or failed run may have spawned anything: refreshed too.
+    let may_have_run = match &batch {
+        Ok(Ok((report, ..))) => report.results.iter().any(|result| spawned(result.outcome)),
+        _ => true,
+    };
+    let refreshed = if may_have_run {
+        worker
+            .post_command_refresh(baseline)
+            .await
+            .map(|report| report.after)
+            .map_err(|error| eprintln!("brainprintd: verification refresh failed: {error}"))
+    } else {
+        Ok(baseline.basis)
+    };
+    let _ = handback.send(match batch {
+        Ok(Ok((report, kept, undelivered))) => Ok(Ran {
+            slot,
+            report,
+            kept,
+            undelivered,
+            refreshed,
+        }),
+        Ok(Err(verification::Cancelled)) => Err(Stopped::Cancelled),
+        Err(_) => Err(Stopped::Panicked),
+    });
 }
 
 /// The caller's commands as the engine takes them; shared with the #54

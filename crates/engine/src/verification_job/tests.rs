@@ -248,7 +248,7 @@ fn a_fresh_workspace_db_has_the_job_tables() {
             row.get(0)
         })
         .expect("version");
-    assert_eq!(max, 6);
+    assert_eq!(max, 7);
 }
 
 #[test]
@@ -324,7 +324,7 @@ fn v5_upgrades_with_every_row_and_binding_kept() {
         assert_eq!(count(connection, "verification_job"), 0);
         assert_eq!(count(connection, "verification_job_event"), 0);
         let applied = migrations(connection);
-        assert_eq!(applied.len(), 6);
+        assert_eq!(applied.len(), 7);
         assert_eq!(
             applied[5],
             (6, "create_managed_verification_jobs".to_owned())
@@ -347,6 +347,129 @@ fn v5_upgrades_with_every_row_and_binding_kept() {
         ),
         Err(DbOpenError::KindMismatch { .. })
     ));
+}
+
+/// #55: a real v6 file -- WorkItem, Working State, Work Result, a
+/// managed Job and its events -- upgrades to v7 with every row kept and
+/// the existing result's managed provenance NULL; reopening runs nothing.
+#[test]
+fn v6_upgrades_to_v7_with_every_row_and_job_kept() {
+    let dir = TestDir::create("upgrade-v7");
+    let workspace = WorkspaceId::from_bytes([9; 16]);
+    let tables = [
+        "work_item",
+        "working_state",
+        "work_result",
+        "verification_job",
+        "verification_job_event",
+    ];
+    let (job, before, events) = {
+        let v6 = db::open(
+            &dir.db(),
+            DbKind::Workspace,
+            &schema::workspace::WORKSPACE_MIGRATIONS[..6],
+        )
+        .expect("v6");
+        v6.connection
+            .execute_batch(
+                "INSERT INTO work_item (uid, source_kind, goal, status, created_at)
+                     VALUES (x'01010101010101010101010101010101', 'MANUAL', 'g', 'ACTIVE', '0');
+                 INSERT INTO working_state (work_item_id, baseline_workspace_revision,
+                     baseline_generation_no, last_observed_workspace_revision, updated_at)
+                     VALUES (1, 'r', 1, 'r', '0');
+                 INSERT INTO work_result (work_item_id, result_status, result_summary,
+                     verification_summary, result_workspace_revision, created_at)
+                     VALUES (1, 'PARTIAL', 's', 'v', 'r', '0');",
+            )
+            .expect("v6 rows");
+        v6.connection
+            .execute(
+                "UPDATE db_meta SET workspace_uid = ?1 WHERE id = 0",
+                [workspace.to_bytes().to_vec()],
+            )
+            .expect("binding");
+        let mut store = VerificationJobStore::from_connection(v6.connection);
+        let job = create(&mut store, "v6-job");
+        store
+            .append(job.uid, ProgressEvent::CommandStarted, r#"{"v":1}"#)
+            .expect("event");
+        store
+            .finish(
+                job.uid,
+                TerminalState::Finished,
+                Some("1 passed"),
+                r#"{"v":1}"#,
+            )
+            .expect("finish");
+        let events = all_events(&store, job.uid);
+        let before: Vec<i64> = tables
+            .iter()
+            .map(|table| count(&store.connection, table))
+            .collect();
+        (store.get_by_id(job.uid).expect("get"), before, events)
+    };
+    assert_eq!(before, [1, 1, 1, 1, 3]);
+
+    for _ in 0..2 {
+        let opened = schema::workspace::open(&dir.db()).expect("v7");
+        let connection = &opened.connection;
+        let after: Vec<i64> = tables
+            .iter()
+            .map(|table| count(connection, table))
+            .collect();
+        assert_eq!(after, before);
+        let provenance: Option<i64> = connection
+            .query_row("SELECT verification_job_id FROM work_result", [], |row| {
+                row.get(0)
+            })
+            .expect("column");
+        assert_eq!(provenance, None);
+        let max: i64 = connection
+            .query_row("SELECT MAX(version) FROM schema_migration", [], |row| {
+                row.get(0)
+            })
+            .expect("version");
+        assert_eq!(max, 7);
+    }
+    let store = VerificationJobStore::open_bound(workspace, &dir.db()).expect("bound");
+    let job = job.expect("job");
+    assert_eq!(store.get_by_id(job.uid).expect("get"), Some(job.clone()));
+    assert_eq!(all_events(&store, job.uid), events);
+    let result = WorkspaceKnowledgeStore::open(&dir.db())
+        .expect("store")
+        .get_work_result(brainprint_core::WorkItemId::from_bytes([1; 16]))
+        .expect("read")
+        .expect("result");
+    assert_eq!(result.verification_summary.as_deref(), Some("v"));
+    assert_eq!(result.verification_job, None);
+}
+
+/// #55: `work_result.verification_job_id` is a real FK into this file.
+#[test]
+fn a_result_names_only_a_known_job() {
+    let dir = TestDir::create("result-fk");
+    let opened = schema::workspace::open(&dir.db()).expect("v7");
+    opened
+        .connection
+        .execute_batch(
+            "INSERT INTO work_item (uid, source_kind, goal, status, created_at)
+                 VALUES (x'01010101010101010101010101010101', 'MANUAL', 'g', 'ACTIVE', '0');",
+        )
+        .expect("work item");
+    let insert = |job: i64| {
+        opened.connection.execute(
+            "INSERT INTO work_result (work_item_id, result_status, result_summary,
+                 result_workspace_revision, created_at, verification_job_id)
+             VALUES (1, 'PARTIAL', 's', 'r', '0', ?1)",
+            [job],
+        )
+    };
+    let error = insert(999).expect_err("an unknown Job");
+    assert!(
+        matches!(&error, rusqlite::Error::SqliteFailure(inner, _)
+            if inner.code == ErrorCode::ConstraintViolation),
+        "{error}"
+    );
 }
 
 #[test]

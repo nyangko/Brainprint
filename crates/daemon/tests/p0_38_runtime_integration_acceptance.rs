@@ -1019,7 +1019,7 @@ async fn a21_a23_no_semantic_start_and_schema_versions_unchanged() {
     let data = workspace.path().join(".brainprint/data");
     assert_eq!(version(global.global_db.clone()), 4);
     assert_eq!(version(data.join("project.db")), 4);
-    assert_eq!(version(data.join("workspace.db")), 6);
+    assert_eq!(version(data.join("workspace.db")), 7);
     assert_eq!(version(data.join("index.db")), 10);
     daemon.stop().await;
 

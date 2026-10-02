@@ -90,8 +90,8 @@ fn main() {
             the_v8_cli_stops_at_a_v7_daemon,
         ),
         (
-            "protocol_is_8_and_workspace_schema_6",
-            protocol_is_8_and_workspace_schema_6,
+            "protocol_is_8_and_workspace_schema_7",
+            protocol_is_8_and_workspace_schema_7,
         ),
     ];
     let handles: Vec<_> = tests
@@ -1270,10 +1270,10 @@ fn the_v8_cli_stops_at_a_v7_daemon() {
     });
 }
 
-fn protocol_is_8_and_workspace_schema_6() {
+fn protocol_is_8_and_workspace_schema_7() {
     assert_eq!(PROTOCOL_VERSION, 8);
     assert_eq!(
         brainprint_engine::schema::workspace::WORKSPACE_MIGRATIONS.len(),
-        6
+        7
     );
 }
