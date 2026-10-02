@@ -228,6 +228,8 @@ fn op(name: &str, path: &Path) -> String {
     format!("{name}:{}", path.display())
 }
 
+/// Only the Unix-only refresh failure counts runs.
+#[cfg(unix)]
 fn count(path: &Path) -> u64 {
     fs::metadata(path).map_or(0, |metadata| metadata.len())
 }
