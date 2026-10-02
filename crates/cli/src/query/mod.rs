@@ -38,6 +38,8 @@ pub async fn run_query_command(cli: Cli) -> Exit {
         Cli::Verification { mode } => verification::run_verification(mode).await,
         Cli::Doctor { path, json } => maintenance::run_doctor(path, json).await,
         Cli::Rebuild { path, json } => maintenance::run_rebuild(path, json).await,
+        Cli::Sync { path, json } => maintenance::run_sync(path, json).await,
+        Cli::Uninit { path, json } => maintenance::run_uninit(path, json).await,
         Cli::Install | Cli::Status | Cli::Init { .. } => {
             unreachable!("main.rs handles Install/Status/Init before dispatching here")
         }

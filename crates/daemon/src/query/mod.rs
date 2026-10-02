@@ -23,7 +23,7 @@ mod verify;
 mod work;
 
 pub use handler::{handle_query, handle_query_ack, handle_work};
-pub use maintenance::{handle_doctor, handle_rebuild};
+pub use maintenance::{handle_doctor, handle_rebuild, handle_sync, handle_uninit};
 pub use managed_verification::{
     AttachError, CaptureProgress, CommandFinishedPayload, CommandStartedPayload, DiagnosticCounts,
     EndReason, JobEndedPayload, JobFinishedPayload, JobStartedPayload,

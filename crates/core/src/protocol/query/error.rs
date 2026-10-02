@@ -13,9 +13,13 @@ use crate::WorkspaceId;
 pub enum NotInitializedReasonWire {
     GlobalDbMissing,
     WorkspaceNotRegistered,
+    /// #57: released by `uninit`; `init` attaches it again.
+    WorkspaceDetached,
     WorkspaceDbMissing,
     IndexDbMissing,
-    WorkspaceUnbound { db: String },
+    WorkspaceUnbound {
+        db: String,
+    },
 }
 
 /// Mirrors `brainprint_engine::query_surface::InvalidRequest`'s stable,

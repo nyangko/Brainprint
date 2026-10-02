@@ -1907,6 +1907,7 @@ fn not_initialized_wire(reason: NotInitialized) -> NotInitializedReasonWire {
     match reason {
         NotInitialized::GlobalDbMissing => NotInitializedReasonWire::GlobalDbMissing,
         NotInitialized::WorkspaceNotRegistered => NotInitializedReasonWire::WorkspaceNotRegistered,
+        NotInitialized::WorkspaceDetached => NotInitializedReasonWire::WorkspaceDetached,
         NotInitialized::WorkspaceDbMissing => NotInitializedReasonWire::WorkspaceDbMissing,
         NotInitialized::IndexDbMissing => NotInitializedReasonWire::IndexDbMissing,
         NotInitialized::WorkspaceUnbound { db } => {

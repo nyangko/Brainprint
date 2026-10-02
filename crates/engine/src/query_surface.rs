@@ -44,7 +44,7 @@ use crate::{
         validate_applicability,
     },
     query::{Currentness, DEFAULT_CANDIDATE_LIMIT, FileListing, FileQuery, QueryError},
-    registry::{GlobalRegistry, RegistryError},
+    registry::{GlobalRegistry, RegistryError, RegistryState},
     relations::{RelationAnswer, RelationError, caller_owner_candidates},
     resource::{ResourceKind, ResourceLanguage, ResourceRole},
     search::{
@@ -336,9 +336,14 @@ pub enum KnowledgeResult {
 pub enum NotInitialized {
     GlobalDbMissing,
     WorkspaceNotRegistered,
+    /// #57: registered, but released by `uninit`; `init` attaches it
+    /// again.
+    WorkspaceDetached,
     WorkspaceDbMissing,
     IndexDbMissing,
-    WorkspaceUnbound { db: &'static str },
+    WorkspaceUnbound {
+        db: &'static str,
+    },
 }
 
 #[derive(Debug)]
@@ -537,6 +542,9 @@ impl CoreQuerySurface {
             .ok_or(CoreError::NotInitialized(
                 NotInitialized::WorkspaceNotRegistered,
             ))?;
+        if entry.state == RegistryState::Detached {
+            return Err(CoreError::NotInitialized(NotInitialized::WorkspaceDetached));
+        }
         let paths = WorkspacePaths::from_root(&entry.locator);
         Ok(Self {
             workspace,
@@ -549,7 +557,9 @@ impl CoreQuerySurface {
     }
 
     /// The one Workspace registered at `locator`. Never picks among
-    /// several and never registers one.
+    /// several and never registers one. A Workspace released by `uninit`
+    /// (#57) is not a candidate: the path reads as not initialized until
+    /// an explicit `init`.
     pub fn resolve_workspace(global_db: &Path, locator: &Path) -> Result<WorkspaceId, CoreError> {
         if !global_db.is_file() {
             return Err(CoreError::NotInitialized(NotInitialized::GlobalDbMissing));
@@ -557,7 +567,14 @@ impl CoreQuerySurface {
         let candidates = GlobalRegistry::open(global_db)
             .and_then(|registry| registry.find_by_locator(locator))
             .map_err(CoreError::Registry)?;
-        match candidates.workspaces.as_slice() {
+        let (detached, managed): (Vec<_>, Vec<_>) = candidates
+            .workspaces
+            .into_iter()
+            .partition(|entry| entry.state == RegistryState::Detached);
+        match managed.as_slice() {
+            [] if !detached.is_empty() => {
+                Err(CoreError::NotInitialized(NotInitialized::WorkspaceDetached))
+            }
             [] => Err(CoreError::NotInitialized(
                 NotInitialized::WorkspaceNotRegistered,
             )),

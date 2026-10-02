@@ -343,6 +343,64 @@ impl WorkspaceLifecycle {
             .and_then(|()| self.ingest().map(|_| ()))
             .map_err(CommandBasisError::Refresh)?;
         self.settle(true).map_err(CommandBasisError::Refresh)?;
+        self.delta_since(baseline)
+    }
+
+    /// #57 `sync`: the explicit manual correctness recovery. The stored
+    /// basis and ACTIVE inventory are read first, without the freshness
+    /// barrier -- whatever the runtime missed is exactly what this
+    /// recovers. Then a runtime that was not activated is (its activation
+    /// reconciles a pre-existing generation); an activated one journals
+    /// buffered events and runs a verified reconcile even with nothing
+    /// pending and the index already CURRENT, as after a command (#55).
+    /// Then the net delta. Starts no semantic backend.
+    pub fn sync(&mut self) -> Result<PostCommandRefreshReport, CommandBasisError> {
+        self.require_present().map_err(CommandBasisError::Refresh)?;
+        let baseline = self.stored_baseline()?;
+        let recovered = if self.stats.activated {
+            self.settle(true)
+        } else {
+            self.activate()
+        };
+        recovered.map_err(CommandBasisError::Refresh)?;
+        self.delta_since(&baseline)
+    }
+
+    /// The stable generation's basis and the ACTIVE inventory as stored,
+    /// current or not: the "before" of a `sync`.
+    fn stored_baseline(&self) -> Result<CommandBaseline, CommandBasisError> {
+        let generations = GenerationStore::open(&self.index_db).map_err(storage)?;
+        let stable = generations
+            .current_stable()
+            .map_err(storage)?
+            .ok_or(CommandBasisError::NoStableGeneration)?;
+        let workspace_revision = generations
+            .current_workspace_revision()
+            .map_err(storage)?
+            .ok_or(CommandBasisError::NoStableGeneration)?;
+        let basis = IndexBasis {
+            index_incarnation: generations.index_incarnation_id().map_err(storage)?,
+            workspace_revision,
+            generation_no: stable.generation_no,
+            generation_basis_revision: stable.basis_workspace_revision,
+        };
+        let active = ResourceStore::open(&self.index_db)
+            .and_then(|store| store.list_active())
+            .map_err(storage)?;
+        Ok(CommandBaseline {
+            basis,
+            resources: active
+                .into_iter()
+                .map(|resource| (resource.id, resource.resource_revision))
+                .collect(),
+        })
+    }
+
+    /// The net delta from `baseline` to the basis now proven current.
+    fn delta_since(
+        &self,
+        baseline: &CommandBaseline,
+    ) -> Result<PostCommandRefreshReport, CommandBasisError> {
         let (after, active) = self.current_basis()?;
         if after.index_incarnation != baseline.basis.index_incarnation {
             return Err(CommandBasisError::IndexIncarnationChanged);

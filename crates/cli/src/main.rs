@@ -22,7 +22,9 @@ async fn main() {
             | Cli::Artifact { .. }
             | Cli::Verification { .. }
             | Cli::Doctor { .. }
-            | Cli::Rebuild { .. }),
+            | Cli::Rebuild { .. }
+            | Cli::Sync { .. }
+            | Cli::Uninit { .. }),
         ) => query::run_query_command(cli).await.into(),
         Err(error) => {
             // clap prints its own usage/help text to stdout/stderr as

@@ -124,7 +124,9 @@ pub async fn handshake(
         | Response::VerificationJobPoll(_)
         | Response::VerificationJobCancel(_)
         | Response::Doctor(_)
-        | Response::Rebuild(_) => Err(ClientError::UnexpectedResponse),
+        | Response::Rebuild(_)
+        | Response::Sync(_)
+        | Response::Uninit(_) => Err(ClientError::UnexpectedResponse),
     }
 }
 
@@ -154,7 +156,9 @@ pub async fn status(connection: &mut ClientConnection) -> Result<StatusResponse,
         | Response::VerificationJobPoll(_)
         | Response::VerificationJobCancel(_)
         | Response::Doctor(_)
-        | Response::Rebuild(_) => Err(ClientError::UnexpectedResponse),
+        | Response::Rebuild(_)
+        | Response::Sync(_)
+        | Response::Uninit(_) => Err(ClientError::UnexpectedResponse),
     }
 }
 
