@@ -48,7 +48,8 @@ use brainprint_engine::{
 use super::{
     DaemonQueryRuntime,
     capture::{self, Kept, StoreConsumer, Undelivered},
-    lifecycle::IndexBasis,
+    managed_verification::PostCommandRefreshStored,
+    managed_wire::{refresh_failure_wire, refresh_wire},
     observe,
     runtime::WorkerHandle,
     work::{self, WorkContext},
@@ -119,13 +120,6 @@ impl Drop for CancelOnDrop {
     }
 }
 
-/// #55, protocol 8: no current basis before the commands; none ran.
-const BASELINE_FAILED: &str =
-    "the workspace could not be proven current before the verification; nothing ran";
-/// #55, protocol 8: no current basis after the commands; nothing stored.
-const REFRESH_FAILED: &str =
-    "the workspace could not be proven current after the verification; nothing was stored";
-
 /// #55: whether a command's outcome means a process was spawned (and so
 /// may have changed the Workspace). `NotStarted`/`Skipped` never were.
 pub(super) const fn spawned(outcome: VerificationOutcome) -> bool {
@@ -142,8 +136,9 @@ struct Ran {
     report: verification::VerificationReport,
     kept: Vec<Kept>,
     undelivered: Undelivered,
-    /// The post-command basis (the baseline's if nothing was spawned).
-    refreshed: Result<IndexBasis, ()>,
+    /// The post-command refresh fact, shaped as a managed Job stores it
+    /// (`NotNeeded` at the baseline if nothing was spawned).
+    refreshed: PostCommandRefreshStored,
 }
 
 enum Stopped {
@@ -200,7 +195,9 @@ pub(super) async fn run(
     } = match handed {
         Ok(Ok(ran)) => ran,
         Ok(Err(Stopped::Cancelled)) => return None,
-        Ok(Err(Stopped::Baseline)) => return Some(failed(work::internal_message(BASELINE_FAILED))),
+        Ok(Err(Stopped::Baseline)) => {
+            return Some(failed(WorkErrorWire::VerificationBaselineNotCurrent));
+        }
         Ok(Err(Stopped::Panicked)) | Err(_) => {
             return Some(failed(work::internal_message("verification task panicked")));
         }
@@ -212,18 +209,24 @@ pub(super) async fn run(
         .map(|(result, capture)| result_wire(result, capture))
         .collect();
 
-    let response = match refreshed {
-        // A command may have changed the Workspace and its basis is
-        // unknown: no result is stored against a stale one.
-        Err(()) => failed(work::internal_message(REFRESH_FAILED)),
-        Ok(after) => {
+    let response = match (refreshed.proven_basis(), &refreshed) {
+        (Some(after), _) => {
             input.verification_summary = Some(report.summary);
             match observe::resolve(runtime, workspace, WorkOperationWire::Result(input)).await {
-                Ok(operation) => worker.work(operation, WorkContext::at(&after)).await,
+                Ok(operation) => worker.work(operation, WorkContext::at(after)).await,
                 Err(failure) => WorkResponse::Failed(failure),
             }
         }
+        // A command may have changed the Workspace and its basis is
+        // unknown: no result is stored against a stale one.
+        (None, PostCommandRefreshStored::Failed { reason, .. }) => {
+            failed(WorkErrorWire::VerificationRefreshFailed {
+                reason: refresh_failure_wire(*reason),
+            })
+        }
+        (None, _) => failed(work::internal_message("verification refresh was deferred")),
     };
+    let refresh = Some(refresh_wire(refreshed));
     drop(slot);
     capture::downgrade_evicted(&mut results, &store);
     // Recorded or not, the response names the artifacts: they stay.
@@ -231,10 +234,12 @@ pub(super) async fn run(
     Some(match response {
         WorkResponse::Recorded(mut recorded) => {
             recorded.verification = Some(results);
+            recorded.refresh = refresh;
             WorkResponse::Recorded(recorded)
         }
         WorkResponse::Failed(mut failure) => {
             failure.verification = Some(results);
+            failure.refresh = refresh;
             WorkResponse::Failed(failure)
         }
         started @ WorkResponse::Started(_) => started,
@@ -322,13 +327,15 @@ async fn continuation(
         _ => true,
     };
     let refreshed = if may_have_run {
-        worker
-            .post_command_refresh(baseline)
-            .await
-            .map(|report| report.after)
-            .map_err(|error| eprintln!("brainprintd: verification refresh failed: {error}"))
+        let before = baseline.basis.clone();
+        match worker.post_command_refresh(baseline).await {
+            Ok(report) => PostCommandRefreshStored::current(&report),
+            Err(error) => PostCommandRefreshStored::failed(&before, &error),
+        }
     } else {
-        Ok(baseline.basis)
+        PostCommandRefreshStored::NotNeeded {
+            basis: baseline.basis,
+        }
     };
     let _ = handback.send(match batch {
         Ok(Ok((report, kept, undelivered))) => Ok(Ran {

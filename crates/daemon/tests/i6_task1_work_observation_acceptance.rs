@@ -195,6 +195,7 @@ impl Fixture {
             commit_id: Some("feedbeef".to_owned()),
             verification_summary: Some("cargo test: 3 passed".to_owned()),
             verification: None,
+            verification_job: None,
             git,
             change_set,
         }))
@@ -759,7 +760,7 @@ async fn a_storage_failure_is_internal_and_writes_nothing() {
 #[tokio::test]
 async fn the_protocol_version_is_pinned() {
     // #50 introduced v4; #51 bumped it to 5 (`Observe`), #52 to 6.
-    assert_eq!(PROTOCOL_VERSION, 8);
+    assert_eq!(PROTOCOL_VERSION, 9);
 }
 
 /// Old client → new daemon: refused at handshake; a Work request sent
@@ -1000,6 +1001,7 @@ fn the_cli_sends_json_observations_and_maps_failures_to_exit_codes() {
             commit_id: None,
             verification_summary: None,
             verification: None,
+            verification_job: None,
             git: GitObservationWire::Clean,
             change_set: None,
         })

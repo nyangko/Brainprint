@@ -117,8 +117,8 @@ fn main() {
             invalid_requests_create_nothing,
         ),
         (
-            "protocol_is_8_and_workspace_schema_7",
-            protocol_is_8_and_workspace_schema_7,
+            "protocol_is_9_and_workspace_schema_7",
+            protocol_is_9_and_workspace_schema_7,
         ),
     ];
     let handles: Vec<_> = tests
@@ -424,6 +424,7 @@ fn sync_result(work_item: WorkItemId, verification: VerificationWire) -> WorkOpe
         commit_id: None,
         verification_summary: None,
         verification: Some(verification),
+        verification_job: None,
         git: GitObservationWire::Unknown,
         change_set: None,
     })
@@ -1450,8 +1451,8 @@ fn invalid_requests_create_nothing() {
     });
 }
 
-fn protocol_is_8_and_workspace_schema_7() {
-    assert_eq!(PROTOCOL_VERSION, 8);
+fn protocol_is_9_and_workspace_schema_7() {
+    assert_eq!(PROTOCOL_VERSION, 9);
     assert_eq!(
         brainprint_engine::schema::workspace::WORKSPACE_MIGRATIONS.len(),
         7

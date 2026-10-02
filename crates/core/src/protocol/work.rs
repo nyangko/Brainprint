@@ -10,11 +10,12 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    WorkItemId, WorkspaceId,
+    ResourceId, VerificationJobId, WorkItemId, WorkspaceId,
     protocol::query::{
         QueryErrorWire, WorkItemSourceKindWire, WorkItemStatusWire, WorkResultWire,
         WorkingStateWire, WorkspaceSelectorWire,
     },
+    protocol::verification_job::VerificationJobStateWire,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -118,6 +119,11 @@ pub struct WorkResultInputWire {
     /// #52: caller-named commands the daemon runs before the write; their
     /// compact summary becomes `verification_summary`.
     pub verification: Option<VerificationWire>,
+    /// #55: a FINISHED managed Job of this Workspace, recorded as the
+    /// verification without running anything. At most one of
+    /// `verification_summary`, `verification` and `verification_job`.
+    #[serde(default)]
+    pub verification_job: Option<VerificationJobId>,
     /// Remaining dirty state after the task.
     pub git: GitObservationWire,
     /// What the task changed; fingerprinted like `git` entries.
@@ -348,6 +354,10 @@ pub struct WorkRecordedWire {
     pub result: WorkResultWire,
     /// #52: `Some` exactly when the request's verification ran.
     pub verification: Option<Vec<CommandResultWire>>,
+    /// #55: `Some` exactly when the request's verification ran: the
+    /// Workspace's currentness after its commands. A managed Job's is on
+    /// the Job's terminal event.
+    pub refresh: Option<PostCommandRefreshWire>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -358,6 +368,8 @@ pub struct WorkFailureWire {
     pub created_work_item: Option<WorkItemId>,
     /// #52: `Some` means the commands ran but nothing was stored.
     pub verification: Option<Vec<CommandResultWire>>,
+    /// #55: the post-command refresh of commands that ran.
+    pub refresh: Option<PostCommandRefreshWire>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -383,6 +395,30 @@ pub enum WorkErrorWire {
     /// #52: a verification already runs for this Workspace, or the daemon
     /// runs its limit. Nothing ran or was written; not queued.
     VerificationBusy,
+    /// #55: no current index basis before the commands; none ran.
+    VerificationBaselineNotCurrent,
+    /// #55: the commands ran, but no current basis after them could be
+    /// proven; nothing was written (`refresh` says so too).
+    VerificationRefreshFailed {
+        reason: RefreshFailureWire,
+    },
+    /// #55: the Workspace moved past the verified basis before the write;
+    /// nothing was written.
+    VerificationResultBasisChanged,
+    /// #55: `verification_job` names no Job of this Workspace.
+    VerificationJobNotFound,
+    /// #55: only a FINISHED Job is a finished verification.
+    VerificationJobNotFinished {
+        state: VerificationJobStateWire,
+    },
+    /// #55: a Job from before post-command freshness evidence existed.
+    VerificationJobNoRefreshBasis,
+    /// #55: the Job's own refresh proved no current basis.
+    VerificationJobRefreshNotCurrent,
+    /// #55: the Workspace has moved past the Job's basis.
+    VerificationJobStale,
+    /// #55: the stored Job or its terminal event is outside its shape.
+    VerificationJobCorrupt,
     /// A safe summary; storage detail stays in the daemon log.
     Internal {
         message: String,
@@ -418,4 +454,188 @@ pub enum GitObservationFailureWire {
     Unparsable,
     /// The two status reads differed. Retryable.
     ChangedDuringObservation,
+}
+
+/// #55: a proven-current index basis: which index.db incarnation, at which
+/// Workspace revision, on which STABLE generation (built for exactly that
+/// revision).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IndexBasisWire {
+    pub index_incarnation: crate::IndexIncarnationId,
+    pub workspace_revision: String,
+    pub generation_no: i64,
+    pub generation_basis_revision: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ResourceDeltaKindWire {
+    Created,
+    Updated,
+    Deleted,
+}
+
+/// One Resource that differs between the pre-command basis and the
+/// post-command one -- not a claim that the command changed it. A move
+/// is `Updated`; for `Deleted`, the tombstone's path and revision.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResourceDeltaWire {
+    pub resource_id: ResourceId,
+    pub kind: ResourceDeltaKindWire,
+    pub path: String,
+    pub resource_revision: String,
+}
+
+/// #55: the Workspace's currentness after a command batch. A fact beside
+/// the command outcomes, never one of them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PostCommandRefreshWire {
+    /// No process was spawned: the pre-command basis still holds.
+    NotNeeded { basis: IndexBasisWire },
+    /// A verified refresh proved `after` current. Counts are exact;
+    /// `changes` is a deterministic prefix within 256 KiB and
+    /// `delivery_omitted` the rest.
+    Current {
+        before: IndexBasisWire,
+        after: IndexBasisWire,
+        created_count: u64,
+        updated_count: u64,
+        deleted_count: u64,
+        total_changed: u64,
+        changes: Vec<ResourceDeltaWire>,
+        delivery_omitted: u64,
+    },
+    /// No current basis could be proven; detail is in the daemon log.
+    Failed {
+        before: Option<IndexBasisWire>,
+        reason: RefreshFailureWire,
+    },
+    /// The daemon shut down first; the next one's freshness barrier
+    /// recovers.
+    DeferredDaemonShutdown { before: Option<IndexBasisWire> },
+}
+
+/// Why a post-command refresh proved nothing. A closed category.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RefreshFailureWire {
+    WorkspaceUnavailable,
+    ReconcileFailed,
+    NotCurrentAfterRefresh,
+    StableBasisMismatch,
+    IndexIncarnationChanged,
+    Internal,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{IndexIncarnationId, protocol::verification_job::*};
+
+    fn round_trip<T: Serialize + serde::de::DeserializeOwned + PartialEq + std::fmt::Debug>(
+        value: &T,
+    ) {
+        let json = serde_json::to_string(value).expect("encode");
+        assert_eq!(
+            &serde_json::from_str::<T>(&json).expect("decode"),
+            value,
+            "{json}"
+        );
+    }
+
+    fn basis(revision: &str) -> IndexBasisWire {
+        IndexBasisWire {
+            index_incarnation: IndexIncarnationId::generate(),
+            workspace_revision: revision.to_owned(),
+            generation_no: 7,
+            generation_basis_revision: revision.to_owned(),
+        }
+    }
+
+    /// #55: every new protocol 9 shape survives the wire as it is.
+    #[test]
+    fn protocol_9_refresh_and_provenance_round_trip() {
+        let current = PostCommandRefreshWire::Current {
+            before: basis("1"),
+            after: basis("2"),
+            created_count: 1,
+            updated_count: 2,
+            deleted_count: 3,
+            total_changed: 6,
+            changes: vec![ResourceDeltaWire {
+                resource_id: ResourceId::generate(),
+                kind: ResourceDeltaKindWire::Deleted,
+                path: "src/a.rs".to_owned(),
+                resource_revision: "9".to_owned(),
+            }],
+            delivery_omitted: 5,
+        };
+        for refresh in [
+            current.clone(),
+            PostCommandRefreshWire::NotNeeded { basis: basis("1") },
+            PostCommandRefreshWire::Failed {
+                before: None,
+                reason: RefreshFailureWire::StableBasisMismatch,
+            },
+            PostCommandRefreshWire::DeferredDaemonShutdown {
+                before: Some(basis("3")),
+            },
+        ] {
+            round_trip(&refresh);
+        }
+        for payload in [
+            VerificationJobEventPayloadWire::JobFinished {
+                verification_summary: "s".to_owned(),
+                results: Vec::new(),
+                refresh: Some(current.clone()),
+            },
+            VerificationJobEventPayloadWire::JobCancelled {
+                reason: JobEndReasonWire::CallerCancelled,
+                refresh: Some(current),
+            },
+            VerificationJobEventPayloadWire::JobInterrupted {
+                reason: JobEndReasonWire::DaemonShutdown,
+                refresh: Some(PostCommandRefreshWire::DeferredDaemonShutdown { before: None }),
+            },
+            VerificationJobEventPayloadWire::JobInternalError {
+                reason: JobEndReasonWire::BaselineCurrentness,
+                refresh: None,
+            },
+        ] {
+            round_trip(&payload);
+        }
+        for error in [
+            WorkErrorWire::VerificationBaselineNotCurrent,
+            WorkErrorWire::VerificationRefreshFailed {
+                reason: RefreshFailureWire::ReconcileFailed,
+            },
+            WorkErrorWire::VerificationResultBasisChanged,
+            WorkErrorWire::VerificationJobNotFound,
+            WorkErrorWire::VerificationJobNotFinished {
+                state: VerificationJobStateWire::Interrupted,
+            },
+            WorkErrorWire::VerificationJobNoRefreshBasis,
+            WorkErrorWire::VerificationJobRefreshNotCurrent,
+            WorkErrorWire::VerificationJobStale,
+            WorkErrorWire::VerificationJobCorrupt,
+        ] {
+            round_trip(&error);
+        }
+        let input = WorkResultInputWire {
+            work_item: WorkItemId::generate(),
+            outcome: WorkOutcomeWire::Partial,
+            summary: "s".to_owned(),
+            commit_id: None,
+            verification_summary: None,
+            verification: None,
+            verification_job: Some(VerificationJobId::generate()),
+            git: GitObservationWire::Observe,
+            change_set: None,
+        };
+        round_trip(&input);
+        // Strict shapes stay strict.
+        let json = serde_json::to_string(&basis("1")).expect("encode");
+        let extra = json.replacen('{', "{\"extra\":1,", 1);
+        assert!(serde_json::from_str::<IndexBasisWire>(&extra).is_err());
+    }
 }

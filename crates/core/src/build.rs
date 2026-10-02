@@ -26,7 +26,13 @@ pub const PACKAGE_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// `capture` request and result (compact diagnostics, raw artifact
 /// references) and the `ArtifactRead` request/response. Bumped to 8 by
 /// #54: the `VerificationJobStart`/`Poll`/`Cancel` requests and responses.
-pub const PROTOCOL_VERSION: u32 = 8;
+/// Bumped to 9 by #55: the post-command refresh fact on managed Job
+/// terminal events and on a synchronous verification's Work response,
+/// `JobEndReasonWire::BaselineCurrentness`, the Work Result input's
+/// `verification_job` (a managed Job attached without running anything)
+/// and the stored result's `verification_job` provenance, and the typed
+/// verification freshness/attach `WorkErrorWire` variants.
+pub const PROTOCOL_VERSION: u32 = 9;
 
 /// Minimal build identity that benchmark and runtime boundaries can record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

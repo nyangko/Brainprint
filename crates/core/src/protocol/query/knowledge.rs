@@ -459,6 +459,10 @@ pub struct WorkResultWire {
     pub result_index_incarnation: Option<IndexIncarnationId>,
     pub result_generation_no: Option<i64>,
     pub remaining_dirty: DirtyObservationWire,
+    /// #55: the managed Job `verification_summary` came from; `None` for a
+    /// caller's summary, a synchronous verification, none, or a result
+    /// stored before #55.
+    pub verification_job: Option<crate::VerificationJobId>,
     pub created_at: String,
 }
 

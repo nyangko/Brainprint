@@ -3,7 +3,9 @@
 //! document (`WorkStartWire` / `WorkResultInputWire`) from a file or
 //! stdin; this command runs no Git and parses no porcelain text. #52: a
 //! Result's `verification` is run by the daemon; its per-command results
-//! are shown, and a recorded result exits 0 whatever they were.
+//! are shown, and a recorded result exits 0 whatever they were. #55: one
+//! line for the Workspace's currentness after them; a `verification_job`
+//! is attached as it is -- no poll, retry or start here.
 
 use std::io::{Read as _, Write as _};
 
@@ -11,8 +13,9 @@ use brainprint_core::protocol::{
     Request, Response,
     query::{DirtyObservationWire, WorkspaceSelectorWire},
     work::{
-        CommandCaptureWire, CommandResultWire, RawAvailabilityWire, WorkErrorWire,
-        WorkOperationWire, WorkRequest, WorkResponse, WorkResultInputWire, WorkStartWire,
+        CommandCaptureWire, CommandResultWire, PostCommandRefreshWire, RawAvailabilityWire,
+        WorkErrorWire, WorkOperationWire, WorkRequest, WorkResponse, WorkResultInputWire,
+        WorkStartWire,
     },
 };
 use clap::{Args, Subcommand};
@@ -141,8 +144,18 @@ fn exit_for(error: &WorkErrorWire) -> Exit {
         | WorkErrorWire::InvalidTransition { .. }
         | WorkErrorWire::WorkspaceNotReady(_)
         | WorkErrorWire::GitObservation(_)
-        | WorkErrorWire::VerificationBusy => Exit::QueryOrDeliveryFailure,
-        WorkErrorWire::Internal { .. } => Exit::DaemonOrProtocolFailure,
+        | WorkErrorWire::VerificationBusy
+        | WorkErrorWire::VerificationBaselineNotCurrent
+        | WorkErrorWire::VerificationRefreshFailed { .. }
+        | WorkErrorWire::VerificationResultBasisChanged
+        | WorkErrorWire::VerificationJobNotFound
+        | WorkErrorWire::VerificationJobNotFinished { .. }
+        | WorkErrorWire::VerificationJobNoRefreshBasis
+        | WorkErrorWire::VerificationJobRefreshNotCurrent
+        | WorkErrorWire::VerificationJobStale => Exit::QueryOrDeliveryFailure,
+        WorkErrorWire::VerificationJobCorrupt | WorkErrorWire::Internal { .. } => {
+            Exit::DaemonOrProtocolFailure
+        }
     }
 }
 
@@ -164,7 +177,75 @@ fn describe(error: &WorkErrorWire) -> String {
         WorkErrorWire::VerificationBusy => {
             "a verification is already running for this Workspace or the daemon is at its limit; nothing ran or was written, retry later".to_owned()
         }
+        WorkErrorWire::VerificationBaselineNotCurrent => {
+            "the Workspace could not be proven current before the verification; nothing ran or was written, retry".to_owned()
+        }
+        WorkErrorWire::VerificationRefreshFailed { reason } => format!(
+            "the Workspace could not be proven current after the verification ({reason:?}); nothing was written"
+        ),
+        WorkErrorWire::VerificationResultBasisChanged => {
+            "the Workspace changed after the verification; nothing was written".to_owned()
+        }
+        WorkErrorWire::VerificationJobNotFound => {
+            "no such verification Job in this Workspace; nothing was written".to_owned()
+        }
+        WorkErrorWire::VerificationJobNotFinished { state } => {
+            format!("verification Job is not FINISHED ({state:?}); nothing was written")
+        }
+        WorkErrorWire::VerificationJobNoRefreshBasis => {
+            "verification Job predates post-command freshness evidence; nothing was written"
+                .to_owned()
+        }
+        WorkErrorWire::VerificationJobRefreshNotCurrent => {
+            "verification Job's refresh proved no current Workspace; nothing was written".to_owned()
+        }
+        WorkErrorWire::VerificationJobStale => {
+            "verification Job is stale for the current Workspace; nothing was written".to_owned()
+        }
+        WorkErrorWire::VerificationJobCorrupt => "a stored verification Job is corrupt".to_owned(),
         WorkErrorWire::Internal { message } => message.clone(),
+    }
+}
+
+/// #55: the one compact line for a post-command refresh: basis and exact
+/// counts, never the changed paths (`--json` has the bounded list).
+pub(super) fn refresh_line(refresh: &PostCommandRefreshWire) -> String {
+    match refresh {
+        PostCommandRefreshWire::NotNeeded { basis } => format!(
+            "workspace unchanged at revision {} generation {}; no command started",
+            basis.workspace_revision, basis.generation_no
+        ),
+        PostCommandRefreshWire::Current {
+            after,
+            created_count,
+            updated_count,
+            deleted_count,
+            total_changed,
+            delivery_omitted,
+            ..
+        } => {
+            let mut line = format!(
+                "workspace current revision {} generation {}; changed {total_changed}",
+                after.workspace_revision, after.generation_no
+            );
+            if *total_changed > 0 {
+                line.push_str(&format!(
+                    " (created {created_count}, updated {updated_count}, deleted {deleted_count})"
+                ));
+            }
+            if *delivery_omitted > 0 {
+                line.push_str(&format!(
+                    "; {delivery_omitted} change items omitted from delivery"
+                ));
+            }
+            line
+        }
+        PostCommandRefreshWire::Failed { reason, .. } => {
+            format!("workspace refresh failed: {reason:?}")
+        }
+        PostCommandRefreshWire::DeferredDaemonShutdown { .. } => {
+            "workspace refresh deferred until next currentness barrier".to_owned()
+        }
     }
 }
 
@@ -217,16 +298,31 @@ fn print_compact(response: &WorkResponse) -> std::io::Result<()> {
             if let Some(fingerprint) = &result.change_set_fingerprint {
                 writeln!(stdout, "  change set: {fingerprint}")?;
             }
+            if let Some(job) = result.verification_job {
+                writeln!(stdout, "  verification job {job}")?;
+            }
             print_verification(&mut stdout, recorded.verification.as_deref())?;
+            print_refresh(&mut stdout, recorded.refresh.as_ref())?;
         }
         WorkResponse::Failed(failure) => {
             if failure.verification.is_some() {
                 writeln!(stdout, "not recorded; the verification ran:")?;
             }
             print_verification(&mut stdout, failure.verification.as_deref())?;
+            print_refresh(&mut stdout, failure.refresh.as_ref())?;
         }
     }
     stdout.flush()
+}
+
+fn print_refresh(
+    stdout: &mut impl std::io::Write,
+    refresh: Option<&PostCommandRefreshWire>,
+) -> std::io::Result<()> {
+    match refresh {
+        Some(refresh) => writeln!(stdout, "  {}", refresh_line(refresh)),
+        None => Ok(()),
+    }
 }
 
 fn print_verification(

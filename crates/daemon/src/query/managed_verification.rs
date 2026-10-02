@@ -33,7 +33,7 @@ use brainprint_core::{
         query::QueryErrorWire,
         work::{
             CommandResultWire, RawAvailabilityWire, StreamStatusWire, VerificationOutcomeWire,
-            VerificationWire, WorkOperationWire, WorkResponse, WorkResultInputWire,
+            VerificationWire, WorkErrorWire, WorkOperationWire, WorkResponse, WorkResultInputWire,
         },
     },
 };
@@ -63,7 +63,7 @@ use super::{
     observe,
     runtime::{MAX_RESULT_BYTES, WorkerHandle},
     verify::{self, Slot},
-    work::{self, WorkContext},
+    work::WorkContext,
 };
 use crate::artifacts::ArtifactStore;
 
@@ -234,8 +234,9 @@ impl PostCommandRefreshStored {
         }
     }
 
-    fn failed(before: &IndexBasis, error: &CommandBasisError) -> Self {
-        eprintln!("brainprintd: managed verification: refresh failed: {error}");
+    /// A refresh that proved nothing; the detail goes to the log only.
+    pub(super) fn failed(before: &IndexBasis, error: &CommandBasisError) -> Self {
+        eprintln!("brainprintd: post-command refresh failed: {error}");
         Self::Failed {
             before: Some(before.clone()),
             reason: match error {
@@ -252,7 +253,7 @@ impl PostCommandRefreshStored {
     }
 
     /// The basis a Work Result may be held to: only one a refresh proved.
-    const fn proven_basis(&self) -> Option<&IndexBasis> {
+    pub(super) const fn proven_basis(&self) -> Option<&IndexBasis> {
         match self {
             Self::NotNeeded { basis } | Self::Current { after: basis, .. } => Some(basis),
             Self::Failed { .. } | Self::DeferredDaemonShutdown { .. } => None,
@@ -943,7 +944,7 @@ impl DaemonQueryRuntime {
         };
         match self.handle_for(workspace).work(operation, context).await {
             WorkResponse::Failed(failure)
-                if failure.error == work::internal_message(work::BASIS_CHANGED) =>
+                if failure.error == WorkErrorWire::VerificationResultBasisChanged =>
             {
                 Err(AttachError::Stale)
             }
@@ -1434,6 +1435,32 @@ mod tests {
         let json = encode(&payload).expect("fits");
         assert!(json.len() < MAX_PAYLOAD_BYTES, "{}", json.len());
         assert_eq!(MAX_PAYLOAD_BYTES, (1 << 20) - 4096);
+
+        // #55: on the protocol 9 wire -- the refresh carried as stored --
+        // the whole poll response is one frame with this event in it.
+        let wire = super::super::managed_wire::event(ManagedEvent {
+            seq: u64::MAX,
+            created_at: "2026-10-02T00:00:00.000Z".to_owned(),
+            payload: ManagedEventPayload::JobFinished(payload),
+        });
+        let mut page = brainprint_core::protocol::verification_job::VerificationJobPollWire {
+            job_id: VerificationJobId::generate(),
+            state: brainprint_core::protocol::verification_job::VerificationJobStateWire::Finished,
+            events: Vec::new(),
+            next_seq: u64::MAX,
+            has_more: false,
+        };
+        super::super::managed_wire::fit_frame(&mut page, vec![wire], 0).expect("fits a frame");
+        assert_eq!(page.events.len(), 1);
+        let frame = serde_json::to_vec(&brainprint_core::protocol::Response::VerificationJobPoll(
+            Ok(page),
+        ))
+        .expect("encode")
+        .len();
+        assert!(
+            frame <= brainprint_core::protocol::framing::MAX_MESSAGE_BYTES as usize,
+            "{frame}"
+        );
     }
 
     /// #55: the stored delta is the report's own prefix within 256 KiB of

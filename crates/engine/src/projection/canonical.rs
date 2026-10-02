@@ -11,7 +11,8 @@ use std::collections::BTreeSet;
 
 use brainprint_core::{
     BlueprintApplicationId, BlueprintId, DecisionId, IndexIncarnationId, LogicalSymbolId, PolicyId,
-    ProjectId, ProjectStateId, ResourceId, SymbolId, UserPreferenceId, WorkItemId, WorkspaceId,
+    ProjectId, ProjectStateId, ResourceId, SymbolId, UserPreferenceId, VerificationJobId,
+    WorkItemId, WorkspaceId,
 };
 use sha2::{Digest, Sha256};
 
@@ -247,6 +248,7 @@ ids!(
     ResourceId,
     SymbolId,
     UserPreferenceId,
+    VerificationJobId,
     WorkItemId,
     WorkspaceId,
 );
@@ -359,7 +361,7 @@ fields! {
     WorkResult {
         work_item, result_status, result_summary, commit_id, change_set_fingerprint,
         verification_summary, result_workspace_revision, result_index_incarnation,
-        result_generation_no, remaining_dirty, created_at,
+        result_generation_no, remaining_dirty, verification_job, created_at,
     }
     WorkResource {
         work_item, resource, role, locator_hint, first_observed_revision, last_observed_revision,

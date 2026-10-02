@@ -18,8 +18,8 @@ use brainprint_core::{
             VerificationJobStartRequestWire, VerificationJobStateWire,
         },
         work::{
-            CommandCaptureWire, DiagnosticPathWire, RawAvailabilityWire, VerificationOutcomeWire,
-            VerificationWire,
+            CommandCaptureWire, DiagnosticPathWire, PostCommandRefreshWire, RawAvailabilityWire,
+            VerificationOutcomeWire, VerificationWire,
         },
     },
 };
@@ -27,7 +27,7 @@ use clap::{Args, Subcommand};
 
 use super::{
     exec::{Exit, absolute_workspace, exit_for_code},
-    work::read_input,
+    work::{read_input, refresh_line},
 };
 use crate::client;
 
@@ -305,8 +305,13 @@ fn print_event(
             }
             writeln!(out)
         }
-        P::JobFinished { results, .. } => {
+        P::JobFinished {
+            results, refresh, ..
+        } => {
             writeln!(out, "[{seq}] job finished")?;
+            if let Some(refresh) = refresh {
+                writeln!(out, "    {}", refresh_line(refresh))?;
+            }
             // #53 already bounds these; never the raw output.
             for result in results {
                 let CommandCaptureWire::Captured {
@@ -341,8 +346,27 @@ fn print_event(
             }
             Ok(())
         }
-        P::JobCancelled { .. } => writeln!(out, "[{seq}] job cancelled"),
-        P::JobInterrupted { reason } => writeln!(out, "[{seq}] job interrupted {reason:?}"),
-        P::JobInternalError { reason } => writeln!(out, "[{seq}] job internal error {reason:?}"),
+        P::JobCancelled { refresh, .. } => {
+            writeln!(out, "[{seq}] job cancelled")?;
+            print_refresh(out, refresh.as_ref())
+        }
+        P::JobInterrupted { reason, refresh } => {
+            writeln!(out, "[{seq}] job interrupted {reason:?}")?;
+            print_refresh(out, refresh.as_ref())
+        }
+        P::JobInternalError { reason, refresh } => {
+            writeln!(out, "[{seq}] job internal error {reason:?}")?;
+            print_refresh(out, refresh.as_ref())
+        }
+    }
+}
+
+fn print_refresh(
+    out: &mut std::io::StdoutLock<'_>,
+    refresh: Option<&PostCommandRefreshWire>,
+) -> std::io::Result<()> {
+    match refresh {
+        Some(refresh) => writeln!(out, "    {}", refresh_line(refresh)),
+        None => Ok(()),
     }
 }

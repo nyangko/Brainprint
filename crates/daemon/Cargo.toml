@@ -68,5 +68,10 @@ harness = false
 name = "i6_task6_verification_refresh_acceptance"
 harness = false
 
+# #55 step 3: likewise its own portable helper.
+[[test]]
+name = "i6_task6_protocol_cli_acceptance"
+harness = false
+
 [lints]
 workspace = true

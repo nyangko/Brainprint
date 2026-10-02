@@ -285,6 +285,7 @@ async fn observe_start_and_result_round_trip() {
             commit_id: None,
             verification_summary: None,
             verification: None,
+            verification_job: None,
             git: GitObservationWire::Observe,
             change_set: None,
         }))
@@ -395,7 +396,7 @@ async fn an_unregistered_workspace_fails_before_git_runs() {
 #[tokio::test]
 async fn protocol_version_is_pinned() {
     // #51 bumped it to 5, #52 to 6.
-    assert_eq!(PROTOCOL_VERSION, 8);
+    assert_eq!(PROTOCOL_VERSION, 9);
 }
 
 /// v4 client → v5 daemon: refused at handshake; an Observe request sent
@@ -430,6 +431,7 @@ async fn a_v4_client_is_refused_by_a_v5_daemon() {
             commit_id: None,
             verification_summary: None,
             verification: None,
+            verification_job: None,
             git: GitObservationWire::Observe,
             change_set: None,
         }),

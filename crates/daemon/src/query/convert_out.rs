@@ -1027,6 +1027,7 @@ pub(super) fn work_result_wire(result: WorkResult) -> WorkResultWire {
         result_index_incarnation: result.result_index_incarnation,
         result_generation_no: result.result_generation_no,
         remaining_dirty: dirty_observation_wire(result.remaining_dirty),
+        verification_job: result.verification_job,
         created_at: result.created_at,
     }
 }

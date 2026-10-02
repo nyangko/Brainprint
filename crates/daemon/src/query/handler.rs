@@ -14,7 +14,10 @@ use brainprint_core::{
     },
 };
 
-use super::runtime::{AckOutcome, DaemonQueryRuntime};
+use super::{
+    managed_verification::AttachError,
+    runtime::{AckOutcome, DaemonQueryRuntime},
+};
 
 /// Sentinel used only when a `QueryResponse` must report an error that
 /// occurred *before* a Workspace locator resolved to a real identity
@@ -88,16 +91,32 @@ pub async fn handle_query_ack(runtime: &DaemonQueryRuntime, request: QueryAckReq
 /// #50: resolve the Workspace exactly as a query does, then run the write
 /// on that Workspace's worker. #52: a Result with `verification` runs its
 /// commands first and is cancelled if `closed` (the client's connection
-/// ending) completes meanwhile; `None` is then "nothing to answer".
+/// ending) completes meanwhile; `None` is then "nothing to answer". #55: a
+/// Result with `verification_job` attaches that managed Job, running
+/// nothing; a Result names at most one verification source.
 pub async fn handle_work(
     runtime: &DaemonQueryRuntime,
     request: WorkRequest,
     closed: impl Future<Output = ()>,
 ) -> Option<Response> {
+    if let WorkOperationWire::Result(input) = &request.operation
+        && let Err(failure) = super::work::check_verification_source(input)
+    {
+        return Some(Response::Work(WorkResponse::Failed(failure)));
+    }
     let response = match resolve(runtime, request.workspace).await {
         Ok(workspace_id) => match request.operation {
             WorkOperationWire::Result(input) if input.verification.is_some() => {
                 super::verify::run(runtime, workspace_id, input, closed).await?
+            }
+            WorkOperationWire::Result(mut input) if input.verification_job.is_some() => {
+                let job = input.verification_job.take().expect("checked above");
+                runtime
+                    .managed_attach(workspace_id, input, job)
+                    .await
+                    .unwrap_or_else(|error| {
+                        WorkResponse::Failed(super::work::failure(attach_error(error)))
+                    })
             }
             operation => match super::observe::resolve(runtime, workspace_id, operation).await {
                 Ok(operation) => runtime.work(workspace_id, operation).await,
@@ -107,4 +126,20 @@ pub async fn handle_work(
         Err(error) => WorkResponse::Failed(super::work::failure(WorkErrorWire::Workspace(error))),
     };
     Some(Response::Work(response))
+}
+
+fn attach_error(error: AttachError) -> WorkErrorWire {
+    match error {
+        AttachError::InvalidObservation(reason) => WorkErrorWire::InvalidObservation { reason },
+        AttachError::Workspace(error) => WorkErrorWire::Workspace(error),
+        AttachError::JobNotFound => WorkErrorWire::VerificationJobNotFound,
+        AttachError::NotFinished(state) => WorkErrorWire::VerificationJobNotFinished {
+            state: super::managed_wire::state(state),
+        },
+        AttachError::NoRefreshBasis => WorkErrorWire::VerificationJobNoRefreshBasis,
+        AttachError::RefreshNotCurrent => WorkErrorWire::VerificationJobRefreshNotCurrent,
+        AttachError::Stale => WorkErrorWire::VerificationJobStale,
+        AttachError::Corrupt => WorkErrorWire::VerificationJobCorrupt,
+        AttachError::Internal(message) => super::work::internal_message(message),
+    }
 }

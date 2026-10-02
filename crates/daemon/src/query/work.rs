@@ -76,13 +76,28 @@ pub(super) fn run(
     outcome.unwrap_or_else(WorkResponse::Failed)
 }
 
-/// #55, protocol 8: the Workspace is no longer at the basis a
-/// verification proved; nothing was stored. A fixed message, no detail.
-pub(super) const BASIS_CHANGED: &str =
-    "the workspace changed since the verification; nothing was stored";
-
+/// #55: the Workspace is no longer at the basis a verification proved;
+/// nothing was stored.
 pub(super) fn basis_changed() -> WorkResponse {
-    internal(BASIS_CHANGED)
+    failed(WorkErrorWire::VerificationResultBasisChanged)
+}
+
+/// #55: a Work Result has at most one verification source: the caller's
+/// summary, a synchronous run, or a managed Job. Checked before anything
+/// runs or is read.
+pub(super) fn check_verification_source(
+    input: &WorkResultInputWire,
+) -> Result<(), WorkFailureWire> {
+    let sources = usize::from(input.verification_summary.is_some())
+        + usize::from(input.verification.is_some())
+        + usize::from(input.verification_job.is_some());
+    if sources > 1 {
+        return Err(failure(WorkErrorWire::InvalidObservation {
+            reason: "verification_summary, verification and verification_job are exclusive"
+                .to_owned(),
+        }));
+    }
+    Ok(())
 }
 
 pub(super) fn workspace_error(error: QueryErrorWire) -> WorkResponse {
@@ -104,6 +119,7 @@ pub(super) const fn failure(error: WorkErrorWire) -> WorkFailureWire {
         error,
         created_work_item: None,
         verification: None,
+        refresh: None,
     }
 }
 
@@ -156,6 +172,7 @@ fn start_work(
             error: work_error(error, Some(work_item)),
             created_work_item: created,
             verification: None,
+            refresh: None,
         })?;
     Ok(WorkResponse::Started(WorkStartedWire {
         workspace_id: workspace,
@@ -197,6 +214,13 @@ fn record_result(
     if input.verification.is_some() {
         return Err(failure(internal_message(
             "a verification request reached the write unrun",
+        )));
+    }
+    // A managed Job is attached only with its proven basis, never stored
+    // as if it were the caller's summary.
+    if input.verification_job.is_some() {
+        return Err(failure(internal_message(
+            "a verification job reached the write unattached",
         )));
     }
     let (remaining_dirty, _) =
@@ -246,6 +270,7 @@ fn record_result(
         status: convert_out::work_item_status_wire(status),
         result: convert_out::work_result_wire(result),
         verification: None,
+        refresh: None,
     }))
 }
 
@@ -316,7 +341,7 @@ pub(super) fn work_error(error: WorkError, work_item: Option<WorkItemId>) -> Wor
         WorkError::BoundExceeded { what } => WorkErrorWire::BoundExceeded {
             what: what.to_owned(),
         },
-        WorkError::ResultBasisChanged => internal_message(BASIS_CHANGED),
+        WorkError::ResultBasisChanged => WorkErrorWire::VerificationResultBasisChanged,
         WorkError::Knowledge(KnowledgeError::InvalidTransition { what, reason }) => {
             WorkErrorWire::InvalidTransition {
                 reason: format!("{what}: {reason}"),

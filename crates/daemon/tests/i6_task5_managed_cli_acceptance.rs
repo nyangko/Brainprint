@@ -82,16 +82,16 @@ fn main() {
             exit_codes_follow_the_typed_errors,
         ),
         (
-            "a_v7_client_is_refused_by_a_v8_daemon",
-            a_v7_client_is_refused_by_a_v8_daemon,
+            "a_v8_client_is_refused_by_a_v9_daemon",
+            a_v8_client_is_refused_by_a_v9_daemon,
         ),
         (
-            "the_v8_cli_stops_at_a_v7_daemon",
-            the_v8_cli_stops_at_a_v7_daemon,
+            "the_v9_cli_stops_at_a_v8_daemon",
+            the_v9_cli_stops_at_a_v8_daemon,
         ),
         (
-            "protocol_is_8_and_workspace_schema_7",
-            protocol_is_8_and_workspace_schema_7,
+            "protocol_is_9_and_workspace_schema_7",
+            protocol_is_9_and_workspace_schema_7,
         ),
     ];
     let handles: Vec<_> = tests
@@ -750,7 +750,14 @@ fn the_cli_returns_before_the_job_and_polls_it_to_the_end() {
     assert!(lines[2].starts_with("[5] lint failed exit=1 "), "{compact}");
     assert_eq!(lines[3], "[6] build skipped");
     assert_eq!(lines[4], "[7] job finished");
-    assert_eq!(lines[5], format!("job {job} finished next 7"));
+    // #55: one line for the Workspace after the batch; its markers are
+    // outside the Workspace, so nothing changed.
+    assert!(
+        lines[5].starts_with("    workspace current revision ")
+            && lines[5].ends_with("; changed 0"),
+        "{compact}"
+    );
+    assert_eq!(lines[6], format!("job {job} finished next 7"));
     // Finished is "ran to its end": the failure is the command's fact.
     assert_eq!(
         command_finished(&done_poll, 1).outcome,
@@ -1025,11 +1032,17 @@ fn the_cli_cancels_the_tree_once() {
         let polled = cli.polled(job, 0, MAX_POLL_EVENTS);
         assert_eq!(polled.state, VerificationJobStateWire::Cancelled);
         assert_eq!(terminal_events(&polled), 1);
-        assert_eq!(
-            polled.events.last().expect("events").payload,
-            VerificationJobEventPayloadWire::JobCancelled {
-                reason: JobEndReasonWire::CallerCancelled
-            }
+        // #55: the refresh after the cancelled tree comes with it.
+        assert!(
+            matches!(
+                polled.events.last().expect("events").payload,
+                VerificationJobEventPayloadWire::JobCancelled {
+                    reason: JobEndReasonWire::CallerCancelled,
+                    refresh: Some(PostCommandRefreshWire::Current { .. }),
+                }
+            ),
+            "{:?}",
+            polled.events.last()
         );
 
         let (code, again) = cli.cancel(job);
@@ -1071,11 +1084,17 @@ fn a_clean_restart_leaves_the_job_interrupted() {
         let polled = cli.polled(job, 0, MAX_POLL_EVENTS);
         assert_eq!(polled.state, VerificationJobStateWire::Interrupted);
         assert_eq!(terminal_events(&polled), 1);
-        assert_eq!(
-            polled.events.last().expect("events").payload,
-            VerificationJobEventPayloadWire::JobInterrupted {
-                reason: JobEndReasonWire::DaemonShutdown
-            }
+        // #55: a shutdown never waits for the refresh.
+        assert!(
+            matches!(
+                polled.events.last().expect("events").payload,
+                VerificationJobEventPayloadWire::JobInterrupted {
+                    reason: JobEndReasonWire::DaemonShutdown,
+                    refresh: Some(PostCommandRefreshWire::DeferredDaemonShutdown { .. }),
+                }
+            ),
+            "{:?}",
+            polled.events.last()
         );
         let (code, cancelled) = cli.cancel(job);
         assert_eq!(code, Some(0));
@@ -1190,22 +1209,22 @@ fn exit_codes_follow_the_typed_errors() {
     });
 }
 
-/// v7 client → v8 daemon: refused at handshake; a start sent anyway is
+/// v8 client → v9 daemon: refused at handshake; a start sent anyway is
 /// never served and runs nothing.
-fn a_v7_client_is_refused_by_a_v8_daemon() {
+fn a_v8_client_is_refused_by_a_v9_daemon() {
     block_on(async {
-        let fixture = Fixture::new("v7-client").await;
+        let fixture = Fixture::new("v8-client").await;
         let mut connection = connect(&fixture.endpoint).await;
         assert_eq!(
-            handshake(&mut connection, 7).await,
+            handshake(&mut connection, 8).await,
             Response::Handshake(HandshakeResponse::VersionMismatch {
-                server_protocol_version: 8,
-                client_protocol_version: 7,
+                server_protocol_version: 9,
+                client_protocol_version: 8,
             })
         );
         let request = Request::VerificationJobStart(VerificationJobStartRequestWire {
             workspace: fixture.selector(),
-            idempotency_key: "v7".to_owned(),
+            idempotency_key: "v9".to_owned(),
             verification: batch(vec![command("never", &[&fixture.mark("never")])]),
         });
         let _ = protocol::framing::write_message(&mut connection, &request).await;
@@ -1218,10 +1237,10 @@ fn a_v7_client_is_refused_by_a_v8_daemon() {
     });
 }
 
-/// The v8 CLI → a v7 daemon: the CLI reports the mismatch and stops.
-fn the_v8_cli_stops_at_a_v7_daemon() {
+/// The v9 CLI → a v8 daemon: the CLI reports the mismatch and stops.
+fn the_v9_cli_stops_at_a_v8_daemon() {
     block_on(async {
-        let home = TestDir::create("v7-daemon");
+        let home = TestDir::create("v8-daemon");
         let endpoint = runtime_paths::resolve(&GlobalPaths::from_home(home.path()));
         #[cfg(unix)]
         let listener = {
@@ -1230,7 +1249,7 @@ fn the_v8_cli_stops_at_a_v7_daemon() {
         };
         #[cfg(windows)]
         let listener = protocol::Listener::bind(&endpoint.pipe_name).expect("listener");
-        let fake_v7 = tokio::spawn(async move {
+        let fake_v8 = tokio::spawn(async move {
             let mut listener = listener;
             let mut connection = listener.accept().await.expect("accept");
             let request: Request = protocol::framing::read_message(&mut connection)
@@ -1242,7 +1261,7 @@ fn the_v8_cli_stops_at_a_v7_daemon() {
             protocol::framing::write_message(
                 &mut connection,
                 &Response::Handshake(HandshakeResponse::VersionMismatch {
-                    server_protocol_version: 7,
+                    server_protocol_version: 8,
                     client_protocol_version: handshake.protocol_version,
                 }),
             )
@@ -1266,12 +1285,12 @@ fn the_v8_cli_stops_at_a_v7_daemon() {
             "{}",
             text(&output.stderr)
         );
-        assert_eq!(fake_v7.await.expect("fake daemon"), 8);
+        assert_eq!(fake_v8.await.expect("fake daemon"), 9);
     });
 }
 
-fn protocol_is_8_and_workspace_schema_7() {
-    assert_eq!(PROTOCOL_VERSION, 8);
+fn protocol_is_9_and_workspace_schema_7() {
+    assert_eq!(PROTOCOL_VERSION, 9);
     assert_eq!(
         brainprint_engine::schema::workspace::WORKSPACE_MIGRATIONS.len(),
         7

@@ -1,6 +1,10 @@
 //! #54 step 3: `Request::VerificationJob*` onto the step 2 managed API --
 //! the Workspace resolved as a query does, then one `managed_*` call and
 //! a plain conversion of its result. No Job lifecycle of its own.
+//!
+//! #55: a terminal event's stored post-command refresh crosses as it was
+//! stored -- the same counts, the same bounded prefix of changes -- never
+//! recomputed or reselected here.
 
 use brainprint_core::protocol::{
     Response,
@@ -12,14 +16,20 @@ use brainprint_core::protocol::{
         VerificationJobPollRequestWire, VerificationJobPollWire, VerificationJobStartRequestWire,
         VerificationJobStartedWire, VerificationJobStateWire,
     },
+    work::{
+        IndexBasisWire, PostCommandRefreshWire, RefreshFailureWire, ResourceDeltaKindWire,
+        ResourceDeltaWire,
+    },
 };
 use brainprint_engine::verification_job::{MAX_EVENTS_PER_READ, VerificationJobState};
 
 use super::{
     DaemonQueryRuntime,
     handler::resolve,
+    lifecycle::{IndexBasis, ResourceDelta, ResourceDeltaKind},
     managed_verification::{
         CaptureProgress, EndReason, ManagedError, ManagedEvent, ManagedEventPayload,
+        PostCommandRefreshStored, RefreshFailure,
     },
 };
 
@@ -107,7 +117,7 @@ pub async fn handle_verification_job_cancel(
 /// encodes within one frame; the first that would not fit and every one
 /// after it are left for the next poll (`has_more`). A terminal payload
 /// is bounded below the frame (step 2), so the first event always fits.
-fn fit_frame(
+pub(super) fn fit_frame(
     page: &mut VerificationJobPollWire,
     events: Vec<VerificationJobEventWire>,
     after_seq: u64,
@@ -149,7 +159,7 @@ fn fit_frame(
     Ok(())
 }
 
-fn state(state: VerificationJobState) -> VerificationJobStateWire {
+pub(super) fn state(state: VerificationJobState) -> VerificationJobStateWire {
     match state {
         VerificationJobState::Running => VerificationJobStateWire::Running,
         VerificationJobState::Finished => VerificationJobStateWire::Finished,
@@ -177,7 +187,7 @@ fn error(error: ManagedError) -> VerificationJobErrorWire {
     }
 }
 
-fn event(event: ManagedEvent) -> VerificationJobEventWire {
+pub(super) fn event(event: ManagedEvent) -> VerificationJobEventWire {
     use ManagedEventPayload as P;
     use VerificationJobEventPayloadWire as W;
     VerificationJobEventWire {
@@ -219,15 +229,19 @@ fn event(event: ManagedEvent) -> VerificationJobEventWire {
             P::JobFinished(finished) => W::JobFinished {
                 verification_summary: finished.verification_summary,
                 results: finished.results,
+                refresh: finished.refresh.map(refresh_wire),
             },
             P::JobCancelled(ended) => W::JobCancelled {
                 reason: reason(ended.reason),
+                refresh: ended.refresh.map(refresh_wire),
             },
             P::JobInterrupted(ended) => W::JobInterrupted {
                 reason: reason(ended.reason),
+                refresh: ended.refresh.map(refresh_wire),
             },
             P::JobInternalError(ended) => W::JobInternalError {
                 reason: reason(ended.reason),
+                refresh: ended.refresh.map(refresh_wire),
             },
         },
     }
@@ -240,11 +254,79 @@ fn reason(reason: EndReason) -> JobEndReasonWire {
         EndReason::DaemonRestart => JobEndReasonWire::DaemonRestart,
         EndReason::EventPersistence => JobEndReasonWire::EventPersistence,
         EndReason::EventPayload => JobEndReasonWire::EventPayload,
-        // #55: protocol 8 has no baseline category; the run failed before
-        // any command, which is what it reads as until protocol 9.
-        EndReason::RunnerFailure | EndReason::BaselineCurrentness => {
-            JobEndReasonWire::RunnerFailure
+        EndReason::RunnerFailure => JobEndReasonWire::RunnerFailure,
+        EndReason::BaselineCurrentness => JobEndReasonWire::BaselineCurrentness,
+    }
+}
+
+/// #55: a stored (or, for a synchronous run, just shaped) refresh, field
+/// for field.
+pub(super) fn refresh_wire(refresh: PostCommandRefreshStored) -> PostCommandRefreshWire {
+    match refresh {
+        PostCommandRefreshStored::NotNeeded { basis } => PostCommandRefreshWire::NotNeeded {
+            basis: basis_wire(basis),
+        },
+        PostCommandRefreshStored::Current {
+            before,
+            after,
+            created_count,
+            updated_count,
+            deleted_count,
+            total_changed,
+            changes,
+            delivery_omitted,
+        } => PostCommandRefreshWire::Current {
+            before: basis_wire(before),
+            after: basis_wire(after),
+            created_count,
+            updated_count,
+            deleted_count,
+            total_changed,
+            changes: changes.into_iter().map(delta_wire).collect(),
+            delivery_omitted,
+        },
+        PostCommandRefreshStored::Failed { before, reason } => PostCommandRefreshWire::Failed {
+            before: before.map(basis_wire),
+            reason: refresh_failure_wire(reason),
+        },
+        PostCommandRefreshStored::DeferredDaemonShutdown { before } => {
+            PostCommandRefreshWire::DeferredDaemonShutdown {
+                before: before.map(basis_wire),
+            }
         }
+    }
+}
+
+pub(super) const fn refresh_failure_wire(reason: RefreshFailure) -> RefreshFailureWire {
+    match reason {
+        RefreshFailure::WorkspaceUnavailable => RefreshFailureWire::WorkspaceUnavailable,
+        RefreshFailure::ReconcileFailed => RefreshFailureWire::ReconcileFailed,
+        RefreshFailure::NotCurrentAfterRefresh => RefreshFailureWire::NotCurrentAfterRefresh,
+        RefreshFailure::StableBasisMismatch => RefreshFailureWire::StableBasisMismatch,
+        RefreshFailure::IndexIncarnationChanged => RefreshFailureWire::IndexIncarnationChanged,
+        RefreshFailure::Internal => RefreshFailureWire::Internal,
+    }
+}
+
+fn basis_wire(basis: IndexBasis) -> IndexBasisWire {
+    IndexBasisWire {
+        index_incarnation: basis.index_incarnation,
+        workspace_revision: basis.workspace_revision,
+        generation_no: basis.generation_no,
+        generation_basis_revision: basis.generation_basis_revision,
+    }
+}
+
+fn delta_wire(delta: ResourceDelta) -> ResourceDeltaWire {
+    ResourceDeltaWire {
+        resource_id: delta.resource_id,
+        kind: match delta.kind {
+            ResourceDeltaKind::Created => ResourceDeltaKindWire::Created,
+            ResourceDeltaKind::Updated => ResourceDeltaKindWire::Updated,
+            ResourceDeltaKind::Deleted => ResourceDeltaKindWire::Deleted,
+        },
+        path: delta.path,
+        resource_revision: delta.resource_revision,
     }
 }
 
@@ -271,6 +353,7 @@ mod tests {
             payload: VerificationJobEventPayloadWire::JobFinished {
                 verification_summary: "s".repeat(bytes),
                 results: Vec::new(),
+                refresh: None,
             },
         }
     }

@@ -129,8 +129,8 @@ fn main() {
             the_worker_rechecks_the_basis_at_the_write,
         ),
         (
-            "protocol_is_8_and_workspace_schema_7",
-            protocol_is_8_and_workspace_schema_7,
+            "protocol_is_9_and_workspace_schema_7",
+            protocol_is_9_and_workspace_schema_7,
         ),
     ];
     let handles: Vec<_> = tests
@@ -565,6 +565,7 @@ fn input(work_item: WorkItemId, verification: Option<VerificationWire>) -> WorkR
         commit_id: None,
         verification_summary: None,
         verification,
+        verification_job: None,
         git: GitObservationWire::Unknown,
         change_set: None,
     }
@@ -885,7 +886,22 @@ fn sync_refresh_failure_stores_nothing() {
 
         let failure = failed(response);
         assert!(
-            matches!(&failure.error, WorkErrorWire::Internal { message } if message.contains("after the verification")),
+            matches!(
+                failure.error,
+                WorkErrorWire::VerificationRefreshFailed {
+                    reason: RefreshFailureWire::ReconcileFailed
+                }
+            ),
+            "{failure:?}"
+        );
+        assert!(
+            matches!(
+                failure.refresh,
+                Some(PostCommandRefreshWire::Failed {
+                    before: Some(_),
+                    reason: RefreshFailureWire::ReconcileFailed
+                })
+            ),
             "{failure:?}"
         );
         assert_eq!(
@@ -1582,8 +1598,8 @@ fn the_worker_rechecks_the_basis_at_the_write() {
     });
 }
 
-fn protocol_is_8_and_workspace_schema_7() {
-    assert_eq!(PROTOCOL_VERSION, 8);
+fn protocol_is_9_and_workspace_schema_7() {
+    assert_eq!(PROTOCOL_VERSION, 9);
     assert_eq!(
         brainprint_engine::schema::workspace::WORKSPACE_MIGRATIONS.len(),
         7

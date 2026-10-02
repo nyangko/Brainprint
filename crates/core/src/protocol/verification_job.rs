@@ -9,8 +9,8 @@ use crate::{
     protocol::{
         query::{QueryErrorWire, WorkspaceSelectorWire},
         work::{
-            CommandResultWire, RawAvailabilityWire, StreamStatusWire, VerificationOutcomeWire,
-            VerificationWire,
+            CommandResultWire, PostCommandRefreshWire, RawAvailabilityWire, StreamStatusWire,
+            VerificationOutcomeWire, VerificationWire,
         },
     },
 };
@@ -93,7 +93,10 @@ pub struct VerificationJobEventWire {
     pub payload: VerificationJobEventPayloadWire,
 }
 
-/// The durable event payloads (version 1), as stored.
+/// The durable event payloads, as stored. #55: a terminal event carries
+/// its post-command refresh when one was recorded; `None` for a Job from
+/// before #55, one an earlier daemon left running, or one whose
+/// pre-command baseline failed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum VerificationJobEventPayloadWire {
     JobStarted,
@@ -107,15 +110,19 @@ pub enum VerificationJobEventPayloadWire {
     JobFinished {
         verification_summary: String,
         results: Vec<CommandResultWire>,
+        refresh: Option<PostCommandRefreshWire>,
     },
     JobCancelled {
         reason: JobEndReasonWire,
+        refresh: Option<PostCommandRefreshWire>,
     },
     JobInterrupted {
         reason: JobEndReasonWire,
+        refresh: Option<PostCommandRefreshWire>,
     },
     JobInternalError {
         reason: JobEndReasonWire,
+        refresh: Option<PostCommandRefreshWire>,
     },
 }
 
@@ -163,6 +170,8 @@ pub enum JobEndReasonWire {
     EventPersistence,
     EventPayload,
     RunnerFailure,
+    /// #55: no current index basis before any command; nothing ran.
+    BaselineCurrentness,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

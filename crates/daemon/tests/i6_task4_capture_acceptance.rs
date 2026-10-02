@@ -226,6 +226,7 @@ fn result_input(
         commit_id: None,
         verification_summary: None,
         verification: Some(VerificationWire { commands }),
+        verification_job: None,
         git: GitObservationWire::Unknown,
         change_set: None,
     }
