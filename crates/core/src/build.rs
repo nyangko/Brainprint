@@ -31,8 +31,9 @@ pub const PACKAGE_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// `JobEndReasonWire::BaselineCurrentness`, the Work Result input's
 /// `verification_job` (a managed Job attached without running anything)
 /// and the stored result's `verification_job` provenance, and the typed
-/// verification freshness/attach `WorkErrorWire` variants.
-pub const PROTOCOL_VERSION: u32 = 9;
+/// verification freshness/attach `WorkErrorWire` variants. Bumped to 10
+/// by #56: the `Doctor`/`Rebuild` requests and responses.
+pub const PROTOCOL_VERSION: u32 = 10;
 
 /// Minimal build identity that benchmark and runtime boundaries can record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

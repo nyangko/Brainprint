@@ -211,6 +211,77 @@ pub fn open(path: &Path, kind: DbKind, migrations: &[Migration]) -> Result<Opene
     })
 }
 
+/// What a read-only look at an existing database shows (#56 doctor).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DbInspection {
+    pub schema_version: u32,
+    /// The newest compiled migration for this kind.
+    pub max_known_version: u32,
+    /// `PRAGMA integrity_check` rows: exactly `["ok"]` when healthy.
+    pub integrity: Vec<String>,
+    /// The `db_meta` binding, where this kind carries one.
+    pub project_uid: Option<Vec<u8>>,
+    pub workspace_uid: Option<Vec<u8>>,
+}
+
+/// Inspect an existing database of `kind` without changing it: opened
+/// read-only, never created, configured, migrated or bound. The applied
+/// ledger is checked against `migrations` exactly as [`open`] would.
+pub fn inspect(
+    path: &Path,
+    kind: DbKind,
+    migrations: &[Migration],
+) -> Result<DbInspection, DbOpenError> {
+    use rusqlite::OpenFlags;
+
+    let connection = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    connection.busy_timeout(DEFAULT_BUSY_TIMEOUT)?;
+
+    let (found_kind, schema_version): (String, u32) = connection.query_row(
+        "SELECT db_kind, schema_version FROM db_meta WHERE id = 0",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    if found_kind != kind.as_str() {
+        return Err(DbOpenError::KindMismatch {
+            expected: kind,
+            found: found_kind,
+        });
+    }
+    verify_applied_ledger(&connection, migrations, schema_version)?;
+
+    let (project_uid, workspace_uid) = match kind {
+        DbKind::Global => (None, None),
+        DbKind::Project => (
+            connection.query_row("SELECT project_uid FROM db_meta WHERE id = 0", [], |row| {
+                row.get(0)
+            })?,
+            None,
+        ),
+        DbKind::Workspace | DbKind::Index => connection.query_row(
+            "SELECT project_uid, workspace_uid FROM db_meta WHERE id = 0",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?,
+    };
+
+    let mut statement = connection.prepare("PRAGMA integrity_check")?;
+    let integrity = statement
+        .query_map([], |row| row.get(0))?
+        .collect::<Result<Vec<String>, _>>()?;
+
+    Ok(DbInspection {
+        schema_version,
+        max_known_version: migrations.last().map_or(0, |migration| migration.version),
+        integrity,
+        project_uid,
+        workspace_uid,
+    })
+}
+
 fn validate_migration_order(migrations: &[Migration]) -> Result<(), DbOpenError> {
     let mut previous: Option<u32> = None;
     for migration in migrations {
@@ -704,5 +775,42 @@ mod tests {
                 .expect("widgets should be queryable");
             assert_eq!(widget_count, 1, "{kind} must preserve data across reopen");
         }
+    }
+
+    #[test]
+    fn inspect_reports_without_migrating_or_writing() {
+        let dir = TestDir::create("inspect-read-only");
+        let path = dir.db_path();
+        drop(open(&path, DbKind::Global, &[CREATE_WIDGETS, SEED_WIDGET]).expect("open"));
+        let before = fs::read(&path).expect("db bytes");
+
+        let pending = inspect(
+            &path,
+            DbKind::Global,
+            &[CREATE_WIDGETS, SEED_WIDGET, CREATE_GADGETS],
+        )
+        .expect("inspect");
+        assert_eq!(pending.schema_version, 2);
+        assert_eq!(pending.max_known_version, 3);
+        assert_eq!(pending.integrity, vec!["ok".to_owned()]);
+        assert_eq!((pending.project_uid, pending.workspace_uid), (None, None));
+        assert_eq!(fs::read(&path).expect("db bytes"), before, "never migrated");
+
+        assert!(matches!(
+            inspect(&path, DbKind::Index, &[CREATE_WIDGETS, SEED_WIDGET]),
+            Err(DbOpenError::KindMismatch { .. })
+        ));
+        assert!(matches!(
+            inspect(&path, DbKind::Global, &[CREATE_WIDGETS]),
+            Err(DbOpenError::FutureSchema {
+                db_version: 2,
+                max_known_version: 1
+            })
+        ));
+        assert!(
+            inspect(&dir.0.join("absent.db"), DbKind::Global, &[CREATE_WIDGETS]).is_err(),
+            "a missing database is never created"
+        );
+        assert!(!dir.0.join("absent.db").exists());
     }
 }

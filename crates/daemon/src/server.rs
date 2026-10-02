@@ -316,6 +316,10 @@ where
             Request::VerificationJobCancel(request) => {
                 crate::query::handle_verification_job_cancel(&query_runtime, request).await
             }
+            Request::Doctor(request) => crate::query::handle_doctor(&query_runtime, request).await,
+            Request::Rebuild(request) => {
+                crate::query::handle_rebuild(&query_runtime, request).await
+            }
         };
         protocol::framing::write_message(&mut connection, &response).await?;
     }

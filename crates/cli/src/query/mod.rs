@@ -8,6 +8,7 @@ pub mod commands;
 mod delivery;
 mod exec;
 mod knowledge;
+mod maintenance;
 mod render;
 mod target;
 mod verification;
@@ -35,6 +36,8 @@ pub async fn run_query_command(cli: Cli) -> Exit {
         Cli::Work { mode } => work::run_work(mode).await,
         Cli::Artifact { mode } => artifact::run_artifact(mode).await,
         Cli::Verification { mode } => verification::run_verification(mode).await,
+        Cli::Doctor { path, json } => maintenance::run_doctor(path, json).await,
+        Cli::Rebuild { path, json } => maintenance::run_rebuild(path, json).await,
         Cli::Install | Cli::Status | Cli::Init { .. } => {
             unreachable!("main.rs handles Install/Status/Init before dispatching here")
         }

@@ -11,6 +11,7 @@ mod convert_in;
 mod convert_out;
 mod handler;
 pub mod lifecycle;
+mod maintenance;
 mod managed_verification;
 mod managed_wire;
 mod observe;
@@ -22,6 +23,7 @@ mod verify;
 mod work;
 
 pub use handler::{handle_query, handle_query_ack, handle_work};
+pub use maintenance::{handle_doctor, handle_rebuild};
 pub use managed_verification::{
     AttachError, CaptureProgress, CommandFinishedPayload, CommandStartedPayload, DiagnosticCounts,
     EndReason, JobEndedPayload, JobFinishedPayload, JobStartedPayload,

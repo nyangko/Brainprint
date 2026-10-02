@@ -476,12 +476,16 @@ impl WorkspaceLifecycle {
     }
 
     fn index_current(&self) -> Result<bool, String> {
-        let index =
-            QueryIndex::open(&self.index_db).map_err(|error| format!("index.db: {error}"))?;
-        Ok(index
+        Ok(self.currentness()? == Currentness::Current)
+    }
+
+    /// The index's own currentness fact, read without refreshing (#56
+    /// doctor).
+    pub fn currentness(&self) -> Result<Currentness, String> {
+        QueryIndex::open(&self.index_db)
+            .map_err(|error| format!("index.db: {error}"))?
             .currentness()
-            .map_err(|error| format!("currentness: {error}"))?
-            == Currentness::Current)
+            .map_err(|error| format!("currentness: {error}"))
     }
 
     fn settle(&mut self, force_reconcile: bool) -> Result<(), String> {

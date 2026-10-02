@@ -125,6 +125,10 @@ pub enum Request {
     VerificationJobPoll(super::verification_job::VerificationJobPollRequestWire),
     /// #54: cancel a managed Job.
     VerificationJobCancel(super::verification_job::VerificationJobCancelRequestWire),
+    /// #56: a read-only Workspace diagnosis.
+    Doctor(super::maintenance::DoctorRequest),
+    /// #56: rebuild the Workspace's rebuildable index from current source.
+    Rebuild(super::maintenance::RebuildRequest),
 }
 
 /// An envelope for every response the daemon may send.
@@ -148,6 +152,8 @@ pub enum Response {
     VerificationJobStart(super::verification_job::VerificationJobStartResponseWire),
     VerificationJobPoll(super::verification_job::VerificationJobPollResponseWire),
     VerificationJobCancel(super::verification_job::VerificationJobCancelResponseWire),
+    Doctor(super::maintenance::DoctorResponse),
+    Rebuild(super::maintenance::RebuildResponse),
 }
 
 /// A coarse, stable classification a client can act on without parsing

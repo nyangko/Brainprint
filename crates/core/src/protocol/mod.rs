@@ -17,6 +17,7 @@
 pub mod artifact;
 pub mod endpoint;
 pub mod framing;
+pub mod maintenance;
 pub mod messages;
 pub mod query;
 pub mod transport;

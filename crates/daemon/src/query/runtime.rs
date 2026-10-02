@@ -23,6 +23,7 @@ use std::{
 use brainprint_core::{
     WorkspaceId,
     protocol::{
+        maintenance::{IndexCheckWire, RebuildResponse, RuntimeCheckWire},
         query::{CorrelationWire, QueryErrorWire, QueryOperationWire, QueryResultWire},
         work::{WorkOperationWire, WorkResponse},
     },
@@ -42,6 +43,7 @@ use super::{
         CommandBaseline, CommandBasisError, LifecycleStats, PostCommandRefreshReport, WatchFactory,
         WorkspaceLifecycle, notify_watch_factory,
     },
+    maintenance,
     managed_verification::Managed,
     semantic::{SemanticStats, WorkspaceSemantic},
     verify, work,
@@ -112,6 +114,14 @@ enum Job {
     PostCommandRefresh {
         baseline: Box<CommandBaseline>,
         reply: oneshot::Sender<Result<PostCommandRefreshReport, CommandBasisError>>,
+    },
+    /// #56 doctor: the runtime's facts as they stand, never settled.
+    Health {
+        reply: oneshot::Sender<(RuntimeCheckWire, IndexCheckWire)>,
+    },
+    /// #56: stage, validate and swap in a fresh index.db.
+    Rebuild {
+        reply: oneshot::Sender<Result<RebuildResponse, String>>,
     },
 }
 
@@ -214,6 +224,10 @@ impl DaemonQueryRuntime {
             artifact_store: Arc::new(ArtifactStore::new(&global_paths.runtime_root())),
             managed: Managed::default(),
         }
+    }
+
+    pub(super) const fn global_paths(&self) -> &GlobalPaths {
+        &self.global_paths
     }
 
     /// How many Workspace runtimes this daemon owns.
@@ -359,6 +373,34 @@ impl DaemonQueryRuntime {
         let (reply, receiver) = oneshot::channel();
         handle.jobs.send(Job::Stats { reply }).ok()?;
         receiver.await.ok().flatten()
+    }
+
+    /// #56 doctor: the runtime's facts, if this daemon already runs one for
+    /// `workspace` -- asking never creates or activates it.
+    pub(super) async fn health(
+        &self,
+        workspace: WorkspaceId,
+    ) -> Option<(RuntimeCheckWire, IndexCheckWire)> {
+        let handle = {
+            let workers = self.workers.lock().expect("worker map mutex poisoned");
+            workers.get(&workspace)?.clone()
+        };
+        let (reply, receiver) = oneshot::channel();
+        handle.jobs.send(Job::Health { reply }).ok()?;
+        receiver.await.ok()
+    }
+
+    /// #56: rebuild `workspace`'s index on its worker, serialized with its
+    /// queries and publications.
+    pub(super) async fn rebuild(&self, workspace: WorkspaceId) -> Result<RebuildResponse, String> {
+        let handle = self.handle_for(workspace);
+        let (reply, receiver) = oneshot::channel();
+        if handle.jobs.send(Job::Rebuild { reply }).is_err() {
+            return Err("workspace worker is gone".to_owned());
+        }
+        receiver
+            .await
+            .unwrap_or_else(|_| Err("workspace worker is gone".to_owned()))
     }
 
     /// The Workspace's factual semantic runtime counters (#39), if its
@@ -594,14 +636,7 @@ fn worker_loop(
                     ledger = new_ledger();
                     pending = PendingAcks::new();
                 }
-                let outcome = match (&surface, &mut lifecycle) {
-                    (Err(error), _) => {
-                        Err(convert_out::core_error(clone_core_error(error)).message)
-                    }
-                    (Ok(_), Ok(lifecycle)) => lifecycle.activate(),
-                    (Ok(_), Err(error)) => Err(error.clone()),
-                };
-                let _ = reply.send(outcome);
+                let _ = reply.send(activate(&surface, &mut lifecycle));
             }
             Job::Stats { reply } => {
                 let _ = reply.send(lifecycle.as_ref().ok().map(WorkspaceLifecycle::stats));
@@ -621,8 +656,99 @@ fn worker_loop(
                     Err(error) => Err(CommandBasisError::Refresh(error.clone())),
                 });
             }
+            Job::Health { reply } => {
+                let _ = reply.send(maintenance::runtime_health(&lifecycle));
+            }
+            Job::Rebuild { reply } => {
+                let outcome = rebuild(
+                    global_paths,
+                    workspace,
+                    &factory,
+                    (&mut surface, &mut lifecycle, &mut semantic),
+                );
+                ledger = new_ledger();
+                pending = PendingAcks::new();
+                let _ = reply.send(outcome);
+            }
         }
     }
+}
+
+type Bound = (
+    Result<CoreQuerySurface, brainprint_engine::query_surface::CoreError>,
+    Result<WorkspaceLifecycle, String>,
+    Option<WorkspaceSemantic>,
+);
+
+/// #56: stage a fresh index beside the live one, then swap it in and
+/// re-bind. A staging failure leaves the runtime exactly as it was; an
+/// activation failure swaps the previous index back.
+fn rebuild(
+    global_paths: &GlobalPaths,
+    workspace: WorkspaceId,
+    factory: &WatchFactory,
+    (surface, lifecycle, semantic): (
+        &mut Result<CoreQuerySurface, brainprint_engine::query_surface::CoreError>,
+        &mut Result<WorkspaceLifecycle, String>,
+        &mut Option<WorkspaceSemantic>,
+    ),
+) -> Result<RebuildResponse, String> {
+    let staged = maintenance::stage(&global_paths.global_db, workspace)?;
+    // Every connection this worker holds on index.db closes before a swap;
+    // the re-bind opens whichever index is then in place.
+    let rebind = |bound: (
+        &mut Result<CoreQuerySurface, brainprint_engine::query_surface::CoreError>,
+        &mut Result<WorkspaceLifecycle, String>,
+        &mut Option<WorkspaceSemantic>,
+    ),
+                  swap: &dyn Fn() -> Result<(), String>| {
+        (*bound.0, *bound.1, *bound.2) = unbound();
+        let swapped = swap();
+        (*bound.0, *bound.1, *bound.2) = bind(global_paths, workspace, factory);
+        swapped
+    };
+    rebind((surface, lifecycle, semantic), &|| staged.swap_in())?;
+    let error = match activate(surface, lifecycle) {
+        Ok(()) => {
+            staged.discard_retired();
+            return Ok(staged.response(workspace, lifecycle, semantic.as_ref()));
+        }
+        Err(error) => error,
+    };
+    let restored = rebind((surface, lifecycle, semantic), &|| staged.swap_back());
+    let _ = activate(surface, lifecycle);
+    Err(match restored {
+        Ok(()) => {
+            format!("activating the rebuilt index: {error}; the previous index was restored")
+        }
+        Err(restore) => format!(
+            "activating the rebuilt index: {error}; restoring the previous index failed: {restore}"
+        ),
+    })
+}
+
+/// #38 init: bring a bound Workspace to structural READY.
+fn activate(
+    surface: &Result<CoreQuerySurface, brainprint_engine::query_surface::CoreError>,
+    lifecycle: &mut Result<WorkspaceLifecycle, String>,
+) -> Result<(), String> {
+    match (surface, lifecycle) {
+        (Err(error), _) => Err(convert_out::core_error(clone_core_error(error)).message),
+        (Ok(_), Ok(lifecycle)) => lifecycle.activate(),
+        (Ok(_), Err(error)) => Err(error.clone()),
+    }
+}
+
+/// Nothing bound: every handle on the Workspace's databases is dropped.
+fn unbound() -> Bound {
+    use brainprint_engine::query_surface::{CoreError, NotInitialized};
+    (
+        Err(CoreError::NotInitialized(
+            NotInitialized::WorkspaceNotRegistered,
+        )),
+        Err("the workspace index is being rebuilt".to_owned()),
+        None,
+    )
 }
 
 /// Open the Workspace's query surface and, only if its DB binding

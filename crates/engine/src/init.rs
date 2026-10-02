@@ -783,6 +783,31 @@ fn bind_or_verify_project_identity(
     }
 }
 
+/// #56 doctor: the identity `workspace.toml` records, read only.
+pub fn read_workspace_identity(
+    paths: &WorkspacePaths,
+) -> Result<Option<(ProjectId, WorkspaceId)>, InitError> {
+    Ok(read_identity_file(&paths.identity_file)?
+        .map(|identity| (identity.project_id, identity.workspace_id)))
+}
+
+/// #56 rebuild staging: a fresh `index.db` at `path`, migrated and bound
+/// to the same Project/Workspace as the one it will replace, exactly as
+/// `init` binds it. It carries a new index incarnation of its own.
+pub fn create_bound_index_db(
+    path: &Path,
+    project_id: ProjectId,
+    workspace_id: WorkspaceId,
+) -> Result<(), InitError> {
+    let index_db = schema::index::open(path)?;
+    bind_or_verify_workspace_scoped_identity(
+        &index_db.connection,
+        DbKind::Index,
+        project_id,
+        workspace_id,
+    )
+}
+
 fn bind_or_verify_workspace_scoped_identity(
     connection: &Connection,
     kind: DbKind,

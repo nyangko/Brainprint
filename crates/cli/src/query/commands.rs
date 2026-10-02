@@ -55,6 +55,23 @@ pub enum Cli {
     Init {
         path: Option<String>,
     },
+    /// #56: read-only Workspace diagnosis -- never rebuilds, repairs,
+    /// migrates or changes anything.
+    Doctor {
+        path: Option<String>,
+        /// Machine-readable output: the `Doctor` response JSON on stdout.
+        #[arg(long)]
+        json: bool,
+    },
+    /// #56: rebuild the Workspace's rebuildable index (Resources, Symbols,
+    /// Relations, semantic publications) from current source. Identity,
+    /// config, durable knowledge, Working State and source are kept.
+    Rebuild {
+        path: Option<String>,
+        /// Machine-readable output: the `Rebuild` response JSON on stdout.
+        #[arg(long)]
+        json: bool,
+    },
     Find {
         #[command(subcommand)]
         mode: FindCommand,
