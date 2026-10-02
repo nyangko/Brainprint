@@ -5,8 +5,8 @@
 //! commands run (no shell), so the same tests hold on macOS, Ubuntu and
 //! Windows. Helper ops, in order: `exit:<code>`, `sleep:<ms>`,
 //! `mark:<path>` (append one byte: the file length counts runs),
-//! `note:<text>` (no-op payload), `spawn [ ops… ]` (a
-//! child left running).
+//! `await:<path>` (until it exists), `note:<text>` (no-op payload),
+//! `spawn [ ops… ]` (a child left running).
 //!
 //! Every refusal is checked for "nothing ran" (no marker) and "nothing
 //! written" (row counts of every workspace.db work table).
@@ -168,6 +168,13 @@ fn helper(ops: &[String]) {
                 .open(value)
                 .and_then(|mut file| file.write_all(b"x"))
                 .expect("marker"),
+            "await" => {
+                let deadline = Instant::now() + Duration::from_secs(60);
+                while !Path::new(value).exists() {
+                    assert!(Instant::now() < deadline, "never released");
+                    thread::sleep(Duration::from_millis(10));
+                }
+            }
             "note" => {}
             other => panic!("unknown helper op {other}"),
         }
@@ -721,9 +728,13 @@ fn concurrent_verification_is_busy_not_queued() {
         let first = fixture.started().await;
         let second = fixture.started().await;
         let started = fixture.mark("started");
+        // Held between `started` and `ran` until the test releases it, so
+        // every check below happens while the first run is RUNNING.
+        let release = fixture.marker("release");
+        let held = format!("await:{}", release.display());
         let slow = verification(vec![command(
             "slow",
-            &[&started, "sleep:2500", &fixture.mark("ran")],
+            &[&started, &held, &fixture.mark("ran")],
         )]);
         let mut other = open_connection(&fixture.endpoint).await;
         let paths = fixture.paths.clone();
@@ -779,6 +790,7 @@ fn concurrent_verification_is_busy_not_queued() {
             "ran beside the first run, not after it"
         );
 
+        fs::write(&release, b"").expect("release");
         let (_other, response) = running.await.expect("first request");
         recorded(response);
         assert!(!fixture.marker("never").exists());
