@@ -71,6 +71,28 @@ fn print_one_evidence(out: &mut impl Write, item: &EvidenceWire) -> std::io::Res
             Ok(false)
         }
         EvidenceWire::SourceUnavailable { .. } => Ok(true),
+        // #58: one line per declaration; 1-based lines for a human reader.
+        EvidenceWire::Outline(outline) => {
+            writeln!(
+                out,
+                "--- outline {} ({:?}, {} symbols) ---",
+                outline.path_rel,
+                outline.coverage,
+                outline.entries.len()
+            )?;
+            for entry in &outline.entries {
+                let indent = if entry.parent.is_some() { "    " } else { "  " };
+                writeln!(
+                    out,
+                    "{indent}{:?} {} L{}-{}",
+                    entry.kind,
+                    entry.name,
+                    entry.start_line + 1,
+                    entry.end_line + 1
+                )?;
+            }
+            Ok(false)
+        }
         // A full bespoke one-line format per evidence variant is a
         // larger surface than this compact renderer covers; the debug
         // form is lossless (every field survives) even though it is

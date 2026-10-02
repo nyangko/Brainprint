@@ -218,6 +218,7 @@ impl ReuseIdentity {
             | EvidenceItem::GenerationReference { .. }
             | EvidenceItem::WorkStaleness { .. }
             | EvidenceItem::TargetSelection(_)
+            | EvidenceItem::Outline(_)
             | EvidenceItem::Coverage(_)
             | EvidenceItem::SourceUnavailable { .. }
             | EvidenceItem::IndexCurrentness { .. } => return None,

@@ -29,7 +29,7 @@ use crate::{
     graph::GraphEndpoint,
     inspect::SourceVerification,
     knowledge::{GenerationReferenceState, ResolutionReason},
-    prepare::PreparedRange,
+    prepare::{PreparedRange, RangeRole},
     projection::{
         EvidenceItem, ProjectionIntent, ProjectionRequest, ProjectionRequestError,
         canonical::{self, Canonical},
@@ -515,6 +515,7 @@ fn required(item: &EvidenceItem, intent: ProjectionIntent) -> bool {
         EvidenceItem::Resource(_)
         | EvidenceItem::Symbol(_)
         | EvidenceItem::TargetSelection(_)
+        | EvidenceItem::Outline(_)
         | EvidenceItem::CurrentSource(_)
         | EvidenceItem::Coverage(_)
         | EvidenceItem::SourceUnavailable { .. }
@@ -549,6 +550,19 @@ const fn tier(relevance: Relevance) -> u8 {
 
 const SOURCE_TIER: u8 = 8;
 
+/// #58: required evidence that did not fit a first page, delivered
+/// next and before every optional tier.
+const REQUIRED_REMAINDER_TIER: u8 = 0;
+
+/// #58: an outlined Resource's own declarations are its target
+/// remainder (§6 tier 1), ahead of its relations.
+const fn source_tier(range: &PlannedSourceRange) -> u8 {
+    match range.role {
+        RangeRole::MemberDeclaration => 1,
+        _ => SOURCE_TIER,
+    }
+}
+
 fn key<T: Canonical + ?Sized>(tier: u8, depth: usize, unit: &T) -> DeliveryKey {
     DeliveryKey {
         tier,
@@ -575,9 +589,6 @@ fn sequence(projection: &PreparedProjection) -> (Vec<&EvidenceItem>, Vec<Entry<'
             });
         }
     }
-    // Stable: same tier and depth keep the planner's canonical order.
-    optional.sort_by_key(|entry| (entry.key.tier, entry.key.depth));
-
     let (required_ranges, candidates): (Vec<_>, Vec<_>) = projection
         .source_plan
         .iter()
@@ -594,15 +605,30 @@ fn sequence(projection: &PreparedProjection) -> (Vec<&EvidenceItem>, Vec<Entry<'
     for range in merge(&candidates) {
         if !within_required(&range) {
             optional.push(Entry {
-                key: key(SOURCE_TIER, 0, &range),
+                key: key(source_tier(&range), 0, &range),
                 slot: Slot::Source(range),
             });
         }
     }
+    // Stable: same tier and depth keep the planner's canonical order, and
+    // a source after the evidence of its tier.
+    optional.sort_by_key(|entry| (entry.key.tier, entry.key.depth));
     (required_items, optional)
 }
 
 // ------------------------------------------------------------------ page
+
+/// Put the required items a page could not hold at the head of the
+/// optional sequence, in projection order.
+fn demote<'a>(optional: &mut Vec<Entry<'a>>, owed: &[&'a EvidenceItem]) {
+    optional.splice(
+        0..0,
+        owed.iter().map(|item| Entry {
+            key: key(REQUIRED_REMAINDER_TIER, 0, *item),
+            slot: Slot::Evidence(item),
+        }),
+    );
+}
 
 /// For a materialized item, the reference to an acknowledged identical
 /// payload in the caller's retained context, if there is one.
@@ -744,7 +770,7 @@ impl ProjectionPlanner {
         let basis = self.basis()?;
         let request_fingerprint = canonical::digest(REQUEST_DOMAIN, request);
         let projection_fingerprint = canonical::digest(PROJECTION_DOMAIN, projection);
-        let (required_items, optional) = sequence(projection);
+        let (required_items, mut optional) = sequence(projection);
         let sources = optional
             .iter()
             .filter(|entry| matches!(entry.slot, Slot::Source(_)))
@@ -768,24 +794,53 @@ impl ProjectionPlanner {
                 for gap in &projection.gaps {
                     total = total.plus(page.cost(DeliveryUnit::Gap(gap))?);
                 }
+                // #58: for a read-only intent, the longest prefix of the
+                // required bundle that fits; the rest leads the optional
+                // sequence, and nothing fitting at all is the only
+                // BudgetTooSmall. A change/impact/resume bundle (protected
+                // rules, conflicts, directives) stays atomic.
+                let divisible = matches!(
+                    projection.intent,
+                    ProjectionIntent::Locate | ProjectionIntent::Understand
+                );
+                let mut fitting = total;
                 let mut references = Vec::with_capacity(required_items.len());
                 for item in &required_items {
                     let (cost, reference) = page.represent(item)?;
                     total = total.plus(cost);
-                    references.push(reference);
+                    // Contiguous: once one item does not fit, none after it
+                    // is taken.
+                    if divisible
+                        && fitting.items + 1 == total.items
+                        && budget.over(Cost::ZERO, total).is_empty()
+                    {
+                        fitting = total;
+                        references.push(reference);
+                    }
                 }
-                let violated = budget.over(Cost::ZERO, total);
-                if !violated.is_empty() {
+                let fits_whole = budget.over(Cost::ZERO, total).is_empty();
+                if fits_whole && !divisible {
+                    // The atomic path never needed a prefix.
+                    references.clear();
+                    for item in &required_items {
+                        references.push(page.represent(item)?.1);
+                    }
+                    fitting = total;
+                }
+                let fit = references.len();
+                if fit == 0 && !fits_whole {
                     return Err(DeliveryError::BudgetTooSmallForRequiredEvidence {
                         required_items: total.items,
                         required_bytes: total.bytes,
                         required_tokens: total.tokens,
-                        violated,
+                        violated: budget.over(Cost::ZERO, total),
                     });
                 }
-                page.used = total;
-                page.evidence.extend(required_items.into_iter().cloned());
+                page.used = fitting;
+                page.evidence
+                    .extend(required_items[..fit].iter().map(|item| (*item).clone()));
                 page.references = references;
+                demote(&mut optional, &required_items[fit..]);
                 (0, projection.gaps.clone())
             }
             Some(continuation) => {
@@ -797,6 +852,17 @@ impl ProjectionPlanner {
                     projection_fingerprint,
                     budget,
                 )?;
+                // A remainder cursor names the first required item still
+                // owed; everything after it is owed too.
+                if continuation.next.tier == REQUIRED_REMAINDER_TIER {
+                    let owed = required_items
+                        .iter()
+                        .position(|item| {
+                            key(REQUIRED_REMAINDER_TIER, 0, *item) == continuation.next
+                        })
+                        .ok_or(DeliveryError::InvalidContinuationCursor)?;
+                    demote(&mut optional, &required_items[owed..]);
+                }
                 let start = optional
                     .iter()
                     .position(|entry| entry.key == continuation.next)

@@ -36,9 +36,9 @@ use std::{
 use brainprint_core::{BlueprintApplicationId, ProjectId, ResourceId, WorkItemId, WorkspaceId};
 
 use super::{
-    ChangeKind, CoverageEvidence, CoverageSubject, EvidenceItem, GenerationBasis, ProjectionIntent,
-    ProjectionKnowledgeRefs, ProjectionRequest, ProjectionRequestError, ProjectionTarget,
-    TargetSelection,
+    ChangeKind, CoverageEvidence, CoverageSubject, EvidenceItem, GenerationBasis, OutlineEntry,
+    ProjectionIntent, ProjectionKnowledgeRefs, ProjectionRequest, ProjectionRequestError,
+    ProjectionTarget, ResourceOutline, TargetSelection,
     canonical::{self, Canonical},
 };
 use crate::{
@@ -401,6 +401,9 @@ impl ProjectionPlanner {
             ProjectionIntent::Understand => {
                 if let Some(selected) = &selected {
                     plan.require_declarations(selected);
+                    if let GraphEndpoint::Resource(resource) = &selected.endpoint {
+                        self.outline(*resource, &mut plan)?;
+                    }
                     self.direct(
                         &selected.endpoint,
                         &[Direction::Outgoing, Direction::Incoming],
@@ -516,6 +519,17 @@ impl ProjectionPlanner {
             endpoint,
             exact.is_some(),
         );
+        if exact.is_none() && !endpoint {
+            // #58: each candidate's own path/kind/role, so the choice needs
+            // no second lookup.
+            plan.items.extend(
+                located
+                    .candidates
+                    .iter()
+                    .cloned()
+                    .map(EvidenceItem::Resource),
+            );
+        }
         Ok(exact.map(|resource| {
             let endpoint = GraphEndpoint::Resource(resource.id);
             plan.items.push(EvidenceItem::Resource(resource));
@@ -548,6 +562,12 @@ impl ProjectionPlanner {
         {
             plan.candidates.clone_from(&located.candidates);
         }
+        if exact.is_none() && !endpoint {
+            // #58: each candidate's own name/kind/path/id, so the choice
+            // needs no second lookup.
+            plan.items
+                .extend(located.candidates.iter().cloned().map(EvidenceItem::Symbol));
+        }
         Ok(exact.map(|candidate| {
             plan.items.push(EvidenceItem::Symbol(candidate.clone()));
             Selected {
@@ -555,6 +575,45 @@ impl ProjectionPlanner {
                 declarations: vec![candidate],
             }
         }))
+    }
+
+    /// #58: an exactly selected Resource's outline, and each top-level
+    /// declaration as a target-remainder source candidate -- so a file
+    /// inspect is a working packet, bounded by the delivery budget.
+    fn outline(&self, resource: ResourceId, plan: &mut Plan) -> Result<(), PlannerError> {
+        let Some(resource) = self.index().active_resource(resource)? else {
+            return Ok(());
+        };
+        let (symbols, coverage) = self.index().outline(&resource)?;
+        for symbol in symbols.iter().filter(|symbol| symbol.parent_id.is_none()) {
+            plan.anchors.push(PlannedSourceRange {
+                resource: resource.id,
+                resource_revision: symbol.resource_revision.clone(),
+                span: symbol.span,
+                role: RangeRole::MemberDeclaration,
+                requirement: SourceRequirement::Optional,
+            });
+        }
+        let outline = ResourceOutline {
+            resource: resource.id,
+            path_rel: resource.path_rel.clone(),
+            resource_revision: resource.resource_revision.clone(),
+            coverage,
+            entries: symbols
+                .into_iter()
+                .map(|symbol| OutlineEntry {
+                    symbol: symbol.id,
+                    parent: symbol.parent_id,
+                    kind: symbol.kind,
+                    name: symbol.name,
+                    start_line: symbol.span.start.line,
+                    end_line: symbol.span.end.line,
+                })
+                .collect(),
+        };
+        plan.raw.known(std::iter::once(&outline));
+        plan.items.push(EvidenceItem::Outline(outline));
+        Ok(())
     }
 
     // ---- graph --------------------------------------------------------
@@ -982,6 +1041,8 @@ struct Plan {
     items: Vec<EvidenceItem>,
     gaps: Vec<ProjectionGap>,
     required: Vec<PlannedSourceRange>,
+    /// #58: an outlined Resource's top-level declarations (optional).
+    anchors: Vec<PlannedSourceRange>,
     /// Shallowest impact depth by relation identity.
     depths: BTreeMap<Vec<u8>, usize>,
     raw: RawTally,
@@ -1175,6 +1236,7 @@ impl Plan {
                 });
             }
         }
+        optional.append(&mut self.anchors);
         self.raw.unread(optional.len());
         optional.sort_by_key(range_key);
         let required_keys: BTreeSet<_> = self.required.iter().map(range_key).collect();
@@ -1218,7 +1280,9 @@ fn range_key(range: &PlannedSourceRange) -> RangeKey {
 const fn role_rank(role: RangeRole) -> u8 {
     match role {
         RangeRole::AnchorDeclaration => 0,
-        RangeRole::ContainingDeclaration | RangeRole::CandidateDeclaration => 1,
+        RangeRole::ContainingDeclaration
+        | RangeRole::CandidateDeclaration
+        | RangeRole::MemberDeclaration => 1,
         RangeRole::EvidenceSpan => 2,
     }
 }
@@ -1288,6 +1352,12 @@ fn describe(item: &EvidenceItem) -> (u8, u8, Vec<u8>, Option<Vec<u8>>) {
             id(candidate.symbol.id.to_bytes()),
         ),
         EvidenceItem::TargetSelection(_) => (1, 2, Vec::new(), None),
+        EvidenceItem::Outline(outline) => (
+            1,
+            3,
+            outline.path_rel.as_bytes().to_vec(),
+            id(outline.resource.to_bytes()),
+        ),
         EvidenceItem::CurrentSource(range) => {
             let key = [
                 &range.resource.to_bytes()[..],

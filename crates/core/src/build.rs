@@ -32,8 +32,9 @@ pub const PACKAGE_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// `verification_job` (a managed Job attached without running anything)
 /// and the stored result's `verification_job` provenance, and the typed
 /// verification freshness/attach `WorkErrorWire` variants. Bumped to 10
-/// by #56: the `Doctor`/`Rebuild` requests and responses.
-pub const PROTOCOL_VERSION: u32 = 10;
+/// by #56: the `Doctor`/`Rebuild` requests and responses. Bumped to 11
+/// by #58: the `EvidenceWire::Outline` variant.
+pub const PROTOCOL_VERSION: u32 = 11;
 
 /// Minimal build identity that benchmark and runtime boundaries can record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

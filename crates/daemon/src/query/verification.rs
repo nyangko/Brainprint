@@ -1107,12 +1107,14 @@ async fn source_reads_and_bytes_match_task_10_expectations() {
         inspect_stats.source_file_reads > 0 && inspect_stats.source_bytes > 0,
         "inspect on a real Resource must read source: {inspect_stats:?}"
     );
-    assert_eq!(
-        inspect_stats.source_file_reads, change_stats.source_file_reads,
+    // #58: a file inspect also delivers the file's own declarations, so
+    // it reads at least what a context Change on the same file reads.
+    assert!(
+        inspect_stats.source_file_reads >= change_stats.source_file_reads,
         "inspect vs context Change source_file_reads: {inspect_stats:?} vs {change_stats:?}"
     );
-    assert_eq!(
-        inspect_stats.source_bytes, change_stats.source_bytes,
+    assert!(
+        inspect_stats.source_bytes > change_stats.source_bytes,
         "inspect vs context Change source_bytes: {inspect_stats:?} vs {change_stats:?}"
     );
 }

@@ -717,6 +717,31 @@ impl QueryIndex {
         })
     }
 
+    /// #58: every current Symbol of `resource`, in source order, and the
+    /// Resource's structural coverage. No source is read.
+    pub fn outline(
+        &self,
+        resource: &Resource,
+    ) -> Result<(Vec<symbol::Symbol>, StructuralCoverage), QueryError> {
+        let sql = format!(
+            "SELECT {} {} \
+             WHERE {CURRENT_SYMBOL_PREDICATE} AND r.uid = ?1 \
+             ORDER BY s.start_byte, s.end_byte DESC, s.uid",
+            symbol::SYMBOL_COLUMNS,
+            symbol::SYMBOL_FROM,
+        );
+        let mut statement = self.connection.prepare(&sql)?;
+        let rows = statement.query_map(
+            rusqlite::params![resource.id.to_bytes().to_vec()],
+            symbol::raw_symbol_row,
+        )?;
+        let mut symbols = Vec::new();
+        for raw in rows {
+            symbols.push(symbol::decode_symbol(raw?)?);
+        }
+        Ok((symbols, self.coverage_for(resource)?))
+    }
+
     /// The ACTIVE Resource with this id, if there is one.
     pub fn active_resource(&self, id: ResourceId) -> Result<Option<Resource>, QueryError> {
         let raw = self

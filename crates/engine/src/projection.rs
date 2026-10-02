@@ -39,8 +39,8 @@ use crate::{
     parser::SourceSpan,
     prepare::{PreparedRange, SourceUnavailable},
     query::{
-        Currentness, Located, ResourceLocator, ResourceScope, SymbolCandidate, SymbolQuery,
-        SymbolSelector,
+        Currentness, Located, ResourceLocator, ResourceScope, StructuralCoverage, SymbolCandidate,
+        SymbolQuery, SymbolSelector,
     },
     related_tests::RelatedTestCandidate,
     relations::{Direction, RelationGap, RelationResult},
@@ -458,6 +458,31 @@ pub struct TargetSelection {
     pub located: Located<GraphEndpoint>,
 }
 
+/// #58: one Resource's current Symbols, compactly and in source order --
+/// derived from the stored Symbol rows, never a summary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResourceOutline {
+    pub resource: ResourceId,
+    pub path_rel: String,
+    pub resource_revision: String,
+    /// How far the structural extraction covers this Resource; an empty
+    /// outline of an unsupported file is not "no declarations".
+    pub coverage: StructuralCoverage,
+    pub entries: Vec<OutlineEntry>,
+}
+
+/// One declaration of a [`ResourceOutline`]: identity, kind, name and
+/// its line range (the span's own 0-based lines).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutlineEntry {
+    pub symbol: SymbolId,
+    pub parent: Option<SymbolId>,
+    pub kind: SymbolKind,
+    pub name: String,
+    pub start_line: usize,
+    pub end_line: usize,
+}
+
 /// What a coverage report is about.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CoverageSubject {
@@ -542,6 +567,8 @@ pub enum EvidenceItem {
         staleness: Staleness,
     },
     TargetSelection(TargetSelection),
+    /// #58: an exactly selected Resource's outline.
+    Outline(ResourceOutline),
     Coverage(CoverageEvidence),
     SourceUnavailable {
         resource: ResourceId,
@@ -579,6 +606,7 @@ impl EvidenceItem {
             | Self::GenerationReference { .. }
             | Self::WorkStaleness { .. }
             | Self::TargetSelection(_)
+            | Self::Outline(_)
             | Self::Coverage(_)
             | Self::SourceUnavailable { .. }
             | Self::IndexCurrentness { .. } => EvidenceOrigin::Derived,

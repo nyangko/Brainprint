@@ -18,9 +18,9 @@ use sha2::{Digest, Sha256};
 
 use super::{
     ChangeKind, CoverageEvidence, CoverageSubject, DeliveryHint, EvidenceItem, GenerationBasis,
-    PlannedSourceRange, PreparedProjection, ProjectionCorrelation, ProjectionGap, ProjectionIntent,
-    ProjectionKnowledgeRefs, ProjectionRequest, ProjectionTarget, Relevance, ResourceTarget,
-    SourceRequirement, SymbolName, SymbolTarget, TargetSelection,
+    OutlineEntry, PlannedSourceRange, PreparedProjection, ProjectionCorrelation, ProjectionGap,
+    ProjectionIntent, ProjectionKnowledgeRefs, ProjectionRequest, ProjectionTarget, Relevance,
+    ResourceOutline, ResourceTarget, SourceRequirement, SymbolName, SymbolTarget, TargetSelection,
 };
 use crate::{
     coverage::{CoverageLimit, CoverageReport},
@@ -409,6 +409,8 @@ fields! {
     SourceVerification { expected_content_hash, observed_content_hash, currentness }
     PreparedRange { resource, path_rel, resource_revision, span, source, role, verification }
     TargetSelection { selector, located }
+    ResourceOutline { resource, path_rel, resource_revision, coverage, entries }
+    OutlineEntry { symbol, parent, kind, name, start_line, end_line }
     CoverageEvidence { subject, report, confirmed }
     PlannedSourceRange { resource, resource_revision, span, role, requirement }
     DeliveryHint { relevance, impact_depth }
@@ -904,6 +906,10 @@ impl Canonical for EvidenceItem {
                 out.tag(23);
                 workspace.encode(out);
                 currentness.encode(out);
+            }
+            Self::Outline(outline) => {
+                out.tag(24);
+                outline.encode(out);
             }
         }
     }

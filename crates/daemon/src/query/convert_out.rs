@@ -1321,6 +1321,7 @@ fn range_role_wire(role: RangeRole) -> RangeRoleWire {
         RangeRole::ContainingDeclaration => RangeRoleWire::ContainingDeclaration,
         RangeRole::AnchorDeclaration => RangeRoleWire::AnchorDeclaration,
         RangeRole::CandidateDeclaration => RangeRoleWire::CandidateDeclaration,
+        RangeRole::MemberDeclaration => RangeRoleWire::MemberDeclaration,
     }
 }
 
@@ -1431,6 +1432,24 @@ fn evidence_item_wire(item: EvidenceItem) -> EvidenceWire {
         EvidenceItem::TargetSelection(selection) => {
             EvidenceWire::TargetSelection(target_selection_wire(selection))
         }
+        EvidenceItem::Outline(outline) => EvidenceWire::Outline(ResourceOutlineWire {
+            resource: outline.resource,
+            path_rel: outline.path_rel,
+            resource_revision: outline.resource_revision,
+            coverage: structural_coverage_wire(outline.coverage),
+            entries: outline
+                .entries
+                .into_iter()
+                .map(|entry| OutlineEntryWire {
+                    symbol: entry.symbol,
+                    parent: entry.parent,
+                    kind: symbol_kind_wire(entry.kind),
+                    name: entry.name,
+                    start_line: entry.start_line,
+                    end_line: entry.end_line,
+                })
+                .collect(),
+        }),
         EvidenceItem::Coverage(evidence) => {
             EvidenceWire::Coverage(coverage_evidence_wire(evidence))
         }

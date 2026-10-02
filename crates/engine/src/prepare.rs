@@ -88,6 +88,9 @@ pub enum RangeRole {
     /// One of several declarations a symbol selector could not choose
     /// between: its current source, so the choice needs no file read.
     CandidateDeclaration,
+    /// #58: a top-level declaration of an exactly selected Resource -- the
+    /// file's own content, never an anchor it does not have.
+    MemberDeclaration,
 }
 
 /// One verified slice of current source, read once and shared by

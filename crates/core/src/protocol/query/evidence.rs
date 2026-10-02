@@ -5,7 +5,8 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     common::{
-        CoverageNoteWire, CurrentnessWire, ResourceWire, SourceSpanWire, SymbolCandidateWire,
+        CoverageNoteWire, CurrentnessWire, ResourceWire, SourceSpanWire, StructuralCoverageWire,
+        SymbolCandidateWire,
     },
     knowledge::{
         BlueprintEvidenceWire, DecisionWire, KnowledgeConflictWire, PolicyWire, ProjectStateWire,
@@ -13,9 +14,31 @@ use super::{
         WorkOverlapWire, WorkResultWire, WorkingStateWire,
     },
     relations::{RelatedTestCandidateWire, RelationGapWire, RelationResultWire},
-    target::{GraphEndpointWire, ProjectionTargetWire, RelationKindWire},
+    target::{GraphEndpointWire, ProjectionTargetWire, RelationKindWire, SymbolKindWire},
 };
-use crate::{ResourceId, WorkItemId, WorkspaceId};
+use crate::{ResourceId, SymbolId, WorkItemId, WorkspaceId};
+
+/// Mirrors `brainprint_engine::projection::ResourceOutline` (#58).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResourceOutlineWire {
+    pub resource: ResourceId,
+    pub path_rel: String,
+    pub resource_revision: String,
+    pub coverage: StructuralCoverageWire,
+    pub entries: Vec<OutlineEntryWire>,
+}
+
+/// Mirrors `brainprint_engine::projection::OutlineEntry`; lines are the
+/// span's own 0-based lines.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OutlineEntryWire {
+    pub symbol: SymbolId,
+    pub parent: Option<SymbolId>,
+    pub kind: SymbolKindWire,
+    pub name: String,
+    pub start_line: usize,
+    pub end_line: usize,
+}
 
 /// Mirrors `brainprint_engine::impact::ImpactIntent`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -167,6 +190,7 @@ pub enum RangeRoleWire {
     ContainingDeclaration,
     AnchorDeclaration,
     CandidateDeclaration,
+    MemberDeclaration,
 }
 
 /// Mirrors `brainprint_engine::inspect::SourceVerification`.
@@ -252,6 +276,8 @@ pub enum EvidenceWire {
         staleness: StalenessWire,
     },
     TargetSelection(TargetSelectionWire),
+    /// #58: an exactly selected Resource's outline.
+    Outline(ResourceOutlineWire),
     Coverage(CoverageEvidenceWire),
     SourceUnavailable {
         resource: ResourceId,

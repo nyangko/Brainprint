@@ -1537,3 +1537,150 @@ fn a_selected_source_whose_correction_never_fits_is_an_error() {
         other => panic!("{other:?}"),
     }
 }
+
+// -------------------------------------------------------- #58 packets
+
+#[test]
+fn a_file_inspect_is_an_outline_and_its_declarations_before_relations() {
+    let fixture = Fixture::standard("file-packet");
+    let planner = fixture.planner();
+    let request = fixture.request(
+        ProjectionIntent::Understand,
+        Some(ProjectionTarget::Resource(ResourceTarget::Path(
+            "src/app.ts".to_owned(),
+        ))),
+    );
+    let projection = planner.plan(&request).expect("plan");
+    let page = first(&planner, &request, &projection, &items(16));
+
+    let outline = page
+        .evidence
+        .iter()
+        .find_map(|item| match item {
+            EvidenceItem::Outline(outline) => Some(outline),
+            _ => None,
+        })
+        .expect("an outline");
+    assert_eq!(outline.path_rel, "src/app.ts");
+    let names: Vec<_> = outline
+        .entries
+        .iter()
+        .map(|entry| entry.name.as_str())
+        .collect();
+    assert_eq!(names, ["run"]);
+    assert_eq!(
+        (outline.entries[0].start_line, outline.entries[0].end_line),
+        (2, 5)
+    );
+
+    // The declaration's own source arrives, marked as the file's member,
+    // never as an anchor the file does not have, and ahead of relations.
+    let position = |pick: &dyn Fn(&EvidenceItem) -> bool| page.evidence.iter().position(pick);
+    let member = position(&|item| {
+        matches!(item, EvidenceItem::CurrentSource(range)
+            if range.role == RangeRole::MemberDeclaration
+                && range.source.starts_with("function run("))
+    })
+    .expect("the declaration source");
+    assert!(page.evidence.iter().all(|item| !matches!(item,
+        EvidenceItem::CurrentSource(range) if range.role == RangeRole::AnchorDeclaration)));
+    if let Some(relation) = position(&|item| matches!(item, EvidenceItem::Relation(_))) {
+        assert!(member < relation);
+    }
+}
+
+#[test]
+fn a_small_budget_understand_is_a_useful_prefix_and_a_remainder_chain() {
+    let fixture = Fixture::standard("small-budget");
+    let planner = fixture.planner();
+    let request = fixture.request(
+        ProjectionIntent::Understand,
+        Some(ProjectionTarget::Endpoint(
+            fixture.endpoint("src/app.ts", "run"),
+        )),
+    );
+    let projection = planner.plan(&request).expect("plan");
+    let (required_items, _) = required_cost(&planner, &request, &projection);
+    assert!(required_items > 2, "a bundle to cut: {required_items}");
+
+    // Two items: the bundle does not fit, its prefix does.
+    let pages = chain(&planner, &request, &projection, &items(2), None);
+    let head = &pages[0];
+    assert!(head.used_items <= 2 && head.used_items > 0);
+    assert!(head.more_available);
+    assert_eq!(
+        head.continuation
+            .as_ref()
+            .expect("a remainder cursor")
+            .next()
+            .tier(),
+        0
+    );
+    // The chain owes nothing: every unit of the unbounded delivery arrives
+    // exactly once, the whole required bundle first.
+    let whole = first(&planner, &request, &projection, &items(10_000));
+    let delivered = flatten(&pages);
+    assert_eq!(delivered.len(), whole.evidence.len());
+    for item in &whole.evidence {
+        assert_eq!(delivered.iter().filter(|got| *got == item).count(), 1);
+    }
+    assert_eq!(
+        &delivered[..required_items],
+        &whole.evidence[..required_items]
+    );
+
+    // A change bundle stays atomic.
+    let change = fixture.request(
+        ProjectionIntent::Change(None),
+        Some(ProjectionTarget::Endpoint(
+            fixture.endpoint("src/app.ts", "run"),
+        )),
+    );
+    let change_projection = planner.plan(&change).expect("plan");
+    assert!(matches!(
+        planner.deliver(&change, &change_projection, &items(2), None, None),
+        Err(DeliveryError::BudgetTooSmallForRequiredEvidence { .. })
+    ));
+}
+
+#[test]
+fn an_ambiguous_selector_names_each_candidate() {
+    let fixture = Fixture::standard("ambiguous-descriptor");
+    let planner = fixture.planner();
+    for intent in [ProjectionIntent::Locate, ProjectionIntent::Understand] {
+        let request = fixture.request(
+            intent,
+            Some(ProjectionTarget::Symbol(SymbolTarget::new(
+                SymbolName::Name("run".to_owned()),
+            ))),
+        );
+        let projection = planner.plan(&request).expect("plan");
+        let page = first(&planner, &request, &projection, &items(64));
+        let mut named: Vec<_> = page
+            .evidence
+            .iter()
+            .filter_map(|item| match item {
+                EvidenceItem::Symbol(candidate) => Some((
+                    candidate.path_rel.as_str(),
+                    candidate.symbol.name.as_str(),
+                    candidate.symbol.kind,
+                )),
+                _ => None,
+            })
+            .collect();
+        named.sort_unstable_by_key(|(path, ..)| *path);
+        assert_eq!(
+            named,
+            [
+                ("src/app.ts", "run", crate::symbol::SymbolKind::Function),
+                (
+                    "src/util/run.ts",
+                    "run",
+                    crate::symbol::SymbolKind::Function
+                )
+            ],
+            "{intent:?}"
+        );
+        assert!(page.gaps.contains(&ProjectionGap::TargetAmbiguous));
+    }
+}

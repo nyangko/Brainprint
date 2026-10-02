@@ -760,7 +760,7 @@ async fn a_storage_failure_is_internal_and_writes_nothing() {
 #[tokio::test]
 async fn the_protocol_version_is_pinned() {
     // #50 introduced v4; #51 bumped it to 5 (`Observe`), #52 to 6.
-    assert_eq!(PROTOCOL_VERSION, 10);
+    assert_eq!(PROTOCOL_VERSION, 11);
 }
 
 /// Old client → new daemon: refused at handshake; a Work request sent
