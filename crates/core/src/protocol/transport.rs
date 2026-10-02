@@ -44,6 +44,13 @@ mod platform {
             let (stream, _addr) = self.0.accept().await?;
             Ok(ServerConnection(stream))
         }
+
+        /// #59: release the endpoint. A Unix listener is released the
+        /// moment it is dropped; this exists so callers need not branch
+        /// on platform (see the Windows `close`).
+        pub async fn close(self) {
+            drop(self);
+        }
     }
 
     impl ClientConnection {
@@ -127,6 +134,23 @@ mod platform {
                 accepted: rx,
                 instance_tasks,
             })
+        }
+
+        /// #59: release the pipe name deterministically. `Drop` only
+        /// *requests* the instance tasks' cancellation; each task -- and
+        /// the `NamedPipeServer` instance it owns -- is actually dropped
+        /// when the runtime next polls it, so a re-bind right after a drop
+        /// can still find an instance alive and fail
+        /// `first_pipe_instance(true)` with `ERROR_ACCESS_DENIED`. This
+        /// returns only once every instance is gone.
+        pub async fn close(mut self) {
+            let tasks = std::mem::take(&mut self.instance_tasks);
+            for task in &tasks {
+                task.abort();
+            }
+            for task in tasks {
+                let _ = task.await;
+            }
         }
 
         pub async fn accept(&mut self) -> io::Result<ServerConnection> {

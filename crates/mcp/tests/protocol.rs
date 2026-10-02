@@ -8,6 +8,7 @@
 
 use std::time::Duration;
 
+use brainprint_core::protocol::EndpointPaths;
 use brainprint_mcp::BrainprintMcp;
 use rmcp::{
     ServiceExt,
@@ -73,15 +74,19 @@ async fn initialize_and_tools_list_exposes_exactly_four_brainprint_tools() {
 }
 
 /// #25 acceptance 5: "daemon unavailable -> compact typed tool failure,
-/// no panic." This test process sets no `brainprintd` socket/pipe up
-/// anywhere, so `EndpointPaths::resolve()`'s real ambient endpoint is
-/// unoccupied and every `tools/call` here exercises exactly that path.
+/// no panic." #59: the endpoint is derived from a fresh runtime root
+/// nothing ever binds, never the ambient `EndpointPaths::resolve()` one
+/// -- a live user `brainprintd` in the real HOME would occupy that, and
+/// this test must neither depend on it nor connect to it.
 #[tokio::test(flavor = "multi_thread")]
 async fn tools_call_with_no_daemon_running_is_a_typed_failure_not_a_panic() {
     let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+    let unbound = EndpointPaths::from_runtime_root(
+        std::env::temp_dir().join(format!("bp-mcp-no-daemon-{}", std::process::id())),
+    );
 
     let server = tokio::spawn(async move {
-        let running = BrainprintMcp::new(std::env::temp_dir())
+        let running = BrainprintMcp::with_endpoint(std::env::temp_dir(), unbound)
             .serve(server_io)
             .await
             .expect("server should start on the duplex transport");

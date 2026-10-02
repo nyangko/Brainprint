@@ -647,8 +647,9 @@ impl Fixture {
             .send(())
             .expect("serving");
         let server = self.server.take().expect("running").await.expect("task");
-        server.shutdown().await;
-        drop(server);
+        // #59: returns only once the endpoint is released, so the re-bind
+        // below never meets a still-alive Windows pipe instance.
+        server.close().await;
         let (stop, server, runtime) = serve(&self.global_paths).await;
         (self.stop, self.server, self.runtime) = (Some(stop), Some(server), runtime);
     }

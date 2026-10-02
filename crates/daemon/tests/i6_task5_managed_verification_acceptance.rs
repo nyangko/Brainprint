@@ -1013,9 +1013,9 @@ fn clean_shutdown_interrupts_and_restart_reruns_nothing() {
         stop.send(()).expect("server running");
         let server = server.await.expect("server task");
         let began = Instant::now();
-        server.shutdown().await;
+        // #59: shutdown, then the endpoint released before the re-bind.
+        server.close().await;
         assert!(began.elapsed() < Duration::from_millis(LATE_MS));
-        drop(server);
 
         let mut store = VerificationJobStore::open(&paths.workspace_db).expect("db");
         let stored = store.get_by_id(job).expect("get").expect("job");

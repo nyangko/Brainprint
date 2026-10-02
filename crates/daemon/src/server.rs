@@ -73,6 +73,9 @@ impl From<io::Error> for StartError {
 #[derive(Debug)]
 pub struct Server {
     listener: Listener,
+    /// #59: every accepted connection's task, so [`Self::close`] can end
+    /// them and know their endpoint handles are released.
+    connections: tokio::task::JoinSet<()>,
     endpoint: RuntimeEndpoint,
     state: DaemonState,
     global_paths: GlobalPaths,
@@ -146,6 +149,7 @@ impl Server {
 
         Ok(Self {
             listener,
+            connections: tokio::task::JoinSet::new(),
             endpoint,
             state: DaemonState::new(),
             query_runtime: Arc::new(query_runtime),
@@ -163,7 +167,9 @@ impl Server {
             let state = self.state;
             let global_paths = self.global_paths.clone();
             let query_runtime = Arc::clone(&self.query_runtime);
-            tokio::spawn(async move {
+            // Finished connections are reaped as new ones arrive.
+            while self.connections.try_join_next().is_some() {}
+            self.connections.spawn(async move {
                 // A single client's connection failing must never take
                 // down the daemon or any other client's connection.
                 let _ = handle_connection(connection, state, global_paths, query_runtime).await;
@@ -177,6 +183,16 @@ impl Server {
     pub async fn shutdown(&self) {
         self.query_runtime.managed_shutdown().await;
         self.cleanup();
+    }
+
+    /// #59: [`Self::shutdown`], then release the endpoint completely:
+    /// every connection task is ended and awaited and the listener is
+    /// closed, so the same endpoint can be bound again at once -- on
+    /// Windows a still-alive pipe instance would refuse that bind.
+    pub async fn close(mut self) {
+        self.shutdown().await;
+        self.connections.shutdown().await;
+        self.listener.close().await;
     }
 
     /// Remove this instance's runtime artifacts (raw-output store,
