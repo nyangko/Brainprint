@@ -451,6 +451,40 @@ const fn requires_current(operation: &QueryOperationWire) -> bool {
     !matches!(operation, QueryOperationWire::Knowledge(_))
 }
 
+/// Enforce the #38 currentness gate before dispatching a query.
+///
+/// A recovery failure on an existing lifecycle is non-fatal because
+/// `WorkspaceLifecycle::ensure_current` fails closed by marking the index
+/// DIRTY. If the lifecycle itself could not be constructed, there is no
+/// currentness proof path at all: current-dependent queries must not reach
+/// the query surface even if that surface happened to bind successfully.
+fn freshness_barrier(
+    workspace: WorkspaceId,
+    required: bool,
+    lifecycle: &mut Result<WorkspaceLifecycle, String>,
+) -> Result<(), QueryErrorWire> {
+    if !required {
+        return Ok(());
+    }
+    match lifecycle {
+        Ok(lifecycle) => {
+            if let Err(error) = lifecycle.ensure_current() {
+                // Not fatal to the query: recovery failure leaves the
+                // index DIRTY, and the query reports NOT_CURRENT.
+                eprintln!("brainprintd: workspace {workspace} freshness recovery failed: {error}");
+            }
+            Ok(())
+        }
+        Err(error) => {
+            // The surface and lifecycle bind independently. A race or
+            // lifecycle-only failure must never let a current-dependent
+            // query bypass #38's freshness proof.
+            let error = std::io::Error::other(error.clone());
+            Err(convert_out::daemon_internal("freshness", &error))
+        }
+    }
+}
+
 /// One Workspace's dedicated blocking worker thread: opens
 /// `CoreQuerySurface` once, then serves jobs until the channel closes
 /// (daemon lifetime; no P0 eviction, #24 §14). Between jobs it journals
@@ -486,27 +520,22 @@ fn worker_loop(
                 correlation,
                 reply,
             } => {
-                if requires_current(&operation)
-                    && let Ok(lifecycle) = &mut lifecycle
-                    && let Err(error) = lifecycle.ensure_current()
-                {
-                    // Not fatal to the query: recovery failure leaves the
-                    // index DIRTY, and the query reports NOT_CURRENT.
-                    eprintln!(
-                        "brainprintd: workspace {workspace} freshness recovery failed: {error}"
-                    );
-                }
-                let outcome = match &surface {
-                    Ok(surface) => run_query(
-                        surface,
-                        semantic.as_mut(),
-                        &mut ledger,
-                        &mut pending,
-                        workspace,
-                        operation,
-                        correlation,
-                    ),
-                    Err(error) => Err(convert_out::core_error(clone_core_error(error))),
+                let freshness =
+                    freshness_barrier(workspace, requires_current(&operation), &mut lifecycle);
+                let outcome = match freshness {
+                    Err(error) => Err(error),
+                    Ok(()) => match &surface {
+                        Ok(surface) => run_query(
+                            surface,
+                            semantic.as_mut(),
+                            &mut ledger,
+                            &mut pending,
+                            workspace,
+                            operation,
+                            correlation,
+                        ),
+                        Err(error) => Err(convert_out::core_error(clone_core_error(error))),
+                    },
                 };
                 let _ = reply.send(outcome);
             }
@@ -774,4 +803,30 @@ fn run_query(
         token
     });
     Ok((result_wire, ack_token))
+}
+
+#[cfg(test)]
+mod tests {
+    use brainprint_core::protocol::query::QueryErrorCodeWire;
+
+    use super::*;
+
+    #[test]
+    fn missing_lifecycle_fails_closed_for_current_dependent_query() {
+        let mut lifecycle = Err("deterministic lifecycle load failure".to_owned());
+
+        let error = freshness_barrier(WorkspaceId::generate(), true, &mut lifecycle)
+            .expect_err("a current-dependent query must not bypass a missing lifecycle");
+
+        assert_eq!(error.code, QueryErrorCodeWire::DaemonInternal);
+        assert!(error.detail.is_none());
+    }
+
+    #[test]
+    fn missing_lifecycle_does_not_block_non_current_query() {
+        let mut lifecycle = Err("deterministic lifecycle load failure".to_owned());
+
+        freshness_barrier(WorkspaceId::generate(), false, &mut lifecycle)
+            .expect("Knowledge-style queries do not require structural currentness");
+    }
 }
