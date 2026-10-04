@@ -38,6 +38,7 @@ use brainprint_daemon::{
     server::Server,
 };
 use brainprint_engine::{
+    generation::{GenerationState, GenerationStore},
     knowledge::{
         NewPolicy, NewWorkItem, PriorityClass, ProjectKnowledgeStore, ProtectionClass, Provenance,
         SourceKind, WorkItemSourceKind, WorkRuntime,
@@ -542,6 +543,28 @@ fn git(args: &[&str], cwd: &Path) {
     );
 }
 
+/// A committed project home and a secondary worktree of it: (main, the
+/// secondary's parent dir to keep alive, the secondary's root).
+fn worktree_pair() -> (TestDir, TestDir, PathBuf) {
+    let main = TestDir::create("wt-main");
+    write_sources(main.path());
+    git(&["init", "-q"], main.path());
+    git(&["add", "src"], main.path());
+    git(&["commit", "-q", "-m", "init"], main.path());
+    let parent = TestDir::create("wt-parent");
+    let secondary = parent.path().join("feature");
+    // Git cannot create directories under a Windows verbatim (`\\?\`)
+    // path, which `canonicalize` returns there.
+    let target = secondary.to_string_lossy().into_owned();
+    let target = target.strip_prefix(r"\\?\").unwrap_or(&target);
+    git(
+        &["worktree", "add", "-q", "-b", "feature", target],
+        main.path(),
+    );
+    let secondary = secondary.canonicalize().expect("canonical");
+    (main, parent, secondary)
+}
+
 // ================================================================= sync
 
 #[tokio::test]
@@ -852,23 +875,7 @@ async fn uninit_of_the_project_home_leaves_its_worktree_untouched() {
     let home = TestDir::create("home");
     let global = GlobalPaths::from_home(home.path());
     let daemon = Daemon::start(&global, None).await;
-
-    let main = TestDir::create("wt-main");
-    write_sources(main.path());
-    git(&["init", "-q"], main.path());
-    git(&["add", "src"], main.path());
-    git(&["commit", "-q", "-m", "init"], main.path());
-    let parent = TestDir::create("wt-parent");
-    let secondary = parent.path().join("feature");
-    // Git cannot create directories under a Windows verbatim (`\\?\`)
-    // path, which `canonicalize` returns there.
-    let target = secondary.to_string_lossy().into_owned();
-    let target = target.strip_prefix(r"\\?\").unwrap_or(&target);
-    git(
-        &["worktree", "add", "-q", "-b", "feature", target],
-        main.path(),
-    );
-    let secondary = secondary.canonicalize().expect("canonical");
+    let (main, _parent, secondary) = worktree_pair();
 
     let a = daemon.init(main.path()).await;
     let b = daemon.init(&secondary).await;
@@ -929,6 +936,295 @@ async fn uninit_of_the_project_home_leaves_its_worktree_untouched() {
     assert_eq!(again.workspace_id, a.workspace_id);
     assert_eq!(registry_state(&global, a_id), "ACTIVE");
     assert_eq!(registry_state(&global, b_id), "ACTIVE");
+    daemon.stop().await;
+}
+
+// ================================================= #64 recovery / worktree
+
+/// The Working State a Workspace's own query reports, as text.
+async fn work_items(daemon: &Daemon, workspace: WorkspaceId) -> String {
+    let result = daemon
+        .query(
+            workspace,
+            QueryOperationWire::Knowledge(KnowledgeWire::WorkItems {
+                statuses: vec![WorkItemStatusWire::Open],
+                limit: NonZeroUsize::new(10).expect("nz"),
+            }),
+        )
+        .await;
+    format!("{result:?}")
+}
+
+/// The Project rules a Workspace's own query reports, as text.
+async fn rules(daemon: &Daemon, workspace: WorkspaceId) -> String {
+    let result = daemon
+        .query(
+            workspace,
+            QueryOperationWire::Knowledge(KnowledgeWire::Rules {
+                scope_layers: Vec::new(),
+                directives: Vec::new(),
+                knowledge_refs: ProjectionKnowledgeRefsWire::default(),
+            }),
+        )
+        .await;
+    format!("{result:?}")
+}
+
+/// #64: a crash left a BUILDING generation behind and the tree changed
+/// while no daemon ran. The first plain query after restart -- no init,
+/// sync, rebuild or sleep -- serves the filesystem truth from a new STABLE
+/// generation; the orphan is never current; Working State survives; the
+/// watcher is attached again.
+#[tokio::test]
+async fn a_restart_after_a_crash_mid_generation_serves_the_filesystem_truth() {
+    let home = TestDir::create("home");
+    let global = GlobalPaths::from_home(home.path());
+    let workspace = fixture_workspace("crash");
+    let root = workspace.path();
+    let daemon = Daemon::start(&global, None).await;
+    let id = daemon.init_id(root).await;
+    seed_work_item(root, id, "survive the crash");
+    daemon.stop().await;
+
+    // The crash: a generation begun and never published or aborted.
+    let index = WorkspacePaths::from_root(root).index_db;
+    let (stable, orphan) = {
+        let store = GenerationStore::open(&index).expect("index.db");
+        let stable = store.current_stable().expect("current").expect("stable");
+        let orphan = store
+            .begin_generation(&stable.basis_workspace_revision)
+            .expect("begin");
+        (stable, orphan)
+    };
+    let work = WorkspacePaths::from_root(root).workspace_db;
+    let knowledge = rows(&work);
+    fs::write(
+        root.join("src/shared.ts"),
+        "export function helper(): number {\n  return 7;\n}\n",
+    )
+    .expect("modify");
+    fs::remove_file(root.join("src/app.ts")).expect("delete");
+    fs::write(
+        root.join("src/late.ts"),
+        "export function late(): number {\n  return 3;\n}\n",
+    )
+    .expect("create");
+
+    let daemon = Daemon::start(&global, None).await;
+    let (files, current) = daemon.files(id).await;
+    assert!(current);
+    assert_eq!(files, ["src/late.ts", "src/shared.ts"]);
+    assert!(
+        daemon
+            .inspect(id, "helper")
+            .await
+            .expect("helper")
+            .contains("return 7")
+    );
+    assert!(daemon.inspect(id, "late").await.is_some());
+    assert!(daemon.inspect(id, "run").await.is_none());
+
+    let store = GenerationStore::open(&index).expect("index.db");
+    let now = store.current_stable().expect("current").expect("stable");
+    assert!(now.generation_no > stable.generation_no);
+    assert_ne!(now.id, orphan.id, "the orphan is never current");
+    let orphan = store.get_generation(orphan.id).expect("get").expect("row");
+    // Lazy activation leaves the orphan BUILDING (only `init` aborts it);
+    // what matters is that it never becomes current.
+    assert_ne!(orphan.state, GenerationState::Stable);
+    assert_eq!(rows(&work), knowledge, "Working State survives");
+    assert!(work_items(&daemon, id).await.contains("survive the crash"));
+
+    // The watcher is back: a live edit is seen without a sync.
+    let stats = daemon.runtime.lifecycle_stats(id).await.expect("runtime");
+    assert!(stats.watcher_attached);
+    fs::write(
+        root.join("src/live.ts"),
+        "export function live(): number {\n  return 5;\n}\n",
+    )
+    .expect("live edit");
+    let mut seen = false;
+    for _ in 0..100 {
+        if daemon.inspect(id, "live").await.is_some() {
+            seen = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(seen, "the restarted watcher reports a live edit");
+    daemon.stop().await;
+}
+
+/// #64: worktree A's edit, sync, rebuild, uninit/re-init and a daemon
+/// restart never move worktree B's generations, Working State, source or
+/// watcher -- and B's sync never moves A. Project knowledge stays shared.
+#[tokio::test]
+async fn one_worktrees_lifecycle_never_moves_the_other() {
+    let home = TestDir::create("home");
+    let global = GlobalPaths::from_home(home.path());
+    let daemon = Daemon::start(&global, None).await;
+    let (main, _parent, secondary) = worktree_pair();
+    let a = daemon.init(main.path()).await;
+    let b = daemon.init(&secondary).await;
+    assert_eq!(a.project_id, b.project_id);
+    assert_ne!(a.workspace_id, b.workspace_id);
+    let a_id: WorkspaceId = a.workspace_id.parse().expect("id");
+    let b_id: WorkspaceId = b.workspace_id.parse().expect("id");
+    seed_policy(main.path(), "i7-task3-shared");
+    seed_work_item(main.path(), a_id, "work only in A");
+    seed_work_item(&secondary, b_id, "work only in B");
+
+    let b_state = || {
+        (
+            generations(&secondary),
+            durable(&secondary),
+            snapshot(&secondary),
+        )
+    };
+    let b_before = b_state();
+    let b_watch = daemon.runtime.lifecycle_stats(b_id).await.expect("B");
+
+    // A: edit + sync, rebuild, uninit + init.
+    fs::write(
+        main.path().join("src/only_a.ts"),
+        "export function onlyA(): number {\n  return 1;\n}\n",
+    )
+    .expect("edit A");
+    let a_synced = synced(&daemon.sync(main.path()).await.expect("sync A"));
+    assert!(a_synced.after_generation > a_synced.before_generation);
+    let Response::Rebuild(_) = daemon
+        .send(Request::Rebuild(RebuildRequest {
+            path: path(main.path()),
+        }))
+        .await
+    else {
+        panic!("rebuild A")
+    };
+    daemon.uninit(main.path()).await.expect("uninit A");
+    daemon.init(main.path()).await;
+
+    assert_eq!(b_state(), b_before);
+    let b_still = daemon.runtime.lifecycle_stats(b_id).await.expect("B runs");
+    assert!(b_still.watcher_attached);
+    assert_eq!(
+        b_still.watcher_attach_attempts,
+        b_watch.watcher_attach_attempts
+    );
+    assert!(daemon.inspect(b_id, "onlyA").await.is_none());
+
+    // A daemon restart: B comes back on its own query, unchanged.
+    daemon.stop().await;
+    let daemon = Daemon::start(&global, None).await;
+    assert!(daemon.inspect(a_id, "onlyA").await.is_some());
+    let (b_files, current) = daemon.files(b_id).await;
+    assert!(current);
+    assert_eq!(b_files, [".git", "src/app.ts", "src/shared.ts"]);
+    assert_eq!(b_state(), b_before);
+
+    // Working State is per Workspace; the Project's rules are shared.
+    let (a_work, b_work) = (
+        work_items(&daemon, a_id).await,
+        work_items(&daemon, b_id).await,
+    );
+    assert!(a_work.contains("work only in A") && !a_work.contains("work only in B"));
+    assert!(b_work.contains("work only in B") && !b_work.contains("work only in A"));
+    for workspace in [a_id, b_id] {
+        assert!(
+            rules(&daemon, workspace)
+                .await
+                .contains("keep helper() pure")
+        );
+    }
+
+    // The other direction: B's edit + sync never moves A.
+    let a_generations = generations(main.path());
+    fs::write(
+        secondary.join("src/only_b.ts"),
+        "export function onlyB(): number {\n  return 2;\n}\n",
+    )
+    .expect("edit B");
+    let b_synced = synced(&daemon.sync(&secondary).await.expect("sync B"));
+    assert!(b_synced.after_generation > b_synced.before_generation);
+    assert!(daemon.inspect(b_id, "onlyB").await.is_some());
+    assert!(daemon.inspect(a_id, "onlyB").await.is_none());
+    assert_eq!(generations(main.path()), a_generations);
+    daemon.stop().await;
+}
+
+/// #64: a file in no supported language is still a Resource -- listed,
+/// text-searchable, synced -- and its relations say Unsupported, never a
+/// complete zero. No backend is configured, so this is also the "backend
+/// missing" Workspace: the TypeScript next to it stays structurally usable.
+#[tokio::test]
+async fn an_unsupported_language_file_is_usable_and_never_a_false_zero() {
+    let home = TestDir::create("home");
+    let global = GlobalPaths::from_home(home.path());
+    let daemon = Daemon::start(&global, Some(deaf())).await;
+    let workspace = fixture_workspace("unsupported");
+    let root = workspace.path();
+    fs::write(
+        root.join("src/main.go"),
+        "package main\n\nfunc gopherOnly() int { return helper() }\n",
+    )
+    .expect("go file");
+    let id = daemon.init_id(root).await;
+
+    let (files, current) = daemon.files(id).await;
+    assert!(current);
+    assert_eq!(files, ["src/app.ts", "src/main.go", "src/shared.ts"]);
+    let text = daemon
+        .query(
+            id,
+            QueryOperationWire::Find(FindQueryWire::Text {
+                pattern: TextPatternWire::Literal("gopherOnly".to_owned()),
+                case_insensitive: false,
+                path_prefix: None,
+                search_budget: SearchBudgetWire {
+                    max_results: 50,
+                    max_files: 500,
+                    max_bytes: 8 * 1024 * 1024,
+                    deadline_ms: Some(1_000),
+                },
+                max_file_bytes: 1024 * 1024,
+                with_preview: true,
+            }),
+        )
+        .await;
+    let text = format!("{text:?}");
+    assert!(
+        text.contains("src/main.go") && text.contains("func gopherOnly()"),
+        "{text}"
+    );
+
+    let QueryResultWire::Relations(answer) = daemon
+        .query(
+            id,
+            QueryOperationWire::Relations(RelationsWire {
+                target: ProjectionTargetWire::Resource(ResourceTargetWire::Path(
+                    "src/main.go".to_owned(),
+                )),
+                direction: RelationDirectionWire::Outgoing,
+                kinds: Vec::new(),
+            }),
+        )
+        .await
+    else {
+        panic!("expected direct relations")
+    };
+    for answer in &answer.answers {
+        assert!(answer.confirmed.is_empty());
+        let scope = answer.coverage.scope.as_ref().expect("scoped coverage");
+        assert_eq!(scope.support, SupportWire::Unsupported, "{answer:?}");
+    }
+    assert!(daemon.inspect(id, "gopherOnly").await.is_none());
+
+    // The supported files beside it keep their structural truth.
+    assert_eq!(daemon.callers(id, "helper").await, 1);
+
+    // An edit to it is synced like any other Resource.
+    fs::write(root.join("src/main.go"), "package main\n").expect("edit");
+    let synced = synced(&daemon.sync(root).await.expect("sync"));
+    assert_eq!((synced.created, synced.updated, synced.deleted), (0, 1, 0));
     daemon.stop().await;
 }
 

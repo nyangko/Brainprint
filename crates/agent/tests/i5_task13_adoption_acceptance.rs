@@ -1886,6 +1886,48 @@ fn a52_a53_no_reference_product_routing() {
     assert!(main.contains("Command::new(client.binary())"));
 }
 
+/// #64: no production crate -- not only the adapter -- names a reference
+/// product, so nothing can spawn or call one. Plain "headroom" is English
+/// (frame headroom); only a string literal naming it counts.
+#[test]
+fn no_production_crate_names_a_reference_product() {
+    let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let mut stack: Vec<_> = fs::read_dir(&crates)
+        .expect("crates")
+        .map(|entry| entry.expect("entry").path().join("src"))
+        .filter(|src| src.is_dir())
+        .collect();
+    assert!(stack.len() > 1, "every crate is scanned");
+    while let Some(dir) = stack.pop() {
+        for entry in fs::read_dir(dir).expect("src dir") {
+            let path = entry.expect("entry").path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            let lower = fs::read_to_string(&path).expect("read").to_lowercase();
+            for product in [
+                "serena",
+                "codegraph",
+                "claude-mem",
+                "claude_mem",
+                "openviking",
+                // A string literal starting with it: a binary, server or
+                // tool name.
+                "\"headroom",
+                "\"rtk\"",
+                "rtk ",
+            ] {
+                assert!(
+                    !lower.contains(product),
+                    "{} names reference product {product}",
+                    path.display()
+                );
+            }
+        }
+    }
+}
+
 #[test]
 fn config_fragments_are_deterministic_and_never_written() {
     let runtime = TempDir::create("config");
