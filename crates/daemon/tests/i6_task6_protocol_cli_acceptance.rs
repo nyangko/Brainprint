@@ -1877,6 +1877,12 @@ fn protocol_12_handshakes_strictly() {
             .expect("cli");
         assert_eq!(output.status.code(), Some(5), "{}", text(&output.stderr));
         assert!(text(&output.stderr).contains("protocol version mismatch"));
+        // #66: the stale side and the remedy are named.
+        assert!(
+            text(&output.stderr).contains("the running brainprintd is older"),
+            "{}",
+            text(&output.stderr)
+        );
         assert_eq!(fake_v11.await.expect("fake daemon"), 12);
     });
 }

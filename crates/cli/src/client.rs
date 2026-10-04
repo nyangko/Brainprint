@@ -53,10 +53,21 @@ impl fmt::Display for CliError {
             Self::VersionMismatch {
                 server_protocol_version,
                 client_protocol_version,
-            } => write!(
-                formatter,
-                "protocol version mismatch: brainprintd speaks {server_protocol_version}, this CLI speaks {client_protocol_version} -- update brainprint/brainprintd to matching versions"
-            ),
+            } => {
+                write!(
+                    formatter,
+                    "protocol version mismatch: brainprintd speaks {server_protocol_version}, this CLI speaks {client_protocol_version} -- "
+                )?;
+                // #66: say which side is stale. A CLI is a fresh process
+                // per command, so there is nothing to reconnect.
+                if server_protocol_version < client_protocol_version {
+                    formatter.write_str(
+                        "the running brainprintd is older: stop it and start the matching brainprintd",
+                    )
+                } else {
+                    formatter.write_str("this brainprint CLI is older: run the matching brainprint")
+                }
+            }
             Self::UnexpectedResponse => {
                 formatter.write_str("brainprintd sent an unexpected response for this request")
             }

@@ -54,12 +54,25 @@ impl fmt::Display for DaemonError {
             Self::VersionMismatch {
                 server_protocol_version,
                 client_protocol_version,
-            } => write!(
-                formatter,
-                "protocol version mismatch: brainprintd speaks {server_protocol_version}, \
-                 brainprint-mcp speaks {client_protocol_version} -- update brainprint/brainprintd \
-                 to matching versions"
-            ),
+            } => {
+                write!(
+                    formatter,
+                    "protocol version mismatch: brainprintd speaks {server_protocol_version}, \
+                     brainprint-mcp speaks {client_protocol_version} -- "
+                )?;
+                // #66: say which side is stale. This process outlives a
+                // binary upgrade; Brainprint never restarts its host.
+                if server_protocol_version < client_protocol_version {
+                    formatter.write_str(
+                        "the running brainprintd is older: stop it and start the matching brainprintd",
+                    )
+                } else {
+                    formatter.write_str(
+                        "this brainprint-mcp process is older: restart or reconnect the Brainprint \
+                         MCP server in your Agent client",
+                    )
+                }
+            }
             Self::UnexpectedResponse => {
                 formatter.write_str("brainprintd sent an unexpected response for this request")
             }
