@@ -112,9 +112,10 @@ pub enum Connection {
     Incompatible(String),
 }
 
+/// The Overview: `status <path>` (compact, read-only) and the Working
+/// State summary. The full diagnosis is the Doctor operation.
 pub struct Overview {
     pub status: StatusResponse,
-    pub doctor: DoctorResponse,
     pub work: Result<KnowledgeResultWire, String>,
 }
 
@@ -395,7 +396,8 @@ impl Daemon {
     }
 
     async fn status(&self) -> Result<StatusResponse, Failure> {
-        match self.send(Request::Status(StatusRequest)).await? {
+        let path = Some(self.workspace.clone());
+        match self.send(Request::Status(StatusRequest { path })).await? {
             Response::Status(status) => Ok(status),
             other => Err(unexpected(other)),
         }
@@ -560,7 +562,6 @@ pub async fn perform(app: &mut App, daemon: &Daemon, command: Command) {
 
 async fn refresh_overview(app: &mut App, daemon: &Daemon) -> Result<(), Failure> {
     let status = daemon.status().await?;
-    let doctor = daemon.doctor().await?;
     let work = match daemon
         .query(QueryOperationWire::Knowledge(KnowledgeWire::WorkItems {
             statuses: vec![
@@ -580,11 +581,7 @@ async fn refresh_overview(app: &mut App, daemon: &Daemon) -> Result<(), Failure>
         Err(Failure::Rejected(message)) => Err(message),
         Err(failure @ Failure::Connection(_)) => return Err(failure),
     };
-    app.overview = Some(Overview {
-        status,
-        doctor,
-        work,
-    });
+    app.overview = Some(Overview { status, work });
     Ok(())
 }
 

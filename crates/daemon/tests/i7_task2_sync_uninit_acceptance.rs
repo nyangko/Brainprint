@@ -23,13 +23,14 @@ use brainprint_core::{
     PROTOCOL_VERSION, WorkspaceId,
     protocol::{
         self, ClientConnection, ErrorKind, ErrorResponse, HandshakeRequest, InitRequest,
-        InitResponse, InstallRequest, Request, Response,
+        InitResponse, InstallRequest, Request, Response, StatusRequest, StatusResponse,
         maintenance::{
-            DoctorRequest, DoctorWorkspaceWire, RebuildRequest, SyncRequest, SyncResponse,
-            UninitRequest, UninitResponse, WatcherCheckWire,
+            DoctorRequest, DoctorWorkspaceWire, IndexCheckWire, RebuildRequest, RuntimeCheckWire,
+            StoredBasisWire, SyncRequest, SyncResponse, UninitRequest, UninitResponse,
+            WatcherCheckWire, WorkspaceStatusReportWire, WorkspaceStatusWire,
         },
         query::*,
-        work::{PostCommandRefreshWire, ResourceDeltaKindWire},
+        work::{IndexBasisWire, PostCommandRefreshWire, ResourceDeltaKindWire},
     },
 };
 use brainprint_daemon::{
@@ -1644,6 +1645,153 @@ async fn a_failed_durable_migration_records_nothing_and_keeps_the_rows() {
     daemon.stop().await;
 }
 
+// ======================================================= #70 status
+
+impl Daemon {
+    async fn status(&self, path: Option<&Path>) -> StatusResponse {
+        match self
+            .send(Request::Status(StatusRequest {
+                path: path.map(self::path),
+            }))
+            .await
+        {
+            Response::Status(status) => status,
+            other => panic!("status failed: {other:?}"),
+        }
+    }
+}
+
+fn report(status: &StatusResponse) -> &WorkspaceStatusReportWire {
+    match status.workspace.as_ref().expect("a path-scoped status") {
+        WorkspaceStatusWire::Initialized(report) => report,
+        other => panic!("not initialized: {other:?}"),
+    }
+}
+
+/// The STABLE basis as `index.db` stores it, read independently.
+fn stored(root: &Path) -> IndexBasisWire {
+    let store = GenerationStore::open(&WorkspacePaths::from_root(root).index_db).expect("index");
+    let stable = store.current_stable().expect("stable").expect("published");
+    IndexBasisWire {
+        index_incarnation: store.index_incarnation_id().expect("incarnation"),
+        workspace_revision: store
+            .current_workspace_revision()
+            .expect("clock")
+            .expect("revision"),
+        generation_no: stable.generation_no,
+        generation_basis_revision: stable.basis_workspace_revision,
+    }
+}
+
+/// #70: `status <path>` reports the stored basis as stored, claims
+/// Current only while an active runtime with an attached watcher holds
+/// it, and is read-only: no reconcile, no activation, no backend start.
+#[tokio::test]
+async fn status_reports_the_stored_basis_and_claims_currentness_only_when_held() {
+    let home = TestDir::create("home");
+    let global = GlobalPaths::from_home(home.path());
+    let workspace = fixture_workspace("status");
+    let root = workspace.path();
+    let daemon = Daemon::start(&global, Some(deaf())).await;
+
+    // Daemon-only status: unchanged, no Workspace part.
+    let plain = daemon.status(None).await;
+    assert_eq!(plain.protocol_version, PROTOCOL_VERSION);
+    assert!(plain.workspace.is_none());
+
+    // Active, watcher attached, proven current at init.
+    let init = daemon.init(root).await;
+    let id: WorkspaceId = init.workspace_id.parse().expect("id");
+    let active = daemon.status(Some(root)).await;
+    let active = report(&active);
+    assert_eq!(
+        (&active.project_id, &active.workspace_id),
+        (&init.project_id, &init.workspace_id)
+    );
+    assert_eq!(active.basis, StoredBasisWire::Stable(stored(root)));
+    assert_eq!(active.index, IndexCheckWire::Current);
+    assert_eq!(
+        active.runtime,
+        RuntimeCheckWire::Active {
+            watcher: WatcherCheckWire::Attached
+        }
+    );
+    assert!(
+        active
+            .semantic
+            .iter()
+            .any(|backend| backend.family == "typescript")
+    );
+
+    // Read-only: a change on disk the deaf watcher never reports stays
+    // unreconciled however often status runs.
+    fs::write(root.join("src/late.ts"), "export const late = 1;\n").expect("edit");
+    let (gens, rows, source) = (generations(root), durable(root), snapshot(root));
+    for _ in 0..3 {
+        daemon.status(Some(root)).await;
+    }
+    assert_eq!(generations(root), gens, "status never publishes");
+    assert_eq!(durable(root), rows);
+    assert_eq!(snapshot(root), source);
+    let semantic = daemon.runtime.semantic_stats(id).await.expect("semantic");
+    assert_eq!(semantic.backend_starts, 0);
+
+    // Dirty: the index says so, and status repeats it without settling.
+    Connection::open(WorkspacePaths::from_root(root).index_db)
+        .expect("index.db")
+        .execute(
+            "UPDATE component_state SET freshness_state = 'DIRTY' \
+             WHERE component_kind = 'RESOURCE_INDEX'",
+            [],
+        )
+        .expect("dirty");
+    let dirty = daemon.status(Some(root)).await;
+    assert!(
+        matches!(report(&dirty).index, IndexCheckWire::NotCurrent { .. }),
+        "{:?}",
+        report(&dirty).index
+    );
+    assert_eq!(generations(root), gens);
+
+    // Sync: the status basis is the sync's own `after`.
+    let response = daemon.sync(root).await.expect("sync");
+    let PostCommandRefreshWire::Current { after, .. } = &response.refresh else {
+        panic!("sync is Current")
+    };
+    let synced = daemon.status(Some(root)).await;
+    assert_eq!(
+        report(&synced).basis,
+        StoredBasisWire::Stable(after.clone())
+    );
+    assert_eq!(report(&synced).index, IndexCheckWire::Current);
+    daemon.stop().await;
+
+    // A new daemon holds no runtime: the stored basis is still reported,
+    // currentness is not, and status activates nothing.
+    let daemon = Daemon::start(&global, Some(deaf())).await;
+    let inactive = daemon.status(Some(root)).await;
+    let inactive = report(&inactive);
+    assert_eq!(inactive.basis, StoredBasisWire::Stable(after.clone()));
+    assert!(matches!(inactive.index, IndexCheckWire::NotMeasured { .. }));
+    assert_eq!(inactive.runtime, RuntimeCheckWire::Inactive);
+    assert_eq!(daemon.runtime.workspace_runtime_count(), 0);
+
+    // Detached and never-initialized are typed, as in doctor.
+    daemon.uninit(root).await.expect("uninit");
+    let detached = daemon.status(Some(root)).await;
+    let Some(WorkspaceStatusWire::NotInitialized { reason, .. }) = &detached.workspace else {
+        panic!("{detached:?}")
+    };
+    assert!(reason.contains("WorkspaceDetached"), "{reason}");
+    let elsewhere = TestDir::create("status-none");
+    let none = daemon.status(Some(elsewhere.path())).await;
+    assert!(matches!(
+        none.workspace,
+        Some(WorkspaceStatusWire::NotInitialized { .. })
+    ));
+    daemon.stop().await;
+}
+
 // ================================================================== CLI
 
 fn cli(home: &Path, args: &[&str]) -> Output {
@@ -1705,6 +1853,39 @@ async fn the_cli_runs_sync_and_uninit() {
     assert!(has(&text, &["created", "src/cli.ts"]), "{text}");
     assert!(has(&text, &["index:", "current"]), "{text}");
     assert!(text.lines().count() < 30, "compact:\n{text}");
+
+    // #70: `status` alone is the daemon's; `status <path>` adds the
+    // Workspace's stored basis -- the sync's own `after` -- and the
+    // runtime's currentness, in the same line style.
+    let plain = run(vec!["status".into()]).await.expect("cli");
+    let plain = String::from_utf8_lossy(&plain.stdout).into_owned();
+    assert!(
+        plain.starts_with("brainprintd ") && !plain.contains("workspace:"),
+        "{plain}"
+    );
+    let scoped = run(vec!["status".into(), ws.clone()]).await.expect("cli");
+    let scoped_text = String::from_utf8_lossy(&scoped.stdout).into_owned();
+    assert_eq!(scoped.status.code(), Some(0), "{scoped_text}");
+    let after = stored(workspace.path());
+    assert!(
+        has(&scoped_text, &["revision:", &after.workspace_revision]),
+        "{scoped_text}"
+    );
+    let generation = after.generation_no.to_string();
+    assert!(
+        has(
+            &scoped_text,
+            &[
+                "generation:",
+                &generation,
+                "(basis",
+                "revision",
+                &format!("{})", after.generation_basis_revision)
+            ]
+        ),
+        "{scoped_text}"
+    );
+    assert!(has(&scoped_text, &["index:", "current"]), "{scoped_text}");
     assert!(daemon.inspect(id, "viaCli").await.is_some());
 
     let json = run(vec!["sync".into(), ws.clone(), "--json".into()])

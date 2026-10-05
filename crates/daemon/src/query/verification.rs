@@ -1321,7 +1321,7 @@ async fn binding_mismatch_is_explicit_not_silently_repaired() {
     assert!(matches!(
         send(
             &mut connection,
-            Request::Status(brainprint_core::protocol::StatusRequest)
+            Request::Status(brainprint_core::protocol::StatusRequest::default())
         )
         .await,
         Response::Status(_)

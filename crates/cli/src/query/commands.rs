@@ -51,7 +51,16 @@ impl CommonArgs {
 #[command(name = "brainprint", version, disable_help_subcommand = true)]
 pub enum Cli {
     Install,
-    Status,
+    /// The daemon's status; with a path, also that Workspace's compact
+    /// status: identity, stored revision/generation, currentness as an
+    /// active runtime holds it, runtime/watcher, semantic backends.
+    /// Read-only: it never reconciles, migrates or starts anything.
+    Status {
+        path: Option<String>,
+        /// Machine-readable output: the `Status` response JSON on stdout.
+        #[arg(long)]
+        json: bool,
+    },
     Init {
         path: Option<String>,
     },

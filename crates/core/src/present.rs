@@ -151,6 +151,21 @@ messages! {
     LabelResources => "label.resources", "Resources", "리소스";
     LabelPage => "label.page", "Pages loaded", "불러온 페이지";
     LabelLocale => "label.locale", "Language", "언어";
+    LabelBasisRevision => "label.basis_revision", "basis revision", "기준 리비전";
+    LabelIncarnation => "label.incarnation", "Index incarnation", "인덱스 인카네이션";
+    LabelCapabilities => "label.capabilities", "Capabilities", "기능";
+
+    CapabilityFiles => "capability.files", "Files", "파일";
+    CapabilityStructure => "capability.structure", "Structure", "구조";
+    CapabilityRelations => "capability.relations", "Relations", "관계";
+    CapabilityImpact => "capability.impact", "Impact", "영향";
+    CapabilityPerQuery => "capability.per_query",
+        "Not measured here -- each answer states its own currentness and coverage",
+        "여기서는 측정 안 됨 -- 각 응답이 자신의 최신성과 커버리지를 밝힘";
+
+    BasisNeverPublished => "basis.never_published",
+        "No generation published yet", "아직 게시된 세대 없음";
+    BasisUnreadable => "basis.unreadable", "Unreadable", "읽을 수 없음";
 
     WorkspaceCurrent => "workspace.status.current", "Current", "최신";
     WorkspaceNotCurrentDirty => "workspace.status.not_current_dirty",

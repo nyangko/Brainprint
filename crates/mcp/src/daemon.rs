@@ -179,7 +179,7 @@ pub async fn ack(
 }
 
 pub async fn status(connection: &mut ClientConnection) -> Result<StatusResponse, DaemonError> {
-    match send(connection, Request::Status(StatusRequest)).await? {
+    match send(connection, Request::Status(StatusRequest::default())).await? {
         Response::Status(status) => Ok(status),
         Response::Error(ErrorResponse { message, .. }) => Err(DaemonError::Rejected { message }),
         _ => Err(DaemonError::UnexpectedResponse),

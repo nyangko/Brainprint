@@ -39,17 +39,18 @@ pub enum HandshakeResponse {
     },
 }
 
-/// Request the daemon's current runtime status.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StatusRequest;
+/// Request the daemon's current runtime status; with `path`, also that
+/// Workspace's compact status (#9 `brainprint status [path]`, #70).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StatusRequest {
+    /// Absolute, resolved by the client (as `InitRequest::path`).
+    pub path: Option<String>,
+}
 
-/// The daemon's runtime status.
-///
-/// #15 task 9: only information the daemon actually tracks in I1 --
-/// process identity, build/protocol identity, and how long it has been
-/// running. No I2+ state (Workspace/generation/watcher status) is
-/// reported here; that would be fabricating state this daemon does not
-/// yet own.
+/// The daemon's runtime status: process identity, build/protocol
+/// identity, how long it has been running -- and, when the request named
+/// a path, that Workspace's status as the daemon currently knows it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StatusResponse {
     pub daemon_version: String,
@@ -58,6 +59,8 @@ pub struct StatusResponse {
     /// Milliseconds since the Unix epoch when the daemon process started.
     pub started_at_unix_ms: u64,
     pub uptime_seconds: u64,
+    /// `Some` exactly when the request named a path.
+    pub workspace: Option<super::maintenance::WorkspaceStatusWire>,
 }
 
 /// Bootstrap/migrate global config + `global.db` through the daemon (#15
@@ -211,6 +214,7 @@ mod tests {
             pid: 4242,
             started_at_unix_ms: 1_700_000_000_000,
             uptime_seconds: 12,
+            workspace: None,
         });
 
         let encoded = serde_json::to_vec(&response).expect("response should serialize");

@@ -274,7 +274,21 @@ where
                 protocol_version: build.protocol_version,
                 daemon_version: build.version.to_owned(),
             }),
-            Request::Status(_) => Response::Status(state.status()),
+            Request::Status(request) => {
+                let mut status = state.status();
+                match request.path {
+                    None => Response::Status(status),
+                    Some(path) => {
+                        match crate::query::workspace_status(&query_runtime, &path).await {
+                            Ok(workspace) => {
+                                status.workspace = Some(workspace);
+                                Response::Status(status)
+                            }
+                            Err(error) => Response::Error(error),
+                        }
+                    }
+                }
+            }
             Request::Install(_) => {
                 let global_paths = global_paths.clone();
                 match run_blocking(move || handlers::handle_install(&global_paths)).await {

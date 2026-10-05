@@ -133,7 +133,7 @@ pub async fn handshake(
 /// Request the daemon's current status. Must be called on a connection
 /// that has already completed a successful [`handshake`].
 pub async fn status(connection: &mut ClientConnection) -> Result<StatusResponse, ClientError> {
-    let request = Request::Status(StatusRequest);
+    let request = Request::Status(StatusRequest::default());
     protocol::framing::write_message(connection, &request)
         .await
         .map_err(ClientError::Io)?;

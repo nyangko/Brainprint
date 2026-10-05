@@ -118,8 +118,12 @@ pub async fn connect(endpoint: &EndpointPaths) -> Result<ClientConnection, CliEr
     }
 }
 
-pub async fn status(connection: &mut ClientConnection) -> Result<StatusResponse, CliError> {
-    match send(connection, Request::Status(StatusRequest)).await? {
+/// The daemon's status; with `path` (absolute), also that Workspace's.
+pub async fn status(
+    connection: &mut ClientConnection,
+    path: Option<String>,
+) -> Result<StatusResponse, CliError> {
+    match send(connection, Request::Status(StatusRequest { path })).await? {
         Response::Status(status) => Ok(status),
         Response::Error(ErrorResponse { kind, message }) => {
             Err(CliError::Rejected { kind, message })

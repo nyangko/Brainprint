@@ -41,8 +41,9 @@ pub async fn run_query_command(cli: Cli) -> Exit {
         Cli::Rebuild { path, json } => maintenance::run_rebuild(path, json).await,
         Cli::Sync { path, json } => maintenance::run_sync(path, json).await,
         Cli::Uninit { path, json } => maintenance::run_uninit(path, json).await,
-        Cli::Install | Cli::Status | Cli::Init { .. } | Cli::Tui { .. } => {
-            unreachable!("main.rs handles Install/Status/Init/Tui before dispatching here")
+        Cli::Status { path, json } => maintenance::run_status(path, json).await,
+        Cli::Install | Cli::Init { .. } | Cli::Tui { .. } => {
+            unreachable!("main.rs handles Install/Init/Tui before dispatching here")
         }
     }
 }

@@ -1,9 +1,8 @@
 //! Daemon runtime state backing the `Status` response (#15 task 9).
 //!
-//! I1 status only reports what a daemon process actually knows about
-//! itself: process/build/protocol identity and how long it has been
-//! running. No I2+ concept (Workspace, generation, watcher) is fabricated
-//! here -- there is nothing yet that tracks it.
+//! The process part of status: build/protocol identity and how long it
+//! has been running. A path-scoped Workspace status (#70) is added by the
+//! server from `query::maintenance::workspace_status`.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -35,6 +34,7 @@ impl DaemonState {
             pid: std::process::id(),
             started_at_unix_ms: self.started_at_unix_ms,
             uptime_seconds: now.saturating_sub(self.started_at_unix_ms) / 1000,
+            workspace: None,
         }
     }
 }

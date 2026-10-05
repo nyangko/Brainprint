@@ -8,8 +8,9 @@ use brainprint_core::{
     present::{self, Msg, text},
     protocol::{
         maintenance::{
-            CheckWire, DatabaseCheckWire, DoctorResponse, DoctorWorkspaceWire, IndexCheckWire,
-            RuntimeCheckWire, WatcherCheckWire,
+            BackendCheckWire, BackendStateWire, CheckWire, DatabaseCheckWire, DoctorResponse,
+            DoctorWorkspaceWire, IndexCheckWire, RuntimeCheckWire, StoredBasisWire,
+            WatcherCheckWire, WorkspaceStatusWire,
         },
         query::{DirectionWire, KnowledgeResultWire, RelationAnswerWire},
         work::PostCommandRefreshWire,
@@ -147,7 +148,14 @@ fn overview(app: &App, lines: &mut Vec<Line<'static>>) {
         Msg::LabelUptime,
         status.uptime_seconds.to_string(),
     ));
-    doctor(app, &overview.doctor, lines);
+    match &status.workspace {
+        Some(workspace) => workspace_status(app, workspace, lines),
+        None => lines.push(field(
+            app,
+            Msg::LabelWorkspace,
+            t(app, Msg::MetricNotReported),
+        )),
+    }
 
     lines.push(Line::default());
     lines.push(field(app, Msg::LabelWorkingState, ""));
@@ -173,102 +181,175 @@ fn overview(app: &App, lines: &mut Vec<Line<'static>>) {
             }
         }
         Ok(_) => {}
-        Err(message) => lines.push(Line::from(format!("  {}", message))),
+        Err(message) => lines.push(Line::from(format!("  {message}"))),
     }
 }
 
-/// The doctor facts: identity, runtime, index, databases, backends.
-fn doctor(app: &App, doctor: &DoctorResponse, lines: &mut Vec<Line<'static>>) {
-    match &doctor.workspace {
-        DoctorWorkspaceWire::NotInitialized { path, reason } => {
-            lines.push(field(
-                app,
-                Msg::LabelWorkspace,
-                with_detail(app, Msg::WorkspaceNotInitialized, Some(reason)),
-            ));
-            lines.push(field(app, Msg::LabelRoot, path.clone()));
+/// A Workspace that did not resolve: the typed reason, as delivered.
+fn unresolved(app: &App, path: &str, msg: Msg, detail: &str, lines: &mut Vec<Line<'static>>) {
+    lines.push(field(
+        app,
+        Msg::LabelWorkspace,
+        with_detail(app, msg, Some(detail)),
+    ));
+    lines.push(field(app, Msg::LabelRoot, path.to_owned()));
+}
+
+/// `status <path>`: identity, the stored basis, currentness only as an
+/// active runtime holds it, runtime/watcher, capabilities, backends.
+fn workspace_status(app: &App, status: &WorkspaceStatusWire, lines: &mut Vec<Line<'static>>) {
+    let report = match status {
+        WorkspaceStatusWire::NotInitialized { path, reason } => {
+            return unresolved(app, path, Msg::WorkspaceNotInitialized, reason, lines);
         }
-        DoctorWorkspaceWire::Ambiguous { path, workspaces } => {
-            lines.push(field(
-                app,
-                Msg::LabelWorkspace,
-                with_detail(app, Msg::WorkspaceAmbiguous, Some(&workspaces.join(", "))),
-            ));
-            lines.push(field(app, Msg::LabelRoot, path.clone()));
+        WorkspaceStatusWire::Ambiguous { path, workspaces } => {
+            let candidates = workspaces.join(", ");
+            return unresolved(app, path, Msg::WorkspaceAmbiguous, &candidates, lines);
         }
-        DoctorWorkspaceWire::Initialized(workspace) => {
-            lines.push(field(app, Msg::LabelProject, workspace.project_id.clone()));
-            lines.push(field(
-                app,
-                Msg::LabelWorkspace,
-                workspace.workspace_id.clone(),
-            ));
-            lines.push(field(app, Msg::LabelRoot, workspace.workspace_root.clone()));
-            lines.push(field(
-                app,
-                Msg::LabelProjectHome,
-                workspace.is_project_home.to_string(),
-            ));
-            lines.push(field(
-                app,
-                Msg::LabelBinding,
-                check(app, &workspace.binding),
-            ));
-            // Doctor reports no revision/generation; never invented here.
+        WorkspaceStatusWire::Initialized(report) => report,
+    };
+    lines.push(field(app, Msg::LabelProject, report.project_id.clone()));
+    lines.push(field(app, Msg::LabelWorkspace, report.workspace_id.clone()));
+    lines.push(field(app, Msg::LabelRoot, report.workspace_root.clone()));
+    match &report.basis {
+        StoredBasisWire::Stable(basis) => {
             lines.push(field(
                 app,
                 Msg::LabelRevision,
-                t(app, Msg::MetricNotReported),
+                basis.workspace_revision.clone(),
             ));
             lines.push(field(
                 app,
                 Msg::LabelGeneration,
-                t(app, Msg::MetricNotReported),
+                format!(
+                    "{} ({} {})",
+                    basis.generation_no,
+                    t(app, Msg::LabelBasisRevision),
+                    basis.generation_basis_revision
+                ),
             ));
-            let (runtime_detail, watcher) = match &workspace.runtime {
-                RuntimeCheckWire::Active { watcher } => (None, Some(watcher)),
-                RuntimeCheckWire::Unavailable { detail } => (Some(detail.as_str()), None),
-                RuntimeCheckWire::Inactive => (None, None),
-            };
             lines.push(field(
                 app,
-                Msg::LabelRuntime,
-                with_detail(app, present::runtime(&workspace.runtime), runtime_detail),
+                Msg::LabelIncarnation,
+                basis.index_incarnation.to_string(),
             ));
-            if let Some(watcher) = watcher {
-                lines.push(field(app, Msg::LabelWatcher, watcher_text(app, watcher)));
-            }
-            let index_detail = match &workspace.index {
-                IndexCheckWire::Current => None,
-                IndexCheckWire::NotCurrent { detail } => Some(detail.as_str()),
-                IndexCheckWire::NotMeasured { reason } => Some(reason.as_str()),
-            };
-            lines.push(field(
-                app,
-                Msg::LabelIndex,
-                with_detail(app, present::index(&workspace.index), index_detail),
-            ));
-            lines.push(field(app, Msg::LabelDatabases, ""));
-            database(app, &doctor.global_db, lines);
-            for db in &workspace.databases {
-                database(app, db, lines);
-            }
-            lines.push(field(app, Msg::LabelSemantic, ""));
-            for backend in &workspace.semantic {
-                let detail = match &backend.state {
-                    brainprint_core::protocol::maintenance::BackendStateWire::Unavailable {
-                        reason,
-                    } => Some(reason.as_str()),
-                    brainprint_core::protocol::maintenance::BackendStateWire::Registered => None,
-                };
-                lines.push(Line::from(format!(
-                    "  {:<11} {}",
-                    backend.family,
-                    with_detail(app, present::backend(&backend.state), detail)
-                )));
-            }
         }
+        StoredBasisWire::NeverPublished => lines.push(field(
+            app,
+            Msg::LabelGeneration,
+            t(app, Msg::BasisNeverPublished),
+        )),
+        StoredBasisWire::Unreadable { detail } => lines.push(field(
+            app,
+            Msg::LabelGeneration,
+            with_detail(app, Msg::BasisUnreadable, Some(detail)),
+        )),
     }
+    lines.push(field(
+        app,
+        Msg::LabelCurrentness,
+        index_text(app, &report.index),
+    ));
+    runtime_lines(app, &report.runtime, lines);
+    // A Workspace-wide state for these would be a guess: each answer
+    // carries its own currentness and coverage.
+    lines.push(field(app, Msg::LabelCapabilities, ""));
+    for capability in [
+        Msg::CapabilityFiles,
+        Msg::CapabilityStructure,
+        Msg::CapabilityRelations,
+        Msg::CapabilityImpact,
+    ] {
+        lines.push(Line::from(format!(
+            "  {:<11} {}",
+            t(app, capability),
+            t(app, Msg::CapabilityPerQuery)
+        )));
+    }
+    backends(app, &report.semantic, lines);
+}
+
+fn index_text(app: &App, index: &IndexCheckWire) -> String {
+    let detail = match index {
+        IndexCheckWire::Current => None,
+        IndexCheckWire::NotCurrent { detail } => Some(detail.as_str()),
+        IndexCheckWire::NotMeasured { reason } => Some(reason.as_str()),
+    };
+    with_detail(app, present::index(index), detail)
+}
+
+fn runtime_lines(app: &App, runtime: &RuntimeCheckWire, lines: &mut Vec<Line<'static>>) {
+    let (detail, watcher) = match runtime {
+        RuntimeCheckWire::Active { watcher } => (None, Some(watcher)),
+        RuntimeCheckWire::Unavailable { detail } => (Some(detail.as_str()), None),
+        RuntimeCheckWire::Inactive => (None, None),
+    };
+    lines.push(field(
+        app,
+        Msg::LabelRuntime,
+        with_detail(app, present::runtime(runtime), detail),
+    ));
+    if let Some(watcher) = watcher {
+        lines.push(field(app, Msg::LabelWatcher, watcher_text(app, watcher)));
+    }
+}
+
+fn backends(app: &App, semantic: &[BackendCheckWire], lines: &mut Vec<Line<'static>>) {
+    lines.push(field(app, Msg::LabelSemantic, ""));
+    for backend in semantic {
+        let detail = match &backend.state {
+            BackendStateWire::Unavailable { reason } => Some(reason.as_str()),
+            BackendStateWire::Registered => None,
+        };
+        lines.push(Line::from(format!(
+            "  {:<11} {}",
+            backend.family,
+            with_detail(app, present::backend(&backend.state), detail)
+        )));
+    }
+}
+
+/// The Doctor operation: the full diagnosis.
+fn doctor(app: &App, doctor: &DoctorResponse, lines: &mut Vec<Line<'static>>) {
+    let workspace = match &doctor.workspace {
+        DoctorWorkspaceWire::NotInitialized { path, reason } => {
+            return unresolved(app, path, Msg::WorkspaceNotInitialized, reason, lines);
+        }
+        DoctorWorkspaceWire::Ambiguous { path, workspaces } => {
+            let candidates = workspaces.join(", ");
+            return unresolved(app, path, Msg::WorkspaceAmbiguous, &candidates, lines);
+        }
+        DoctorWorkspaceWire::Initialized(workspace) => workspace,
+    };
+    lines.push(field(app, Msg::LabelProject, workspace.project_id.clone()));
+    lines.push(field(
+        app,
+        Msg::LabelWorkspace,
+        workspace.workspace_id.clone(),
+    ));
+    lines.push(field(app, Msg::LabelRoot, workspace.workspace_root.clone()));
+    lines.push(field(
+        app,
+        Msg::LabelProjectHome,
+        workspace.is_project_home.to_string(),
+    ));
+    lines.push(field(
+        app,
+        Msg::LabelBinding,
+        check(app, &workspace.binding),
+    ));
+    runtime_lines(app, &workspace.runtime, lines);
+    lines.push(field(
+        app,
+        Msg::LabelIndex,
+        index_text(app, &workspace.index),
+    ));
+    lines.push(field(app, Msg::LabelDatabases, ""));
+    database(app, &doctor.global_db, lines);
+    for db in &workspace.databases {
+        database(app, db, lines);
+    }
+    backends(app, &workspace.semantic, lines);
 }
 
 fn check(app: &App, value: &CheckWire) -> String {

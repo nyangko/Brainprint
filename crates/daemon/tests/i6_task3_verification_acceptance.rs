@@ -105,14 +105,14 @@ fn main() {
             "the_cli_runs_verification_and_maps_exit_codes",
             the_cli_runs_verification_and_maps_exit_codes,
         ),
-        ("protocol_version_is_12", protocol_version_is_12),
+        ("protocol_version_is_13", protocol_version_is_13),
         (
-            "a_v11_client_is_refused_by_a_v12_daemon",
-            a_v11_client_is_refused_by_a_v12_daemon,
+            "a_v12_client_is_refused_by_a_v13_daemon",
+            a_v12_client_is_refused_by_a_v13_daemon,
         ),
         (
-            "a_v12_client_stops_at_a_v11_daemon",
-            a_v12_client_stops_at_a_v11_daemon,
+            "a_v13_client_stops_at_a_v12_daemon",
+            a_v13_client_stops_at_a_v12_daemon,
         ),
         (
             "mcp_tools_list_is_byte_identical",
@@ -1462,21 +1462,21 @@ fn the_cli_runs_verification_and_maps_exit_codes() {
 
 // ------------------------------------------------------------- protocol
 
-fn protocol_version_is_12() {
-    assert_eq!(PROTOCOL_VERSION, 12);
+fn protocol_version_is_13() {
+    assert_eq!(PROTOCOL_VERSION, 13);
 }
 
-/// v11 client → v12 daemon: refused at handshake; a verification request
+/// v12 client → v13 daemon: refused at handshake; a verification request
 /// sent anyway is never served and runs nothing.
-fn a_v11_client_is_refused_by_a_v12_daemon() {
+fn a_v12_client_is_refused_by_a_v13_daemon() {
     block_on(async {
-        let fixture = Fixture::new("v11-client", false).await;
+        let fixture = Fixture::new("v12-client", false).await;
         let mut connection = connect(&fixture.endpoint).await;
         assert_eq!(
-            handshake(&mut connection, 11).await,
+            handshake(&mut connection, 12).await,
             Response::Handshake(HandshakeResponse::VersionMismatch {
-                server_protocol_version: 12,
-                client_protocol_version: 11,
+                server_protocol_version: 13,
+                client_protocol_version: 12,
             })
         );
         let request = work_request(
@@ -1496,10 +1496,10 @@ fn a_v11_client_is_refused_by_a_v12_daemon() {
     });
 }
 
-/// v12 client → v11 daemon: the client reports the mismatch and stops.
-fn a_v12_client_stops_at_a_v11_daemon() {
+/// v13 client → v12 daemon: the client reports the mismatch and stops.
+fn a_v13_client_stops_at_a_v12_daemon() {
     block_on(async {
-        let home = TestDir::create("v11-daemon");
+        let home = TestDir::create("v12-daemon");
         let endpoint = runtime_paths::resolve(&GlobalPaths::from_home(home.path()));
         #[cfg(unix)]
         let listener = {
@@ -1508,7 +1508,7 @@ fn a_v12_client_stops_at_a_v11_daemon() {
         };
         #[cfg(windows)]
         let listener = protocol::Listener::bind(&endpoint.pipe_name).expect("listener");
-        let fake_v11 = tokio::spawn(async move {
+        let fake_v12 = tokio::spawn(async move {
             let mut listener = listener;
             let mut connection = listener.accept().await.expect("accept");
             let request: Request = protocol::framing::read_message(&mut connection)
@@ -1520,7 +1520,7 @@ fn a_v12_client_stops_at_a_v11_daemon() {
             protocol::framing::write_message(
                 &mut connection,
                 &Response::Handshake(HandshakeResponse::VersionMismatch {
-                    server_protocol_version: 11,
+                    server_protocol_version: 12,
                     client_protocol_version: handshake.protocol_version,
                 }),
             )
@@ -1533,18 +1533,18 @@ fn a_v12_client_stops_at_a_v11_daemon() {
             .expect("connect");
         let error = brainprint_daemon::client::handshake(&mut connection, "i6-task3-test")
             .await
-            .expect_err("a v11 daemon must be refused");
+            .expect_err("a v12 daemon must be refused");
         assert!(
             matches!(
                 error,
                 brainprint_daemon::client::ClientError::VersionMismatch {
-                    server_protocol_version: 11,
-                    client_protocol_version: 12,
+                    server_protocol_version: 12,
+                    client_protocol_version: 13,
                 }
             ),
             "{error:?}"
         );
-        assert_eq!(fake_v11.await.expect("fake daemon"), 12);
+        assert_eq!(fake_v12.await.expect("fake daemon"), 13);
     });
 }
 

@@ -18,7 +18,9 @@ use brainprint_core::{
     present::{Locale, Msg, text},
     protocol::{
         EndpointPaths, HandshakeResponse, Listener, Request, Response, framing,
-        maintenance::DoctorWorkspaceWire, query::*, work::PostCommandRefreshWire,
+        maintenance::{StoredBasisWire, WorkspaceStatusWire},
+        query::*,
+        work::PostCommandRefreshWire,
     },
 };
 use brainprint_daemon::{query::DaemonQueryRuntime, runtime_paths, server::Server};
@@ -246,25 +248,49 @@ async fn the_tui_shows_the_daemons_truth_and_outlives_nothing() {
     };
     let mut app = App::new(Locale::En);
 
-    // Overview: the doctor's identity, verbatim.
+    // Overview: `status <path>` -- identity and the stored basis verbatim,
+    // currentness as the active runtime holds it.
     perform(&mut app, &daemon, Command::Refresh).await;
     assert_eq!(app.connection, Connection::Connected);
     let overview = app.overview.as_ref().expect("overview");
-    let DoctorWorkspaceWire::Initialized(doctor) = &overview.doctor.workspace else {
-        panic!("initialized: {:?}", overview.doctor)
+    let Some(WorkspaceStatusWire::Initialized(report)) = &overview.status.workspace else {
+        panic!("initialized: {:?}", overview.status)
     };
-    assert_eq!(doctor.workspace_id, init.workspace_id);
-    assert!(shows(&app, &init.workspace_id) && shows(&app, &init.project_id));
-    assert!(
-        shows(&app, text(Locale::En, Msg::MetricNotReported)),
-        "no invented revision"
+    assert_eq!(report.workspace_id, init.workspace_id);
+    let StoredBasisWire::Stable(basis) = &report.basis else {
+        panic!("a published basis: {:?}", report.basis)
+    };
+    let mut direct = client::connect(&endpoint).await.expect("connect");
+    let cli_status = client::status(&mut direct, Some(daemon.workspace.clone()))
+        .await
+        .expect("status");
+    drop(direct);
+    assert_eq!(
+        cli_status.workspace, overview.status.workspace,
+        "TUI and CLI read one status"
     );
+    assert!(shows(&app, &init.workspace_id) && shows(&app, &init.project_id));
+    let generation_row = format!(
+        "{}: {} ({} {})",
+        text(Locale::En, Msg::LabelGeneration),
+        basis.generation_no,
+        text(Locale::En, Msg::LabelBasisRevision),
+        basis.generation_basis_revision
+    );
+    assert!(shows(&app, &generation_row), "{:?}", screen(&app, 160, 60));
+    assert!(shows(
+        &app,
+        &format!("Revision: {}", basis.workspace_revision)
+    ));
+    assert!(shows(&app, "Currentness: Current"));
+    assert!(shows(&app, text(Locale::En, Msg::CapabilityPerQuery)));
+    assert!(!shows(&app, text(Locale::En, Msg::MetricNotReported)));
     for (width, height) in [(80, 24), (120, 40), (30, 8)] {
         screen(&app, width, height);
     }
 
     // Locale: the words change, the facts and the stored answer do not.
-    let doctor_before = overview.doctor.clone();
+    let status_before = overview.status.workspace.clone();
     perform(&mut app, &daemon, Command::SwitchLocale).await;
     assert_eq!(app.locale, Locale::Ko);
     assert_eq!(app.locale_notice, Some(Msg::LocaleNotSaved));
@@ -275,8 +301,23 @@ async fn the_tui_shows_the_daemons_truth_and_outlives_nothing() {
         &format!("{}:", text(Locale::En, Msg::LabelWorkspace))
     ));
     assert_eq!(
-        app.overview.as_ref().expect("overview").doctor,
-        doctor_before
+        app.overview.as_ref().expect("overview").status.workspace,
+        status_before
+    );
+    assert!(
+        shows(
+            &app,
+            &generation_row
+                .replace(
+                    &format!("{}:", text(Locale::En, Msg::LabelGeneration)),
+                    &format!("{}:", text(Locale::Ko, Msg::LabelGeneration)),
+                )
+                .replace(
+                    text(Locale::En, Msg::LabelBasisRevision),
+                    text(Locale::Ko, Msg::LabelBasisRevision),
+                )
+        ),
+        "same numbers in Korean"
     );
     perform(&mut app, &daemon, Command::SwitchLocale).await;
     assert_eq!(app.locale, Locale::En);
@@ -409,7 +450,7 @@ async fn the_tui_shows_the_daemons_truth_and_outlives_nothing() {
     // Quitting the TUI is dropping it: the daemon still answers.
     drop(app);
     let mut connection = client::connect(&endpoint).await.expect("daemon alive");
-    client::status(&mut connection).await.expect("status");
+    client::status(&mut connection, None).await.expect("status");
     drop(connection);
 
     // Disconnect: every earlier answer goes, the screen says so.
@@ -440,12 +481,13 @@ async fn the_tui_shows_the_daemons_truth_and_outlives_nothing() {
     assert!(!uninit.already_detached);
     assert!(root.0.join("src/shared.ts").is_file());
     assert!(root.0.join(".brainprint").is_dir(), "detach, not erase");
-    // The refreshed overview states what the CLI's doctor states.
+    // The refreshed overview states what `status` states: detached.
     let Some(overview) = &app.overview else {
         panic!("overview after uninit")
     };
-    let DoctorWorkspaceWire::NotInitialized { reason, .. } = &overview.doctor.workspace else {
-        panic!("detached: {:?}", overview.doctor.workspace)
+    let Some(WorkspaceStatusWire::NotInitialized { reason, .. }) = &overview.status.workspace
+    else {
+        panic!("detached: {:?}", overview.status.workspace)
     };
     assert!(reason.contains("WorkspaceDetached"), "{reason}");
     app.tab = Tab::Overview;

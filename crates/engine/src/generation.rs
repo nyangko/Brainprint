@@ -215,6 +215,17 @@ impl GenerationStore {
         Ok(Self::from_connection(opened.connection))
     }
 
+    /// #70: open an existing `index.db` read-only -- for a status read
+    /// that must create, migrate and settle nothing. A missing file or a
+    /// schema this binary cannot read is an error, never an empty answer.
+    pub fn open_read_only(path: &Path) -> Result<Self, GenerationError> {
+        let connection = Connection::open_with_flags(
+            path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        Ok(Self::from_connection(connection))
+    }
+
     /// Wrap an already-opened `index.db` connection (#15 task 11: lets a
     /// caller that already opened/verified `index.db` -- e.g.
     /// `engine::init`'s reopen path -- reuse that same connection for
