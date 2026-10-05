@@ -15,6 +15,3 @@
 # Acceptance asserts its absence, so it must never be committed.
 /fixtures/workspaces/rust-semantic-spike/**/build-rs-ran.marker
 /fixtures/workspaces/rust-semantic-spike/target/
-.brainprint
-.serena
-.mcp.json
