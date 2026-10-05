@@ -104,6 +104,22 @@ pub enum Cli {
     /// inspect, relations, impact, Working State, doctor/sync/rebuild/
     /// uninit -- over the same daemon queries as the commands above.
     /// Quitting it never stops the daemon.
+    /// #72: the local Web UI for this Workspace -- Overview, Explorer
+    /// (inspect / relations / impact), Context (Working State, rules,
+    /// decisions) -- served on 127.0.0.1 only. Read-only; stopping it
+    /// never stops the daemon.
+    Web {
+        /// Workspace locator; canonicalized before it crosses IPC.
+        #[arg(long, default_value = ".")]
+        workspace: String,
+        /// Loopback port; 0 picks a free one.
+        #[arg(long, default_value_t = 7470)]
+        port: u16,
+        /// Initial UI language (`en`, `ko`); an unsupported tag is
+        /// English. Without it: `[ui] locale` in the global config.
+        #[arg(long)]
+        locale: Option<String>,
+    },
     Tui {
         /// Workspace locator; canonicalized before it crosses IPC.
         #[arg(long, default_value = ".")]

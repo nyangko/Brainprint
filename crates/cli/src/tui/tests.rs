@@ -157,10 +157,10 @@ fn every_view_draws_at_any_terminal_size() {
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
-struct TestDir(PathBuf);
+pub(crate) struct TestDir(pub(crate) PathBuf);
 
 impl TestDir {
-    fn create(label: &str) -> Self {
+    pub(crate) fn create(label: &str) -> Self {
         let path = std::env::temp_dir().join(format!(
             "bp-tui-{label}-{}-{}",
             std::process::id(),
@@ -177,12 +177,12 @@ impl Drop for TestDir {
     }
 }
 
-struct Running {
+pub(crate) struct Running {
     handle: tokio::task::JoinHandle<()>,
     runtime: Arc<DaemonQueryRuntime>,
 }
 
-async fn start(home: &Path) -> (Running, EndpointPaths) {
+pub(crate) async fn start(home: &Path) -> (Running, EndpointPaths) {
     let global = GlobalPaths::from_home(home);
     let mut server = Server::bind(&global).await.expect("bind");
     let runtime = server.query_runtime();
@@ -193,14 +193,14 @@ async fn start(home: &Path) -> (Running, EndpointPaths) {
     (Running { handle, runtime }, endpoint)
 }
 
-async fn stop(running: Running) {
+pub(crate) async fn stop(running: Running) {
     running.handle.abort();
     let _ = running.handle.await;
     drop(running.runtime);
     tokio::time::sleep(Duration::from_millis(400)).await;
 }
 
-fn workspace() -> TestDir {
+pub(crate) fn workspace() -> TestDir {
     let root = TestDir::create("ws");
     let src = root.0.join("src");
     fs::create_dir_all(&src).expect("src");
@@ -335,7 +335,7 @@ async fn the_tui_shows_the_daemons_truth_and_outlives_nothing() {
     let direct = daemon
         .query(QueryOperationWire::Inspect(InspectWire {
             target: target.clone(),
-            delivery: super::app::delivery(None),
+            delivery: crate::surface::delivery(None),
         }))
         .await
         .unwrap_or_else(|_| panic!("direct inspect"));

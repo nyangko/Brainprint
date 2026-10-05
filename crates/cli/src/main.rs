@@ -1,6 +1,8 @@
 mod client;
 mod query;
+mod surface;
 mod tui;
+mod web;
 
 use clap::Parser as _;
 use query::Cli;
@@ -11,6 +13,11 @@ async fn main() {
         Ok(Cli::Install) => run(cmd_install()).await,
         Ok(Cli::Init { path }) => run(cmd_init(path)).await,
         Ok(Cli::Tui { workspace, locale }) => tui::run(&workspace, locale).await,
+        Ok(Cli::Web {
+            workspace,
+            port,
+            locale,
+        }) => web::run(&workspace, port, locale).await,
         Ok(
             cli @ (Cli::Find { .. }
             | Cli::Inspect(_)

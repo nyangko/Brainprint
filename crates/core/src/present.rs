@@ -15,8 +15,9 @@ use crate::protocol::{
         SchemaCheckWire, WatcherCheckWire,
     },
     query::{
-        AnswerStateWire, ChangeKindWire, CoverageWire, CurrentnessWire, ImpactIntentWire,
-        NotCurrentReasonWire, SupportWire, TargetResolutionWire, WorkItemStatusWire,
+        AnswerStateWire, ChangeKindWire, CoverageWire, CurrentnessWire, DirectionWire,
+        ImpactIntentWire, NotCurrentReasonWire, RelationAnswerWire, RelationKindWire, SupportWire,
+        TargetResolutionWire, WorkItemStatusWire,
     },
 };
 
@@ -103,6 +104,15 @@ messages! {
     TabRelations => "tab.relations", "Relations", "관계";
     TabImpact => "tab.impact", "Impact", "영향";
     TabOperations => "tab.operations", "Operations", "작업";
+    TabExplorer => "tab.explorer", "Explorer", "탐색";
+    TabContext => "tab.context", "Context", "컨텍스트";
+    LabelRules => "label.rules", "Rules", "규칙";
+    LabelDecisions => "label.decisions", "Decisions", "결정";
+    LabelNoRules => "label.no_rules", "No applicable rules", "적용되는 규칙 없음";
+    LabelNoDecisions => "label.no_decisions", "No decisions", "결정 없음";
+    ActionRefresh => "action.refresh", "Refresh", "새로고침";
+    ActionLoadMore => "action.load_more", "Next page", "다음 페이지";
+    ActionInspect => "action.inspect", "Inspect", "살펴보기";
 
     ConnectionConnected => "connection.connected", "Connected", "연결됨";
     ConnectionNotYet => "connection.not_yet", "Not connected yet", "아직 연결 안 됨";
@@ -374,6 +384,50 @@ pub const fn relation_coverage(coverage: &CoverageWire) -> Msg {
         return Msg::CoveragePartial;
     }
     Msg::CoverageComplete
+}
+
+/// One direction of a direct relation answer, as every surface states it:
+/// confirmed relations counted per kind, the coverage they were found
+/// under, and -- when none were confirmed -- which "none" it is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelationSummary {
+    pub direction: Msg,
+    pub confirmed: usize,
+    /// Per kind, in first-seen order of the delivered list.
+    pub kinds: Vec<(RelationKindWire, usize)>,
+    pub coverage: Msg,
+    /// With nothing confirmed: complete-none, unsupported, or incomplete.
+    /// Never a bare zero.
+    pub none: Option<Msg>,
+    pub gaps: usize,
+}
+
+#[must_use]
+pub fn relation_summary(answer: &RelationAnswerWire) -> RelationSummary {
+    let coverage = relation_coverage(&answer.coverage);
+    let mut kinds: Vec<(RelationKindWire, usize)> = Vec::new();
+    for relation in &answer.confirmed {
+        match kinds.iter_mut().find(|(kind, _)| *kind == relation.kind) {
+            Some((_, seen)) => *seen += 1,
+            None => kinds.push((relation.kind, 1)),
+        }
+    }
+    let none = answer.confirmed.is_empty().then_some(match coverage {
+        Msg::CoverageComplete => Msg::AnswerNoneComplete,
+        Msg::CoverageUnsupported => Msg::CoverageUnsupported,
+        _ => Msg::AnswerNoneIncomplete,
+    });
+    RelationSummary {
+        direction: match answer.direction {
+            DirectionWire::Incoming => Msg::LabelIncoming,
+            DirectionWire::Outgoing => Msg::LabelOutgoing,
+        },
+        confirmed: answer.confirmed.len(),
+        kinds,
+        coverage,
+        none,
+        gaps: answer.gaps.len(),
+    }
 }
 
 #[must_use]

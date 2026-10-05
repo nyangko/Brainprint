@@ -19,7 +19,7 @@ clap.workspace = true
 # default widget extras off.
 ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
 serde_json.workspace = true
-tokio = { workspace = true, features = ["io-util", "macros", "net", "rt"] }
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "signal", "time"] }
 # #70: reads / sets `[ui] locale` in the global config.
 toml.workspace = true
 uuid.workspace = true

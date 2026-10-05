@@ -12,7 +12,7 @@ use brainprint_core::{
             DoctorWorkspaceWire, IndexCheckWire, RuntimeCheckWire, StoredBasisWire,
             WatcherCheckWire, WorkspaceStatusWire,
         },
-        query::{DirectionWire, KnowledgeResultWire, RelationAnswerWire},
+        query::{KnowledgeResultWire, RelationAnswerWire},
         work::PostCommandRefreshWire,
     },
 };
@@ -459,46 +459,31 @@ fn inspect(app: &App, lines: &mut Vec<Line<'static>>) {
 /// One direction's answer. Zero confirmed relations is a count only
 /// under complete coverage; otherwise the coverage state is the answer.
 fn relation_answer(app: &App, answer: &RelationAnswerWire) -> Line<'static> {
-    let direction = match answer.direction {
-        DirectionWire::Incoming => Msg::LabelIncoming,
-        DirectionWire::Outgoing => Msg::LabelOutgoing,
-    };
-    let coverage = present::relation_coverage(&answer.coverage);
-    let count = answer.confirmed.len();
-    let value = if count == 0 {
-        match coverage {
-            Msg::CoverageComplete => t(app, Msg::AnswerNoneComplete).to_owned(),
-            Msg::CoverageUnsupported => t(app, Msg::CoverageUnsupported).to_owned(),
-            _ => t(app, Msg::AnswerNoneIncomplete).to_owned(),
+    let summary = present::relation_summary(answer);
+    let value = match summary.none {
+        Some(none) => t(app, none).to_owned(),
+        None => {
+            let kinds: Vec<String> = summary
+                .kinds
+                .iter()
+                .map(|(kind, seen)| format!("{kind:?} {seen}"))
+                .collect();
+            format!(
+                "{} {} ({}) · {}: {}",
+                t(app, Msg::LabelConfirmed),
+                summary.confirmed,
+                kinds.join(", "),
+                t(app, Msg::LabelCoverage),
+                t(app, summary.coverage)
+            )
         }
-    } else {
-        let mut kinds: Vec<(String, usize)> = Vec::new();
-        for relation in &answer.confirmed {
-            let kind = format!("{:?}", relation.kind);
-            match kinds.iter_mut().find(|(known, _)| *known == kind) {
-                Some((_, seen)) => *seen += 1,
-                None => kinds.push((kind, 1)),
-            }
-        }
-        let kinds: Vec<String> = kinds
-            .into_iter()
-            .map(|(kind, seen)| format!("{kind} {seen}"))
-            .collect();
-        format!(
-            "{} {count} ({}) · {}: {}",
-            t(app, Msg::LabelConfirmed),
-            kinds.join(", "),
-            t(app, Msg::LabelCoverage),
-            t(app, coverage)
-        )
     };
-    let gaps = answer.gaps.len();
-    let gaps = if gaps > 0 {
-        format!(" · {}: {gaps}", t(app, Msg::LabelGaps))
+    let gaps = if summary.gaps > 0 {
+        format!(" · {}: {}", t(app, Msg::LabelGaps), summary.gaps)
     } else {
         String::new()
     };
-    field(app, direction, format!("{value}{gaps}"))
+    field(app, summary.direction, format!("{value}{gaps}"))
 }
 
 fn relations(app: &App, lines: &mut Vec<Line<'static>>) {

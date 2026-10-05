@@ -42,6 +42,24 @@ jobs:
       - name: Test
         run: cargo test --workspace --locked
 
+      # #72: `brainprint web` embeds web/build/index.html. Rebuild it from
+      # source and require it unchanged, so the checked-in page is never
+      # stale; svelte-check guards the page's types.
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Web UI check and reproducible build
+        working-directory: web
+        run: |
+          npm ci
+          npm run check
+          npm run build
+          git diff --exit-code -- build/index.html
+
       - name: CLI and daemon smoke
         run: |
           ./target/debug/brainprint --version

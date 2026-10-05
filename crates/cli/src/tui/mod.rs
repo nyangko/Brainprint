@@ -7,7 +7,7 @@ mod config;
 mod view;
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 use brainprint_core::{
     present::Locale,
@@ -16,6 +16,11 @@ use brainprint_core::{
 use ratatui::crossterm::event::{self, Event, KeyEventKind};
 
 use app::{App, Command, Daemon, perform};
+
+/// `[ui] locale` from the global config, shared with the Web UI.
+pub fn saved_locale(path: &std::path::Path) -> Option<String> {
+    config::load(path)
+}
 
 pub async fn run(workspace: &str, locale: Option<String>) -> i32 {
     let endpoint = match EndpointPaths::resolve() {

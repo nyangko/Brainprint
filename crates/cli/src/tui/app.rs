@@ -7,22 +7,24 @@
 //! reached by the next request, and a failed one clears every earlier
 //! answer instead of leaving it on screen as if still current.
 
-use std::{num::NonZeroUsize, path::PathBuf};
-
 use brainprint_core::{
     present::{Locale, Msg},
     protocol::{
-        EndpointPaths, Request, Response, StatusRequest, StatusResponse,
+        Request, Response, StatusResponse,
         maintenance::{
-            DoctorRequest, DoctorResponse, RebuildRequest, RebuildResponse, SyncRequest,
-            SyncResponse, UninitRequest, UninitResponse,
+            DoctorResponse, RebuildRequest, RebuildResponse, SyncRequest, SyncResponse,
+            UninitRequest, UninitResponse,
         },
         query::*,
     },
 };
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::client::{self, CliError};
+pub use crate::surface::{CHANGES, Candidate, Daemon};
+use crate::{
+    client::CliError,
+    surface::{Failure, candidates, compact, delivery, selector, unexpected},
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
@@ -93,16 +95,6 @@ impl Op {
     }
 }
 
-/// The impact change forms the daemon accepts, in cycle order.
-pub const CHANGES: [ChangeKindWire; 6] = [
-    ChangeKindWire::Structural(ImpactIntentWire::PublicSignatureChange),
-    ChangeKindWire::Structural(ImpactIntentWire::Rename),
-    ChangeKindWire::Structural(ImpactIntentWire::ModuleMove),
-    ChangeKindWire::Structural(ImpactIntentWire::BaseInterfaceChange),
-    ChangeKindWire::Delete,
-    ChangeKindWire::DomainContractChange,
-];
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Connection {
     NotYet,
@@ -117,12 +109,6 @@ pub enum Connection {
 pub struct Overview {
     pub status: StatusResponse,
     pub work: Result<KnowledgeResultWire, String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Candidate {
-    pub label: String,
-    pub target: ProjectionTargetWire,
 }
 
 /// A bounded, possibly continued answer: the last page's facts plus the
@@ -370,169 +356,6 @@ impl App {
     }
 }
 
-pub enum Failure {
-    Connection(CliError),
-    /// The daemon answered with an error about this request.
-    Rejected(String),
-}
-
-/// Where the TUI's requests go.
-pub struct Daemon {
-    pub endpoint: EndpointPaths,
-    /// Absolute Workspace locator.
-    pub workspace: String,
-    /// The global config, for the saved locale.
-    pub config: Option<PathBuf>,
-}
-
-impl Daemon {
-    async fn send(&self, request: Request) -> Result<Response, Failure> {
-        let mut connection = client::connect(&self.endpoint)
-            .await
-            .map_err(Failure::Connection)?;
-        client::send(&mut connection, request)
-            .await
-            .map_err(Failure::Connection)
-    }
-
-    async fn status(&self) -> Result<StatusResponse, Failure> {
-        let path = Some(self.workspace.clone());
-        match self.send(Request::Status(StatusRequest { path })).await? {
-            Response::Status(status) => Ok(status),
-            other => Err(unexpected(other)),
-        }
-    }
-
-    async fn doctor(&self) -> Result<DoctorResponse, Failure> {
-        let path = self.workspace.clone();
-        match self.send(Request::Doctor(DoctorRequest { path })).await? {
-            Response::Doctor(doctor) => Ok(doctor),
-            other => Err(unexpected(other)),
-        }
-    }
-
-    /// One query; its delivery is acknowledged on the same connection.
-    pub async fn query(&self, operation: QueryOperationWire) -> Result<QueryResultWire, Failure> {
-        let mut connection = client::connect(&self.endpoint)
-            .await
-            .map_err(Failure::Connection)?;
-        let request_id = uuid::Uuid::new_v4().to_string();
-        let request = Request::Query(QueryRequest {
-            request_id: request_id.clone(),
-            workspace: WorkspaceSelectorWire::Locator {
-                path: self.workspace.clone(),
-            },
-            correlation: None,
-            operation,
-        });
-        let response = match client::send(&mut connection, request)
-            .await
-            .map_err(Failure::Connection)?
-        {
-            Response::Query(response) => response,
-            other => return Err(unexpected(other)),
-        };
-        if let Some(ack_token) = response.ack_token {
-            let ack = Request::QueryAck(QueryAckRequest {
-                request_id,
-                workspace_id: response.workspace_id,
-                ack_token,
-            });
-            client::send(&mut connection, ack)
-                .await
-                .map_err(Failure::Connection)?;
-        }
-        match response.outcome {
-            QueryOutcomeWire::Ok(result) => Ok(result),
-            QueryOutcomeWire::Err(error) => Err(Failure::Rejected(format!(
-                "{:?}: {}",
-                error.code, error.message
-            ))),
-        }
-    }
-}
-
-fn unexpected(response: Response) -> Failure {
-    match response {
-        Response::Error(error) => Failure::Rejected(error.message),
-        _ => Failure::Connection(CliError::UnexpectedResponse),
-    }
-}
-
-/// The CLI's `standard` budget; retention off, so nothing is held for a
-/// correlation the TUI does not have.
-pub fn delivery(continuation: Option<DeliveryContinuationWire>) -> DeliveryWire {
-    DeliveryWire {
-        budget: DeliveryBudgetWire {
-            max_items: NonZeroUsize::new(64),
-            max_bytes: NonZeroUsize::new(64 * 1024),
-        },
-        continuation,
-        retention: RetentionWire::Disabled,
-    }
-}
-
-/// What the user typed, as a selector: a path when it looks like one,
-/// otherwise a partial Symbol name. The daemon resolves either.
-pub fn selector(text: &str) -> ProjectionTargetWire {
-    if text.contains('/') || text.contains('.') {
-        ProjectionTargetWire::Resource(ResourceTargetWire::Path(text.to_owned()))
-    } else {
-        ProjectionTargetWire::Symbol(SymbolTargetWire {
-            name: SymbolNameWire::PartialName(text.to_owned()),
-            resource: None,
-            kind: None,
-            language: None,
-        })
-    }
-}
-
-fn compact(result: &QueryResultWire) -> Vec<String> {
-    let mut out = Vec::new();
-    // Writing into a Vec cannot fail.
-    let _ = crate::query::render::write_compact(&mut out, result);
-    String::from_utf8_lossy(&out)
-        .lines()
-        .map(str::to_owned)
-        .collect()
-}
-
-/// The candidate descriptors a find answer delivered, in its order.
-fn candidates(answer: &ProjectedAnswerWire) -> Vec<Candidate> {
-    let mut found: Vec<Candidate> = Vec::new();
-    for item in &answer.page.evidence {
-        let DeliveredItemWire::Full(evidence) = item else {
-            continue;
-        };
-        let candidate = match evidence {
-            EvidenceWire::Symbol(symbol) => Candidate {
-                label: format!(
-                    "{:?} {}  {}:{}",
-                    symbol.symbol.kind,
-                    symbol.symbol.qualified_name,
-                    symbol.path_rel,
-                    symbol.symbol.span.start.line + 1
-                ),
-                target: ProjectionTargetWire::Symbol(SymbolTargetWire {
-                    name: SymbolNameWire::Id(symbol.symbol.id),
-                    resource: None,
-                    kind: None,
-                    language: None,
-                }),
-            },
-            EvidenceWire::Resource(resource) => Candidate {
-                label: resource.path_rel.clone(),
-                target: ProjectionTargetWire::Resource(ResourceTargetWire::Id(resource.id)),
-            },
-            _ => continue,
-        };
-        if !found.iter().any(|known| known.target == candidate.target) {
-            found.push(candidate);
-        }
-    }
-    found
-}
-
 /// Run `command` against the daemon and fold the outcome into `app`.
 pub async fn perform(app: &mut App, daemon: &Daemon, command: Command) {
     app.error = None;
@@ -562,18 +385,7 @@ pub async fn perform(app: &mut App, daemon: &Daemon, command: Command) {
 
 async fn refresh_overview(app: &mut App, daemon: &Daemon) -> Result<(), Failure> {
     let status = daemon.status().await?;
-    let work = match daemon
-        .query(QueryOperationWire::Knowledge(KnowledgeWire::WorkItems {
-            statuses: vec![
-                WorkItemStatusWire::Active,
-                WorkItemStatusWire::Blocked,
-                WorkItemStatusWire::Paused,
-                WorkItemStatusWire::Open,
-            ],
-            limit: NonZeroUsize::new(5).expect("5 != 0"),
-        }))
-        .await
-    {
+    let work = match daemon.query(crate::surface::open_work_items()).await {
         Ok(result) => match result {
             QueryResultWire::Knowledge(knowledge) => Ok(knowledge),
             _ => Err("unexpected Working State answer".to_owned()),
