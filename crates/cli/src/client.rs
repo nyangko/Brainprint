@@ -82,7 +82,12 @@ impl std::error::Error for CliError {}
 /// starts here.
 pub async fn connect_and_handshake() -> Result<ClientConnection, CliError> {
     let endpoint = EndpointPaths::resolve().map_err(CliError::EndpointUnavailable)?;
+    connect(&endpoint).await
+}
 
+/// Connect to `endpoint` and handshake. #70: the TUI holds one endpoint
+/// and opens a fresh connection per request through this.
+pub async fn connect(endpoint: &EndpointPaths) -> Result<ClientConnection, CliError> {
     #[cfg(unix)]
     let connect_result = ClientConnection::connect(&endpoint.socket_path).await;
     #[cfg(windows)]

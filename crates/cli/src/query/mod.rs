@@ -9,7 +9,7 @@ mod delivery;
 mod exec;
 mod knowledge;
 mod maintenance;
-mod render;
+pub(crate) mod render;
 mod target;
 mod verification;
 mod vocab;
@@ -18,6 +18,7 @@ mod work;
 pub use artifact::ArtifactCommand;
 pub use commands::Cli;
 pub use exec::Exit;
+pub(crate) use exec::absolute_workspace;
 pub use verification::VerificationCommand;
 pub use work::WorkCommand;
 
@@ -40,8 +41,8 @@ pub async fn run_query_command(cli: Cli) -> Exit {
         Cli::Rebuild { path, json } => maintenance::run_rebuild(path, json).await,
         Cli::Sync { path, json } => maintenance::run_sync(path, json).await,
         Cli::Uninit { path, json } => maintenance::run_uninit(path, json).await,
-        Cli::Install | Cli::Status | Cli::Init { .. } => {
-            unreachable!("main.rs handles Install/Status/Init before dispatching here")
+        Cli::Install | Cli::Status | Cli::Init { .. } | Cli::Tui { .. } => {
+            unreachable!("main.rs handles Install/Status/Init/Tui before dispatching here")
         }
     }
 }

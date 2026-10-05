@@ -29,6 +29,10 @@ pub struct GlobalConfig {
     /// means UNAVAILABLE; nothing is ever downloaded or searched for.
     #[serde(default, skip_serializing_if = "SemanticBackendLocators::is_empty")]
     pub semantic_backends: SemanticBackendLocators,
+    /// #70: human-surface settings. The daemon reads none of them; they
+    /// are accepted here so a user's UI choice never fails config loading.
+    #[serde(default, skip_serializing_if = "UiConfig::is_empty")]
+    pub ui: UiConfig,
 }
 
 impl Default for GlobalConfig {
@@ -36,7 +40,23 @@ impl Default for GlobalConfig {
         Self {
             format_version: CONFIG_FORMAT_VERSION,
             semantic_backends: SemanticBackendLocators::default(),
+            ui: UiConfig::default(),
         }
+    }
+}
+
+/// #70: `[ui]`. `locale` is any tag; an unsupported one reads as English.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UiConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub locale: Option<String>,
+}
+
+impl UiConfig {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
     }
 }
 
@@ -391,6 +411,22 @@ mod tests {
             fs::read_to_string(&paths.config_file).expect("config should remain readable"),
             original
         );
+    }
+
+    /// #70: the UI's `[ui] locale` -- any tag -- never fails the daemon.
+    #[test]
+    fn a_ui_locale_loads_and_the_daemon_ignores_its_value() {
+        let home = TestDir::create("ui-locale");
+        let paths = GlobalPaths::from_home(home.path());
+        fs::create_dir_all(&paths.root).expect("config root should be created");
+        fs::write(
+            &paths.config_file,
+            "format_version = 1\n\n[ui]\nlocale = \"xx\"\n",
+        )
+        .expect("config");
+        let config = load_global_config(&paths).expect("loads");
+        assert_eq!(config.ui.locale.as_deref(), Some("xx"));
+        assert_eq!(config.semantic_backends, SemanticBackendLocators::default());
     }
 
     #[test]

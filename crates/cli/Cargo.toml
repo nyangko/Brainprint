@@ -14,9 +14,21 @@ path = "src/main.rs"
 base64.workspace = true
 brainprint-core.workspace = true
 clap.workspace = true
+# #70: the TUI. Terminal rendering + keyboard/resize events through its
+# crossterm backend (re-exported, so no direct crossterm dependency);
+# default widget extras off.
+ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
 serde_json.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt"] }
+# #70: reads / sets `[ui] locale` in the global config.
+toml.workspace = true
 uuid.workspace = true
+
+[dev-dependencies]
+# #70: TUI acceptance against an in-process daemon. Test-only edges: the
+# shipped CLI still depends on brainprint-core alone (i1 acceptance).
+brainprint-daemon = { path = "../daemon" }
+brainprint-engine.workspace = true
 
 [lints]
 workspace = true

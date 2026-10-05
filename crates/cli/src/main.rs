@@ -1,5 +1,6 @@
 mod client;
 mod query;
+mod tui;
 
 use clap::Parser as _;
 use query::Cli;
@@ -10,6 +11,7 @@ async fn main() {
         Ok(Cli::Install) => run(cmd_install()).await,
         Ok(Cli::Status) => run(cmd_status()).await,
         Ok(Cli::Init { path }) => run(cmd_init(path)).await,
+        Ok(Cli::Tui { workspace, locale }) => tui::run(&workspace, locale).await,
         Ok(
             cli @ (Cli::Find { .. }
             | Cli::Inspect(_)

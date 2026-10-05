@@ -283,16 +283,23 @@ fn print_structural_summary(
 /// "no acknowledgement on output failure" rule.
 pub fn print_compact(result: &QueryResultWire) -> std::io::Result<()> {
     let mut stdout = std::io::stdout().lock();
+    write_compact(&mut stdout, result)?;
+    stdout.flush()
+}
+
+/// The compact rendering of `result` into `out` -- also the TUI's
+/// evidence body (#70), so both surfaces print the same facts.
+pub fn write_compact(out: &mut impl Write, result: &QueryResultWire) -> std::io::Result<()> {
     match result {
-        QueryResultWire::Find(result) => print_find_result(&mut stdout, result)?,
+        QueryResultWire::Find(result) => print_find_result(out, result)?,
         QueryResultWire::Inspect(answer)
         | QueryResultWire::Impact(answer)
         | QueryResultWire::Context(answer) => {
-            print_projected_answer(&mut stdout, answer)?;
+            print_projected_answer(out, answer)?;
         }
-        QueryResultWire::Relations(result) => print_relations_result(&mut stdout, result)?,
-        QueryResultWire::Knowledge(result) => print_knowledge_result(&mut stdout, result)?,
-        QueryResultWire::Structure(summary) => print_structural_summary(&mut stdout, summary)?,
+        QueryResultWire::Relations(result) => print_relations_result(out, result)?,
+        QueryResultWire::Knowledge(result) => print_knowledge_result(out, result)?,
+        QueryResultWire::Structure(summary) => print_structural_summary(out, summary)?,
     }
-    stdout.flush()
+    Ok(())
 }
