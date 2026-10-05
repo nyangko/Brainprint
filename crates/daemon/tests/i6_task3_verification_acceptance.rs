@@ -70,6 +70,10 @@ fn main() {
             concurrent_verification_is_busy_not_queued,
         ),
         (
+            "five_clients_share_one_slot_and_keep_their_own_work_items",
+            five_clients_share_one_slot_and_keep_their_own_work_items,
+        ),
+        (
             "a_client_disconnect_cancels_the_tree_and_records_nothing",
             a_client_disconnect_cancels_the_tree_and_records_nothing,
         ),
@@ -797,6 +801,171 @@ fn concurrent_verification_is_busy_not_queued() {
         assert_eq!(count(&fixture.marker("started")), 1);
         assert_eq!(count(&fixture.marker("ran")), 1);
         assert_eq!(fixture.runtime.verification_runs(), 2);
+    });
+}
+
+/// A current file listing of the Workspace at `paths`, through `connection`.
+async fn current_files(connection: &mut ClientConnection, paths: &WorkspacePaths) -> usize {
+    use protocol::query::*;
+    let response = send(
+        connection,
+        &Request::Query(QueryRequest {
+            request_id: "6f8e1a2b-3c4d-4e5f-8a9b-0c1d2e3f4a5b".to_owned(),
+            workspace: WorkspaceSelectorWire::Locator {
+                path: paths.workspace_root.to_string_lossy().into_owned(),
+            },
+            correlation: None,
+            operation: QueryOperationWire::Find(FindQueryWire::Files {
+                directory: None,
+                recursive: true,
+                path_prefix: None,
+                role: None,
+                language: None,
+                kind: Some(ResourceKindWire::File),
+                limit: std::num::NonZeroUsize::new(200).expect("nz"),
+            }),
+        }),
+    )
+    .await;
+    let Response::Query(QueryResponse {
+        outcome: QueryOutcomeWire::Ok(QueryResultWire::Find(FindResultWire::Files(listing))),
+        ..
+    }) = response
+    else {
+        panic!("expected a file listing, got {response:?}")
+    };
+    assert_eq!(listing.currentness, CurrentnessWire::Current);
+    listing.entries.len()
+}
+
+/// #68: five clients of one daemon. A holds the Workspace's verification
+/// slot; B and C -- each on its own WorkItem -- are refused Busy and run
+/// nothing, then record their own Results beside it; D's structural query
+/// is served; E verifies another Workspace in parallel. Each WorkItem
+/// keeps exactly its own Result, and only A's and E's commands ran, once.
+fn five_clients_share_one_slot_and_keep_their_own_work_items() {
+    block_on(async {
+        let fixture = Fixture::new("five", false).await;
+        let paths = fixture.paths.clone();
+        let mut clients = Vec::new();
+        for _ in 0..5 {
+            clients.push(open_connection(&fixture.endpoint).await);
+        }
+        let [mut a, mut b, mut c, mut d, mut e] =
+            <[ClientConnection; 5]>::try_from(clients).unwrap_or_else(|_| panic!("five clients"));
+
+        // Three WorkItems started at once, one per client.
+        let (item_a, item_b, item_c) = tokio::join!(
+            start(&mut a, &paths),
+            start(&mut b, &paths),
+            start(&mut c, &paths)
+        );
+        assert!(item_a != item_b && item_b != item_c && item_a != item_c);
+
+        let started = fixture.mark("started");
+        let release = fixture.marker("release");
+        let held = format!("await:{}", release.display());
+        let slow = verification(vec![command(
+            "slow",
+            &[&started, &held, &fixture.mark("ran")],
+        )]);
+        let a_paths = paths.clone();
+        let running = tokio::spawn(async move {
+            let response = work(
+                &mut a,
+                &a_paths,
+                WorkOperationWire::Result(result_input(item_a, WorkOutcomeWire::Partial, slow)),
+            )
+            .await;
+            (a, response)
+        });
+        wait_for(&fixture.marker("started"));
+
+        // B and C verify the same Workspace at once: Busy, nothing runs.
+        let never = fixture.mark("never");
+        let attempt = |item| {
+            WorkOperationWire::Result(result_input(
+                item,
+                WorkOutcomeWire::Partial,
+                verification(vec![command("again", &[&never])]),
+            ))
+        };
+        let (busy_b, busy_c) = tokio::join!(
+            work(&mut b, &paths, attempt(item_b)),
+            work(&mut c, &paths, attempt(item_c))
+        );
+        for busy in [busy_b, busy_c] {
+            assert_eq!(failed(busy).error, WorkErrorWire::VerificationBusy);
+        }
+
+        // Their own Results without verification are not held by A's slot.
+        let (done_b, done_c) = tokio::join!(
+            work(
+                &mut b,
+                &paths,
+                WorkOperationWire::Result(result_input(item_b, WorkOutcomeWire::Partial, None))
+            ),
+            work(
+                &mut c,
+                &paths,
+                WorkOperationWire::Result(result_input(item_c, WorkOutcomeWire::Partial, None))
+            )
+        );
+        for (item, done) in [(item_b, done_b), (item_c, done_c)] {
+            assert_eq!(recorded(done).result.work_item, item);
+        }
+
+        // D: a structural query while the slot is held.
+        assert!(current_files(&mut d, &paths).await > 0);
+
+        // E: another Workspace verifies in parallel.
+        let other_root = TestDir::create("five-other-root");
+        workspace_tree(other_root.path(), false);
+        let other_paths = init(&mut e, other_root.path()).await;
+        let elsewhere = start(&mut e, &other_paths).await;
+        let parallel = recorded(
+            work(
+                &mut e,
+                &other_paths,
+                WorkOperationWire::Result(result_input(
+                    elsewhere,
+                    WorkOutcomeWire::Partial,
+                    verification(vec![command("fast", &["exit:0"])]),
+                )),
+            )
+            .await,
+        );
+        assert!(parallel.verification.is_some());
+        assert!(!fixture.marker("ran").exists(), "E ran beside A");
+
+        fs::write(&release, b"").expect("release");
+        let (_a, response) = running.await.expect("A");
+        let a_done = recorded(response);
+        assert_eq!(a_done.result.work_item, item_a);
+        assert!(a_done.verification.is_some());
+
+        assert!(!fixture.marker("never").exists());
+        assert_eq!(count(&fixture.marker("started")), 1);
+        assert_eq!(count(&fixture.marker("ran")), 1);
+        assert_eq!(fixture.runtime.verification_runs(), 2, "A and E, once each");
+        assert_eq!(fixture.runtime.workspace_runtime_count(), 2);
+        // Exactly one Result per WorkItem, each its own.
+        let results: i64 = rusqlite::Connection::open_with_flags(
+            &paths.workspace_db,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .expect("workspace.db")
+        .query_row(
+            "SELECT COUNT(DISTINCT work_item_id) || '/' || COUNT(*) FROM work_result",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .map(|text| {
+            assert_eq!(text, "3/3", "one Result per WorkItem");
+            3
+        })
+        .expect("results");
+        assert_eq!(results, 3);
     });
 }
 

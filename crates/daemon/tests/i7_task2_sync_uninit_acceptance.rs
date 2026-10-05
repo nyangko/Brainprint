@@ -1230,6 +1230,110 @@ async fn an_unsupported_language_file_is_usable_and_never_a_false_zero() {
     daemon.stop().await;
 }
 
+/// #68: five clients split 3 + 2 over two worktrees of one Project, no
+/// semantic backend configured. All five query at once; A's edit + sync
+/// and then B's never move the other side; structural answers stay
+/// current; the missing backend is never started or retried per client.
+#[tokio::test]
+async fn three_and_two_clients_on_two_worktrees_stay_isolated_without_a_backend() {
+    let home = TestDir::create("home");
+    let global = GlobalPaths::from_home(home.path());
+    let daemon = Daemon::start(&global, Some(deaf())).await;
+    let (main, _parent, secondary) = worktree_pair();
+    let a = daemon.init(main.path()).await;
+    let b = daemon.init(&secondary).await;
+    assert_eq!(a.project_id, b.project_id);
+    let a_id: WorkspaceId = a.workspace_id.parse().expect("id");
+    let b_id: WorkspaceId = b.workspace_id.parse().expect("id");
+    seed_policy(main.path(), "i7-task5-shared");
+    seed_work_item(main.path(), a_id, "work only in A");
+    seed_work_item(&secondary, b_id, "work only in B");
+
+    // Clients 1-3 on A, 4-5 on B, all at once.
+    let all_five = || async {
+        tokio::join!(
+            daemon.files(a_id),
+            daemon.inspect(a_id, "run"),
+            daemon.callers(a_id, "helper"),
+            daemon.files(b_id),
+            work_items(&daemon, b_id),
+        )
+    };
+    let (a_files, a_run, a_callers, b_files, b_work) = all_five().await;
+    assert!(a_files.1 && b_files.1);
+    assert!(a_run.expect("run").contains("return helper()"));
+    assert_eq!(a_callers, 1, "structural relations without a backend");
+    assert!(b_work.contains("work only in B") && !b_work.contains("work only in A"));
+    for workspace in [a_id, b_id] {
+        assert!(
+            rules(&daemon, workspace)
+                .await
+                .contains("keep helper() pure")
+        );
+    }
+
+    // A changes and syncs while B's two clients keep querying.
+    let b_before = generations(&secondary);
+    fs::write(
+        main.path().join("src/only_a.ts"),
+        "export function onlyA(): number {\n  return 1;\n}\n",
+    )
+    .expect("edit A");
+    let (a_sync, b_files, b_work) = tokio::join!(
+        daemon.sync(main.path()),
+        daemon.files(b_id),
+        work_items(&daemon, b_id)
+    );
+    let a_sync = synced(&a_sync.expect("sync A"));
+    assert_eq!((a_sync.created, a_sync.updated, a_sync.deleted), (1, 0, 0));
+    assert!(b_files.1 && !b_files.0.contains(&"src/only_a.ts".to_owned()));
+    assert!(b_work.contains("work only in B"));
+    assert_eq!(generations(&secondary), b_before, "A never moves B");
+    assert!(daemon.inspect(a_id, "onlyA").await.is_some());
+    assert!(daemon.inspect(b_id, "onlyA").await.is_none());
+
+    // And the other way round.
+    let a_before = generations(main.path());
+    fs::write(
+        secondary.join("src/only_b.ts"),
+        "export function onlyB(): number {\n  return 2;\n}\n",
+    )
+    .expect("edit B");
+    let (b_sync, a_files, a_callers) = tokio::join!(
+        daemon.sync(&secondary),
+        daemon.files(a_id),
+        daemon.callers(a_id, "helper")
+    );
+    assert_eq!(synced(&b_sync.expect("sync B")).created, 1);
+    assert!(a_files.1 && !a_files.0.contains(&"src/only_b.ts".to_owned()));
+    assert_eq!(a_callers, 1);
+    assert_eq!(generations(main.path()), a_before, "B never moves A");
+
+    // Two runtimes for five clients; no backend started or retried.
+    assert_eq!(daemon.runtime.workspace_runtime_count(), 2);
+    for workspace in [a_id, b_id] {
+        let stats = daemon
+            .runtime
+            .semantic_stats(workspace)
+            .await
+            .expect("semantic");
+        assert_eq!(stats.backend_starts, 0, "{stats:?}");
+        assert!(stats.registered.is_empty(), "{stats:?}");
+        assert!(
+            stats.unavailable["typescript"].contains("no backend locator"),
+            "{stats:?}"
+        );
+        let lifecycle = daemon
+            .runtime
+            .lifecycle_stats(workspace)
+            .await
+            .expect("runtime");
+        assert!(lifecycle.watcher_attached);
+        assert_eq!(lifecycle.watcher_attach_attempts, 1, "one watcher each");
+    }
+    daemon.stop().await;
+}
+
 // ======================================================= #66 upgrade
 
 /// Every table's columns, sorted: the schema a migration list produces.

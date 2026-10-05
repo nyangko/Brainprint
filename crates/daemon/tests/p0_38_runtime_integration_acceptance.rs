@@ -896,6 +896,216 @@ async fn a15_two_clients_share_one_runtime_and_one_watcher() {
     daemon.stop().await;
 }
 
+/// One of #68's five clients: its query kind, run over its own
+/// connection. Returns a fingerprint of the truth it was served (the
+/// listing, the source, the callers) and whether it claimed CURRENT.
+async fn agent_query(
+    mut connection: ClientConnection,
+    workspace: WorkspaceId,
+    kind: usize,
+) -> (ClientConnection, String, bool) {
+    let symbol = |name: &str| {
+        ProjectionTargetWire::Symbol(SymbolTargetWire {
+            name: SymbolNameWire::Name(name.to_owned()),
+            resource: None,
+            kind: None,
+            language: None,
+        })
+    };
+    let operation = match kind {
+        0 => QueryOperationWire::Find(FindQueryWire::Files {
+            directory: None,
+            recursive: true,
+            path_prefix: None,
+            role: None,
+            language: None,
+            kind: Some(ResourceKindWire::File),
+            limit: NonZeroUsize::new(200).expect("nz"),
+        }),
+        1 => QueryOperationWire::Inspect(InspectWire {
+            target: symbol("run"),
+            delivery: DeliveryWire {
+                budget: DeliveryBudgetWire {
+                    max_items: NonZeroUsize::new(64),
+                    max_bytes: NonZeroUsize::new(64 * 1024),
+                },
+                continuation: None,
+                retention: RetentionWire::Disabled,
+            },
+        }),
+        2 => QueryOperationWire::Relations(RelationsWire {
+            target: symbol("helper"),
+            direction: RelationDirectionWire::Incoming,
+            kinds: vec![RelationKindWire::Calls],
+        }),
+        _ => QueryOperationWire::Knowledge(KnowledgeWire::WorkItems {
+            statuses: vec![WorkItemStatusWire::Open],
+            limit: NonZeroUsize::new(10).expect("nz"),
+        }),
+    };
+    let (truth, current) = match query(&mut connection, workspace, operation).await {
+        QueryResultWire::Find(FindResultWire::Files(listing)) => {
+            let mut paths: Vec<String> = listing.entries.into_iter().map(|e| e.path_rel).collect();
+            paths.sort();
+            (
+                paths.join(","),
+                listing.currentness == CurrentnessWire::Current,
+            )
+        }
+        QueryResultWire::Inspect(answer) => {
+            let source = answer.page.evidence.iter().find_map(|item| match item {
+                DeliveredItemWire::Full(EvidenceWire::CurrentSource(range))
+                    if range.source.contains("run") =>
+                {
+                    Some(range.source.clone())
+                }
+                _ => None,
+            });
+            (
+                source.unwrap_or_default(),
+                answer.currentness == CurrentnessWire::Current,
+            )
+        }
+        QueryResultWire::Relations(answer) => {
+            let callers: usize = answer.answers.iter().map(|a| a.confirmed.len()).sum();
+            (
+                callers.to_string(),
+                answer.currentness == CurrentnessWire::Current,
+            )
+        }
+        // Working State has no index basis: it is read, not compared.
+        QueryResultWire::Knowledge(_) => (String::new(), true),
+        other => panic!("unexpected answer: {other:?}"),
+    };
+    (connection, truth, current)
+}
+
+/// #68: five clients of one Workspace -- find / inspect / relations /
+/// Working State / status at once -- share one runtime and one watcher;
+/// a change published while they query gives each answer either the
+/// whole old tree or the whole new one, never a mix and never a
+/// half-published generation; one client vanishing mid-request touches
+/// nobody else; a new client connects afterwards.
+#[tokio::test]
+async fn a68_five_clients_share_one_runtime_through_a_change_and_a_disconnect() {
+    let home = TestDir::create("home");
+    let global = GlobalPaths::from_home(home.path());
+    let (script, attempts, factory) = scripted(Watcher::Scripted);
+    let daemon = Daemon::start(&global, Some(factory)).await;
+    let workspace = fixture_workspace("five", true);
+    let root = workspace.path().to_path_buf();
+    let id = daemon.init(&root).await;
+
+    let round = |connections: Vec<ClientConnection>| async {
+        let tasks: Vec<_> = connections
+            .into_iter()
+            .enumerate()
+            .map(|(kind, connection)| tokio::spawn(agent_query(connection, id, kind)))
+            .collect();
+        let mut out = Vec::new();
+        for task in tasks {
+            out.push(task.await.expect("client task"));
+        }
+        out
+    };
+    let mut connections = Vec::new();
+    for _ in 0..5 {
+        connections.push(daemon.connect().await);
+    }
+    // Client 4 also asks for daemon status on its connection.
+    let Response::Status(_) = send(
+        &mut connections[4],
+        Request::Status(protocol::StatusRequest),
+    )
+    .await
+    else {
+        panic!("status")
+    };
+
+    // 1. Same truth for everyone, before any change.
+    let before = round(connections).await;
+    let old: Vec<String> = before.iter().map(|(_, truth, _)| truth.clone()).collect();
+    assert!(before.iter().all(|(_, _, current)| *current));
+    assert!(old[1].contains("return helper()"), "{old:?}");
+    assert_eq!(old[2], "1");
+    let connections: Vec<_> = before.into_iter().map(|(c, _, _)| c).collect();
+
+    // 2. A change lands while all five query at once.
+    write(
+        &root,
+        "src/app.ts",
+        "import { helper } from \"./shared\";\n\nexport function run(): number {\n  return helper() + helper();\n}\n",
+    );
+    write(&root, "src/extra.ts", "export const extra = 1;\n");
+    script.push(RawWatchEvent::Modified {
+        path: root.join("src/app.ts"),
+    });
+    script.push(RawWatchEvent::Created {
+        path: root.join("src/extra.ts"),
+    });
+    let during = round(connections).await;
+    for (kind, (_, truth, current)) in during.iter().enumerate().take(3) {
+        assert!(*current, "kind {kind}: a served answer is current");
+        let new_kind = match kind {
+            0 => truth.contains("src/extra.ts"),
+            1 => truth.contains("helper() + helper()"),
+            _ => truth == "1",
+        };
+        assert!(
+            *truth == old[kind] || new_kind,
+            "kind {kind}: neither the old nor the new tree: {truth}"
+        );
+    }
+    let building = index_db(&root)
+        .query_row(
+            "SELECT count(*) FROM generation WHERE state = 'BUILDING'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .expect("count");
+    assert_eq!(building, 0);
+    let mut connections: Vec<_> = during.into_iter().map(|(c, _, _)| c).collect();
+
+    // 3. Client 0 vanishes mid-request: written, never read.
+    let gone = connections.remove(0);
+    {
+        let mut gone = gone;
+        protocol::framing::write_message(
+            &mut gone,
+            &Request::Query(QueryRequest {
+                request_id: "7a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d".to_owned(),
+                workspace: WorkspaceSelectorWire::Id { workspace_id: id },
+                correlation: None,
+                operation: QueryOperationWire::Find(FindQueryWire::Files {
+                    directory: None,
+                    recursive: true,
+                    path_prefix: None,
+                    role: None,
+                    language: None,
+                    kind: Some(ResourceKindWire::File),
+                    limit: NonZeroUsize::new(200).expect("nz"),
+                }),
+            }),
+        )
+        .await
+        .expect("write");
+    }
+    // 4. The other four and a brand-new client converge on the new tree.
+    connections.insert(0, daemon.connect().await);
+    let after = round(connections).await;
+    assert!(after.iter().all(|(_, _, current)| *current));
+    assert!(after[0].1.contains("src/extra.ts"), "{}", after[0].1);
+    assert!(after[1].1.contains("helper() + helper()"), "{}", after[1].1);
+    assert_eq!(after[2].1, "1", "one calling function");
+
+    // One runtime, one watcher, still attached, for all of them.
+    assert_eq!(daemon.runtime.workspace_runtime_count(), 1);
+    assert_eq!(attempts.load(Ordering::Relaxed), 1, "one watcher");
+    let stats = daemon.stats(id).await;
+    assert!(stats.watcher_attached);
+    daemon.stop().await;
+}
+
 #[tokio::test]
 async fn a16_two_worktrees_have_separate_runtime_and_currentness() {
     let home = TestDir::create("home");
