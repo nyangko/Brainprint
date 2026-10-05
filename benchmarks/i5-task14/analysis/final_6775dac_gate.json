@@ -1,0 +1,270 @@
+[
+ {
+  "check": "fresh: find target Current",
+  "pass": true,
+  "detail": {
+   "ms": 96
+  }
+ },
+ {
+  "check": "fresh: T1 callers complete (4 prod + 6 test), no false call",
+  "pass": true,
+  "detail": {
+   "ms": 273,
+   "missing": [],
+   "extra": [],
+   "coverage": {
+    "attribution": "TargetCandidateOnly",
+    "gaps": 0,
+    "ambiguous": 0,
+    "requires_semantics": 0,
+    "unsupported_construct": 0,
+    "truncated": 0,
+    "unattributed": 85224,
+    "unconfirmed_owners": 0,
+    "scope": null,
+    "semantic": {
+     "contexts": 0,
+     "conflicts": 0,
+     "not_current": false
+    }
+   }
+  }
+ },
+ {
+  "check": "backend asleep -> activated by query",
+  "pass": true,
+  "detail": {
+   "before": [
+    "runtime:      active",
+    "rust        registered"
+   ],
+   "after": [
+    "runtime:      active",
+    "rust        registered"
+   ]
+  }
+ },
+ {
+  "check": "op: find files",
+  "pass": true,
+  "detail": {
+   "ms": 14,
+   "bytes": 8034,
+   "current": true,
+   "err": null
+  }
+ },
+ {
+  "check": "op: find text",
+  "pass": true,
+  "detail": {
+   "ms": 256,
+   "bytes": 1433,
+   "current": true,
+   "err": null
+  }
+ },
+ {
+  "check": "op: inspect",
+  "pass": true,
+  "detail": {
+   "ms": 90,
+   "bytes": 19202,
+   "current": true,
+   "err": null
+  }
+ },
+ {
+  "check": "op: relations outgoing",
+  "pass": true,
+  "detail": {
+   "ms": 45,
+   "bytes": 3481,
+   "current": true,
+   "err": null
+  }
+ },
+ {
+  "check": "op: impact public-signature",
+  "pass": true,
+  "detail": {
+   "ms": 461,
+   "bytes": 18133,
+   "current": true,
+   "err": null
+  }
+ },
+ {
+  "check": "op: context change",
+  "pass": true,
+  "detail": {
+   "ms": 119,
+   "bytes": 19339,
+   "current": true,
+   "err": null
+  }
+ },
+ {
+  "check": "op: knowledge rules",
+  "pass": true,
+  "detail": {
+   "ms": 7,
+   "bytes": 192,
+   "current": false,
+   "err": null
+  }
+ },
+ {
+  "check": "op: structure",
+  "pass": true,
+  "detail": {
+   "ms": 97,
+   "bytes": 28842,
+   "current": true,
+   "err": null
+  }
+ },
+ {
+  "check": "same revision: continuation accepted",
+  "pass": true,
+  "detail": {
+   "more_available": true,
+   "page2": "{\"request_id\": \"cec7ad8e-7743-4dee-9786-aeeab791de47\", \"workspace_id\": \"7a5f0aa5-2e82-4105-95d8-a94936b12011\", \"outcome\""
+  }
+ },
+ {
+  "check": "source change: new symbol Current",
+  "pass": true,
+  "detail": {
+   "visible_after_ms": 216
+  }
+ },
+ {
+  "check": "source change: old continuation rejected",
+  "pass": true,
+  "detail": {
+   "resp": "{\"request_id\": \"2996bf00-a974-47f1-84a4-971801715c1f\", \"workspace_id\": \"7a5f0aa5-2e82-4105-95d8-a94936b12011\", \"outcome\": {\"Err\": {\"code\": \"ContinuationMismatch\", \"detail\": {\"ContinuationMismatch\": \"W"
+  }
+ },
+ {
+  "check": "revert: deleted symbol gone",
+  "pass": true,
+  "detail": {
+   "after_ms": 135
+  }
+ },
+ {
+  "check": "daemon restart: Current, callers complete",
+  "pass": true,
+  "detail": {
+   "find_ms": 156,
+   "callers_ms": 5017
+  }
+ },
+ {
+  "check": "offline edit: first answer sees edit or is not Current",
+  "pass": true,
+  "detail": {
+   "found": true,
+   "currentness": "Current",
+   "ms": 235
+  }
+ },
+ {
+  "check": "offline edit revert visible",
+  "pass": true,
+  "detail": {
+   "after_ms": 80
+  }
+ },
+ {
+  "check": "work start",
+  "pass": true,
+  "detail": {
+   "resp": "{\"Started\": {\"workspace_id\": \"7a5f0aa5-2e82-4105-95d8-a94936b12011\", \"working_state\": {\"work_item\": \"d9c2e5ab-aaf9-42ef-b2e1-bede8a9ccd4e\", \"baseline_workspace_revision\": \"4\", \"baseline_index_incarnat"
+  }
+ },
+ {
+  "check": "work result partial",
+  "pass": true,
+  "detail": {
+   "resp": "{\"Recorded\": {\"workspace_id\": \"7a5f0aa5-2e82-4105-95d8-a94936b12011\", \"status\": \"Active\", \"result\": {\"work_item\": \"d9c2e5ab-aaf9-42ef-b2e1-bede8a9ccd4e\", \"result_status\": \"Partial\", \"result_summary\": "
+  }
+ },
+ {
+  "check": "context resume returns handoff",
+  "pass": true,
+  "detail": {
+   "ms": 7,
+   "bytes": 2278
+  }
+ },
+ {
+  "check": "MCP: 4 tools, find answers Current",
+  "pass": true,
+  "detail": {
+   "tools": [
+    "brainprint.context",
+    "brainprint.find",
+    "brainprint.inspect",
+    "brainprint.relations"
+   ],
+   "tools_list_bytes": 26815,
+   "instructions_bytes": 449
+  }
+ },
+ {
+  "check": "agent: bridge PreToolUse answers (exit 0)",
+  "pass": true,
+  "detail": {
+   "probe_exit": 0,
+   "probe": "{\"capabilities\":{\"agent_scoped_tool_events\":true,\"context_usage_signal\":false,\"notification_surface\":true,\"post_tool_context\":true,\"post_tool_event\":true,\"post_tool_result\":true,\"pre_tool_context\":tru",
+   "bridge": "{\"hookSpecificOutput\":{\"additionalContext\":\"Brainprint has current indexed facts for this workspace. For text search, prefer brainprint.find (mode: text) first; native tools stay valid when Brainprint reports a gap.\",\"hookEventName\":\"PreToolUse\"}}"
+  }
+ },
+ {
+  "check": "degraded (no rust backend): no false complete",
+  "pass": true,
+  "detail": {
+   "currentness": "Current",
+   "sites": 4,
+   "missing": [
+    215,
+    430,
+    551,
+    574,
+    586,
+    714
+   ],
+   "coverage": {
+    "attribution": "TargetCandidateOnly",
+    "gaps": 0,
+    "ambiguous": 0,
+    "requires_semantics": 0,
+    "unsupported_construct": 0,
+    "truncated": 0,
+    "unattributed": 86209,
+    "unconfirmed_owners": 4,
+    "scope": null,
+    "semantic": {
+     "contexts": 0,
+     "conflicts": 0,
+     "not_current": false
+    }
+   }
+  }
+ },
+ {
+  "check": "backend restored: callers complete again",
+  "pass": true,
+  "detail": {
+   "ms": 4563
+  }
+ },
+ {
+  "check": "workspace clean after gate",
+  "pass": true,
+  "detail": {}
+ }
+]
