@@ -71,6 +71,14 @@ impl EndpointPaths {
     }
 }
 
+/// `~/.brainprint/config.toml`: the user-global config file, by the same
+/// home rule as `brainprint-engine::paths::GlobalPaths::discover` (copied
+/// for the reason above). `None` without a usable home directory.
+#[must_use]
+pub fn global_config_path() -> Option<PathBuf> {
+    user_home_dir().map(|home| home.join(".brainprint").join("config.toml"))
+}
+
 fn resolve_runtime_root() -> Option<PathBuf> {
     if let Some(xdg_runtime_dir) = non_empty_env("XDG_RUNTIME_DIR") {
         return Some(PathBuf::from(xdg_runtime_dir).join("brainprint"));

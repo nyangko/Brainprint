@@ -874,6 +874,61 @@ async fn a13_watcher_unavailable_degrades_to_query_time_reconcile() {
 
 // ======================================================= concurrency/isolation
 
+/// #70: with no watcher attached, currentness is proven per query; status
+/// and doctor report it NotMeasured rather than repeating the last proof.
+#[tokio::test]
+async fn a70_no_watcher_means_status_does_not_claim_current() {
+    use brainprint_core::protocol::maintenance::{
+        DoctorRequest, DoctorWorkspaceWire, IndexCheckWire, RuntimeCheckWire, WatcherCheckWire,
+        WorkspaceStatusWire,
+    };
+    let home = TestDir::create("home");
+    let global = GlobalPaths::from_home(home.path());
+    let (_script, _attempts, factory) = scripted(Watcher::Unavailable);
+    let daemon = Daemon::start(&global, Some(factory)).await;
+    let workspace = fixture_workspace("no-watcher", false);
+    daemon.init(workspace.path()).await;
+    let path = workspace.path().to_string_lossy().into_owned();
+
+    let mut connection = daemon.connect().await;
+    let Response::Status(status) = send(
+        &mut connection,
+        Request::Status(protocol::StatusRequest {
+            path: Some(path.clone()),
+        }),
+    )
+    .await
+    else {
+        panic!("status")
+    };
+    let Some(WorkspaceStatusWire::Initialized(report)) = status.workspace else {
+        panic!("initialized")
+    };
+    assert!(matches!(
+        report.runtime,
+        RuntimeCheckWire::Active {
+            watcher: WatcherCheckWire::Unavailable { .. }
+        }
+    ));
+    assert!(
+        matches!(report.index, IndexCheckWire::NotMeasured { .. }),
+        "{:?}",
+        report.index
+    );
+    let Response::Doctor(doctor) =
+        send(&mut connection, Request::Doctor(DoctorRequest { path })).await
+    else {
+        panic!("doctor")
+    };
+    let DoctorWorkspaceWire::Initialized(doctor) = doctor.workspace else {
+        panic!("initialized")
+    };
+    assert!(matches!(doctor.index, IndexCheckWire::NotMeasured { .. }));
+    // A query still proves it on its own: the answer is current.
+    assert!(files(&daemon, daemon.init(workspace.path()).await).await.1);
+    daemon.stop().await;
+}
+
 #[tokio::test]
 async fn a15_two_clients_share_one_runtime_and_one_watcher() {
     let home = TestDir::create("home");
@@ -1015,7 +1070,7 @@ async fn a68_five_clients_share_one_runtime_through_a_change_and_a_disconnect() 
     // Client 4 also asks for daemon status on its connection.
     let Response::Status(_) = send(
         &mut connections[4],
-        Request::Status(protocol::StatusRequest),
+        Request::Status(protocol::StatusRequest::default()),
     )
     .await
     else {

@@ -82,16 +82,16 @@ fn main() {
             exit_codes_follow_the_typed_errors,
         ),
         (
-            "a_v11_client_is_refused_by_a_v12_daemon",
-            a_v11_client_is_refused_by_a_v12_daemon,
+            "a_v12_client_is_refused_by_a_v13_daemon",
+            a_v12_client_is_refused_by_a_v13_daemon,
         ),
         (
-            "the_v12_cli_stops_at_a_v11_daemon",
-            the_v12_cli_stops_at_a_v11_daemon,
+            "the_v13_cli_stops_at_a_v12_daemon",
+            the_v13_cli_stops_at_a_v12_daemon,
         ),
         (
-            "protocol_is_12_and_workspace_schema_7",
-            protocol_is_12_and_workspace_schema_7,
+            "protocol_is_13_and_workspace_schema_7",
+            protocol_is_13_and_workspace_schema_7,
         ),
     ];
     let handles: Vec<_> = tests
@@ -342,7 +342,11 @@ fn run_cli_in(home: &Path, cwd: Option<&Path>, args: &[&str], stdin: Option<&str
         .expect("brainprint should run");
     let mut input = child.stdin.take().expect("stdin");
     if let Some(text) = stdin {
-        input.write_all(text.as_bytes()).expect("write stdin");
+        // A CLI that rejects its arguments exits without reading stdin;
+        // writing after that is a broken pipe, not a test failure.
+        if let Err(error) = input.write_all(text.as_bytes()) {
+            assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe, "write stdin");
+        }
     }
     drop(input);
     child.wait_with_output().expect("output")
@@ -1210,22 +1214,22 @@ fn exit_codes_follow_the_typed_errors() {
     });
 }
 
-/// v11 client → v12 daemon: refused at handshake; a start sent anyway is
+/// v12 client → v13 daemon: refused at handshake; a start sent anyway is
 /// never served and runs nothing.
-fn a_v11_client_is_refused_by_a_v12_daemon() {
+fn a_v12_client_is_refused_by_a_v13_daemon() {
     block_on(async {
-        let fixture = Fixture::new("v11-client").await;
+        let fixture = Fixture::new("v12-client").await;
         let mut connection = connect(&fixture.endpoint).await;
         assert_eq!(
-            handshake(&mut connection, 11).await,
+            handshake(&mut connection, 12).await,
             Response::Handshake(HandshakeResponse::VersionMismatch {
-                server_protocol_version: 12,
-                client_protocol_version: 11,
+                server_protocol_version: 13,
+                client_protocol_version: 12,
             })
         );
         let request = Request::VerificationJobStart(VerificationJobStartRequestWire {
             workspace: fixture.selector(),
-            idempotency_key: "v12".to_owned(),
+            idempotency_key: "v13".to_owned(),
             verification: batch(vec![command("never", &[&fixture.mark("never")])]),
         });
         let _ = protocol::framing::write_message(&mut connection, &request).await;
@@ -1238,10 +1242,10 @@ fn a_v11_client_is_refused_by_a_v12_daemon() {
     });
 }
 
-/// The v12 CLI → a v11 daemon: the CLI reports the mismatch and stops.
-fn the_v12_cli_stops_at_a_v11_daemon() {
+/// The v13 CLI → a v12 daemon: the CLI reports the mismatch and stops.
+fn the_v13_cli_stops_at_a_v12_daemon() {
     block_on(async {
-        let home = TestDir::create("v11-daemon");
+        let home = TestDir::create("v12-daemon");
         let endpoint = runtime_paths::resolve(&GlobalPaths::from_home(home.path()));
         #[cfg(unix)]
         let listener = {
@@ -1250,7 +1254,7 @@ fn the_v12_cli_stops_at_a_v11_daemon() {
         };
         #[cfg(windows)]
         let listener = protocol::Listener::bind(&endpoint.pipe_name).expect("listener");
-        let fake_v11 = tokio::spawn(async move {
+        let fake_v12 = tokio::spawn(async move {
             let mut listener = listener;
             let mut connection = listener.accept().await.expect("accept");
             let request: Request = protocol::framing::read_message(&mut connection)
@@ -1262,7 +1266,7 @@ fn the_v12_cli_stops_at_a_v11_daemon() {
             protocol::framing::write_message(
                 &mut connection,
                 &Response::Handshake(HandshakeResponse::VersionMismatch {
-                    server_protocol_version: 11,
+                    server_protocol_version: 12,
                     client_protocol_version: handshake.protocol_version,
                 }),
             )
@@ -1286,12 +1290,12 @@ fn the_v12_cli_stops_at_a_v11_daemon() {
             "{}",
             text(&output.stderr)
         );
-        assert_eq!(fake_v11.await.expect("fake daemon"), 12);
+        assert_eq!(fake_v12.await.expect("fake daemon"), 13);
     });
 }
 
-fn protocol_is_12_and_workspace_schema_7() {
-    assert_eq!(PROTOCOL_VERSION, 12);
+fn protocol_is_13_and_workspace_schema_7() {
+    assert_eq!(PROTOCOL_VERSION, 13);
     assert_eq!(
         brainprint_engine::schema::workspace::WORKSPACE_MIGRATIONS.len(),
         7

@@ -27,14 +27,17 @@ use brainprint_core::{
         maintenance::{
             BackendCheckWire, BackendStateWire, CheckWire, DatabaseCheckWire, DatabaseStateWire,
             DoctorRequest, DoctorResponse, DoctorWorkspaceWire, IndexCheckWire, RebuildRequest,
-            RebuildResponse, RuntimeCheckWire, SchemaCheckWire, SyncRequest, SyncResponse,
-            UninitRequest, UninitResponse, WatcherCheckWire, WorkspaceDoctorWire,
+            RebuildResponse, RuntimeCheckWire, SchemaCheckWire, StoredBasisWire, SyncRequest,
+            SyncResponse, UninitRequest, UninitResponse, WatcherCheckWire, WorkspaceDoctorWire,
+            WorkspaceStatusReportWire, WorkspaceStatusWire,
         },
+        work::IndexBasisWire,
     },
 };
 use brainprint_engine::{
     config::load_workspace_config,
     db::{self, DbInspection, DbKind, DbOpenError, Migration},
+    generation::GenerationStore,
     init,
     paths::{GlobalPaths, WorkspacePaths},
     query::Currentness,
@@ -63,12 +66,8 @@ pub async fn handle_doctor(runtime: &DaemonQueryRuntime, request: DoctorRequest)
     };
     let workspace = match diagnosed {
         Diagnosed::Workspace(workspace, mut report) => {
-            (report.runtime, report.index) = runtime.health(workspace).await.unwrap_or((
-                RuntimeCheckWire::Inactive,
-                IndexCheckWire::NotMeasured {
-                    reason: "no Workspace runtime is active in this daemon".to_owned(),
-                },
-            ));
+            (report.runtime, report.index) =
+                runtime.health(workspace).await.unwrap_or_else(inactive);
             DoctorWorkspaceWire::Initialized(report)
         }
         Diagnosed::Unresolved(workspace) => workspace,
@@ -80,6 +79,103 @@ pub async fn handle_doctor(runtime: &DaemonQueryRuntime, request: DoctorRequest)
         global_db,
         workspace,
     })
+}
+
+/// #70: the compact Workspace status for `status <path>`. Read-only like
+/// `doctor`, with the same resolution: the stored basis is read from
+/// `index.db` opened read-only, currentness is asked of a runtime that
+/// already exists (none is created), and nothing is reconciled, migrated
+/// or started. The diagnosis -- schemas, integrity, binding -- stays
+/// `doctor`'s.
+pub async fn workspace_status(
+    runtime: &DaemonQueryRuntime,
+    path: &str,
+) -> Result<WorkspaceStatusWire, ErrorResponse> {
+    let global_paths = runtime.global_paths().clone();
+    let locator = PathBuf::from(path);
+    let resolved = tokio::task::spawn_blocking(move || {
+        let entry = match resolve(&global_paths, &locator)? {
+            Ok(entry) => entry,
+            Err(unresolved) => return Ok(Err(unresolved)),
+        };
+        let paths = WorkspacePaths::from_root(&entry.locator);
+        let basis = stored_basis(&paths.index_db);
+        let semantic = semantic_checks(&global_paths, &entry, &paths);
+        Ok(Ok((entry, basis, semantic)))
+    })
+    .await
+    .map_err(|error| internal("status", &error))??;
+    let (entry, basis, semantic) = match resolved {
+        Ok(found) => found,
+        Err(DoctorWorkspaceWire::NotInitialized { path, reason }) => {
+            return Ok(WorkspaceStatusWire::NotInitialized { path, reason });
+        }
+        Err(DoctorWorkspaceWire::Ambiguous { path, workspaces }) => {
+            return Ok(WorkspaceStatusWire::Ambiguous { path, workspaces });
+        }
+        Err(DoctorWorkspaceWire::Initialized(_)) => {
+            unreachable!("resolve reports only an unresolved locator")
+        }
+    };
+    let (runtime_check, index) = runtime
+        .health(entry.workspace_id)
+        .await
+        .unwrap_or_else(inactive);
+    Ok(WorkspaceStatusWire::Initialized(Box::new(
+        WorkspaceStatusReportWire {
+            project_id: entry.project_id.to_string(),
+            workspace_id: entry.workspace_id.to_string(),
+            workspace_root: entry.locator.display().to_string(),
+            basis,
+            index,
+            runtime: runtime_check,
+            semantic,
+        },
+    )))
+}
+
+fn inactive() -> (RuntimeCheckWire, IndexCheckWire) {
+    (
+        RuntimeCheckWire::Inactive,
+        IndexCheckWire::NotMeasured {
+            reason: "no Workspace runtime is active in this daemon".to_owned(),
+        },
+    )
+}
+
+/// The stored revision clock and STABLE generation, through a read-only
+/// connection: nothing is created, migrated or settled.
+fn stored_basis(index_db: &Path) -> StoredBasisWire {
+    let unreadable = |error: &dyn std::fmt::Display| StoredBasisWire::Unreadable {
+        detail: error.to_string(),
+    };
+    if !index_db.is_file() {
+        return unreadable(&format!("{} is missing", index_db.display()));
+    }
+    let store = match GenerationStore::open_read_only(index_db) {
+        Ok(store) => store,
+        Err(error) => return unreadable(&error),
+    };
+    let read = || -> Result<Option<IndexBasisWire>, String> {
+        let Some(stable) = store.current_stable().map_err(|e| e.to_string())? else {
+            return Ok(None);
+        };
+        let workspace_revision = store
+            .current_workspace_revision()
+            .map_err(|e| e.to_string())?
+            .ok_or("the revision clock is missing")?;
+        Ok(Some(IndexBasisWire {
+            index_incarnation: store.index_incarnation_id().map_err(|e| e.to_string())?,
+            workspace_revision,
+            generation_no: stable.generation_no,
+            generation_basis_revision: stable.basis_workspace_revision,
+        }))
+    };
+    match read() {
+        Ok(Some(basis)) => StoredBasisWire::Stable(basis),
+        Ok(None) => StoredBasisWire::NeverPublished,
+        Err(detail) => StoredBasisWire::Unreadable { detail },
+    }
 }
 
 pub async fn handle_rebuild(runtime: &DaemonQueryRuntime, request: RebuildRequest) -> Response {
@@ -232,12 +328,18 @@ pub(super) fn runtime_health(
         }
     };
     let watcher = watcher_check(&lifecycle.stats());
-    let index = if lifecycle.is_activated() {
-        index_check(lifecycle)
-    } else {
+    let index = if !lifecycle.is_activated() {
         IndexCheckWire::NotMeasured {
             reason: "the Workspace runtime is not activated yet".to_owned(),
         }
+    } else if !matches!(watcher, WatcherCheckWire::Attached) {
+        // #70: without a watcher, currentness is proven by each query's
+        // reconcile; the last proof is not a claim about the files now.
+        IndexCheckWire::NotMeasured {
+            reason: "no watcher is attached: currentness is proven at query time".to_owned(),
+        }
+    } else {
+        index_check(lifecycle)
     };
     (RuntimeCheckWire::Active { watcher }, index)
 }
@@ -296,6 +398,55 @@ enum Diagnosed {
     Unresolved(DoctorWorkspaceWire),
 }
 
+/// The registry entry at `locator`, or the typed reason there is none --
+/// one resolution for `doctor` and `status`.
+fn resolve(
+    global_paths: &GlobalPaths,
+    locator: &Path,
+) -> Result<Result<WorkspaceRegistryEntry, DoctorWorkspaceWire>, ErrorResponse> {
+    let path = locator.display().to_string();
+    let workspace = match CoreQuerySurface::resolve_workspace(&global_paths.global_db, locator) {
+        Ok(workspace) => workspace,
+        Err(error @ CoreError::NotInitialized(_)) => {
+            let reason = error.to_string();
+            return Ok(Err(DoctorWorkspaceWire::NotInitialized { path, reason }));
+        }
+        Err(CoreError::WorkspaceLocatorAmbiguous { workspaces }) => {
+            let workspaces = workspaces.iter().map(ToString::to_string).collect();
+            return Ok(Err(DoctorWorkspaceWire::Ambiguous { path, workspaces }));
+        }
+        Err(error) => return Err(internal("workspace resolution", &error)),
+    };
+    registered(&global_paths.global_db, workspace).map(Ok)
+}
+
+/// Each semantic backend family's availability, as configured. Loading
+/// the configuration starts nothing.
+fn semantic_checks(
+    global_paths: &GlobalPaths,
+    entry: &WorkspaceRegistryEntry,
+    paths: &WorkspacePaths,
+) -> Vec<BackendCheckWire> {
+    match load_workspace_config(paths) {
+        Ok(config) => backends(
+            &WorkspaceSemantic::load(
+                global_paths,
+                &config,
+                entry.workspace_id,
+                &entry.locator,
+                &paths.index_db,
+            )
+            .stats(),
+        ),
+        Err(error) => vec![BackendCheckWire {
+            family: "workspace config".to_owned(),
+            state: BackendStateWire::Unavailable {
+                reason: format!("unreadable: {error}"),
+            },
+        }],
+    }
+}
+
 /// Every read-only check that needs no Workspace worker.
 fn diagnose(
     global_paths: &GlobalPaths,
@@ -306,31 +457,13 @@ fn diagnose(
         &global_paths.global_db,
         schema::global::GLOBAL_MIGRATIONS,
     );
-    let path = locator.display().to_string();
-    let workspace = match CoreQuerySurface::resolve_workspace(&global_paths.global_db, locator) {
-        Ok(workspace) => workspace,
-        Err(error @ CoreError::NotInitialized(_)) => {
-            let reason = error.to_string();
-            let unresolved = DoctorWorkspaceWire::NotInitialized { path, reason };
-            return Ok((global_db, Diagnosed::Unresolved(unresolved)));
-        }
-        Err(CoreError::WorkspaceLocatorAmbiguous { workspaces }) => {
-            let workspaces = workspaces.iter().map(ToString::to_string).collect();
-            let unresolved = DoctorWorkspaceWire::Ambiguous { path, workspaces };
-            return Ok((global_db, Diagnosed::Unresolved(unresolved)));
-        }
-        Err(error) => return Err(internal("doctor workspace resolution", &error)),
+    let entry = match resolve(global_paths, locator)? {
+        Ok(entry) => entry,
+        Err(unresolved) => return Ok((global_db, Diagnosed::Unresolved(unresolved))),
     };
-
+    let workspace = entry.workspace_id;
     let registry = GlobalRegistry::open(&global_paths.global_db)
         .map_err(|error| internal("doctor registry", &error))?;
-    let entry = registry
-        .get_workspace(workspace)
-        .map_err(|error| internal("doctor registry", &error))?
-        .ok_or_else(|| ErrorResponse {
-            kind: ErrorKind::Conflict,
-            message: format!("workspace {workspace} is no longer registered"),
-        })?;
     let project_home = if entry.is_project_home {
         Some(entry.locator.clone())
     } else {
@@ -380,24 +513,7 @@ fn diagnose(
         ],
     );
 
-    let semantic = match load_workspace_config(&paths) {
-        Ok(config) => backends(
-            &WorkspaceSemantic::load(
-                global_paths,
-                &config,
-                workspace,
-                &entry.locator,
-                &paths.index_db,
-            )
-            .stats(),
-        ),
-        Err(error) => vec![BackendCheckWire {
-            family: "workspace config".to_owned(),
-            state: BackendStateWire::Unavailable {
-                reason: format!("unreadable: {error}"),
-            },
-        }],
-    };
+    let semantic = semantic_checks(global_paths, &entry, &paths);
 
     let report = WorkspaceDoctorWire {
         project_id: entry.project_id.to_string(),

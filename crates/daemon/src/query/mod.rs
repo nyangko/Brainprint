@@ -12,6 +12,7 @@ mod convert_out;
 mod handler;
 pub mod lifecycle;
 mod maintenance;
+pub(crate) use maintenance::workspace_status;
 mod managed_verification;
 mod managed_wire;
 mod observe;

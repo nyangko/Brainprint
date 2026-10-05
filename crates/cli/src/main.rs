@@ -1,5 +1,6 @@
 mod client;
 mod query;
+mod tui;
 
 use clap::Parser as _;
 use query::Cli;
@@ -8,8 +9,8 @@ use query::Cli;
 async fn main() {
     let exit_code = match Cli::try_parse() {
         Ok(Cli::Install) => run(cmd_install()).await,
-        Ok(Cli::Status) => run(cmd_status()).await,
         Ok(Cli::Init { path }) => run(cmd_init(path)).await,
+        Ok(Cli::Tui { workspace, locale }) => tui::run(&workspace, locale).await,
         Ok(
             cli @ (Cli::Find { .. }
             | Cli::Inspect(_)
@@ -24,7 +25,8 @@ async fn main() {
             | Cli::Doctor { .. }
             | Cli::Rebuild { .. }
             | Cli::Sync { .. }
-            | Cli::Uninit { .. }),
+            | Cli::Uninit { .. }
+            | Cli::Status { .. }),
         ) => query::run_query_command(cli).await.into(),
         Err(error) => {
             // clap prints its own usage/help text to stdout/stderr as
@@ -60,19 +62,6 @@ async fn cmd_install() -> Result<(), client::CliError> {
     }
     println!("  config: {}", install.global_config_path);
     println!("  db:     {}", install.global_db_path);
-    Ok(())
-}
-
-async fn cmd_status() -> Result<(), client::CliError> {
-    let mut connection = client::connect_and_handshake().await?;
-    let status = client::status(&mut connection).await?;
-
-    println!(
-        "brainprintd {} (protocol {})",
-        status.daemon_version, status.protocol_version
-    );
-    println!("  pid:    {}", status.pid);
-    println!("  uptime: {}s", status.uptime_seconds);
     Ok(())
 }
 

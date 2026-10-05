@@ -51,7 +51,16 @@ impl CommonArgs {
 #[command(name = "brainprint", version, disable_help_subcommand = true)]
 pub enum Cli {
     Install,
-    Status,
+    /// The daemon's status; with a path, also that Workspace's compact
+    /// status: identity, stored revision/generation, currentness as an
+    /// active runtime holds it, runtime/watcher, semantic backends.
+    /// Read-only: it never reconciles, migrates or starts anything.
+    Status {
+        path: Option<String>,
+        /// Machine-readable output: the `Status` response JSON on stdout.
+        #[arg(long)]
+        json: bool,
+    },
     Init {
         path: Option<String>,
     },
@@ -90,6 +99,19 @@ pub enum Cli {
         /// Machine-readable output: the `Uninit` response JSON on stdout.
         #[arg(long)]
         json: bool,
+    },
+    /// #70: a keyboard-first terminal view of this Workspace -- status,
+    /// inspect, relations, impact, Working State, doctor/sync/rebuild/
+    /// uninit -- over the same daemon queries as the commands above.
+    /// Quitting it never stops the daemon.
+    Tui {
+        /// Workspace locator; canonicalized before it crosses IPC.
+        #[arg(long, default_value = ".")]
+        workspace: String,
+        /// UI language for this session (`en`, `ko`); an unsupported tag
+        /// is English. Without it: `[ui] locale` in the global config.
+        #[arg(long)]
+        locale: Option<String>,
     },
     Find {
         #[command(subcommand)]

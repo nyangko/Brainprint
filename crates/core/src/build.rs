@@ -35,8 +35,9 @@ pub const PACKAGE_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// by #56: the `Doctor`/`Rebuild` requests and responses. Bumped to 11
 /// by #58: the `EvidenceWire::Outline` variant. Bumped to 12 by #57: the
 /// `Sync`/`Uninit` requests and responses and
-/// `NotInitializedReasonWire::WorkspaceDetached`.
-pub const PROTOCOL_VERSION: u32 = 12;
+/// `NotInitializedReasonWire::WorkspaceDetached`. Bumped to 13 by #70: a
+/// path-scoped `StatusRequest` and the Workspace status it answers with.
+pub const PROTOCOL_VERSION: u32 = 13;
 
 /// Minimal build identity that benchmark and runtime boundaries can record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

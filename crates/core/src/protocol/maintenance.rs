@@ -63,6 +63,48 @@ pub struct WorkspaceDoctorWire {
     pub semantic: Vec<BackendCheckWire>,
 }
 
+/// #70: one Workspace's compact status -- what can be relied on now.
+/// The diagnosis (schemas, integrity, binding) is `doctor`'s.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum WorkspaceStatusWire {
+    /// As `DoctorWorkspaceWire::NotInitialized` (a detached Workspace too).
+    NotInitialized {
+        path: String,
+        reason: String,
+    },
+    Ambiguous {
+        path: String,
+        workspaces: Vec<String>,
+    },
+    Initialized(Box<WorkspaceStatusReportWire>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspaceStatusReportWire {
+    pub project_id: String,
+    pub workspace_id: String,
+    pub workspace_root: String,
+    /// The stored revision clock and STABLE generation, read as stored.
+    /// A stored basis is not a claim that it matches the filesystem.
+    pub basis: StoredBasisWire,
+    /// Currentness only as an active runtime holds it; otherwise
+    /// `NotMeasured`. Status never reconciles to find out.
+    pub index: IndexCheckWire,
+    pub runtime: RuntimeCheckWire,
+    pub semantic: Vec<BackendCheckWire>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum StoredBasisWire {
+    Stable(super::work::IndexBasisWire),
+    /// No STABLE generation has been published yet.
+    NeverPublished,
+    Unreadable {
+        detail: String,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CheckWire {
     Ok,

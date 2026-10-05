@@ -1,5 +1,6 @@
 //! `brainprint doctor` / `brainprint rebuild` (#56) and `brainprint sync` /
-//! `brainprint uninit` (#57): one request each, rendered compactly.
+//! `brainprint uninit` (#57), `brainprint status [path]` (#70): one
+//! request each, rendered compactly.
 //! `--json` prints the daemon's response as it is.
 
 use std::io::Write as _;
@@ -9,7 +10,8 @@ use brainprint_core::protocol::{
     maintenance::{
         BackendCheckWire, BackendStateWire, CheckWire, DatabaseCheckWire, DatabaseStateWire,
         DoctorRequest, DoctorWorkspaceWire, IndexCheckWire, RebuildRequest, RuntimeCheckWire,
-        SchemaCheckWire, SyncRequest, UninitRequest, WatcherCheckWire,
+        SchemaCheckWire, StoredBasisWire, SyncRequest, UninitRequest, WatcherCheckWire,
+        WorkspaceStatusWire,
     },
     work::{PostCommandRefreshWire, ResourceDeltaKindWire},
 };
@@ -68,20 +70,86 @@ pub async fn run_doctor(path: Option<String>, json: bool) -> Exit {
                 database(&mut out, db);
             }
             line(&mut out, "  index", &index(&report.index));
-            let (runtime, watcher) = match &report.runtime {
-                RuntimeCheckWire::Inactive => ("inactive (the next query activates it)", None),
-                RuntimeCheckWire::Active { watcher } => ("active", Some(watcher)),
-                RuntimeCheckWire::Unavailable { detail } => {
-                    line(&mut out, "  runtime", &format!("unavailable: {detail}"));
-                    ("", None)
+            runtime_lines(&mut out, &report.runtime);
+            semantic(&mut out, &report.semantic);
+            Exit::Ok
+        }
+    };
+    write_out(&out, exit)
+}
+
+/// #70: `status [path]`. Without a path, the daemon's own status exactly
+/// as before; with one, the Workspace's compact status beside it.
+pub async fn run_status(path: Option<String>, json: bool) -> Exit {
+    let path = path.map(|path| absolute_workspace(&path));
+    let mut connection = match client::connect_and_handshake().await {
+        Ok(connection) => connection,
+        Err(error) => {
+            eprintln!("brainprint: {error}");
+            return Exit::DaemonOrProtocolFailure;
+        }
+    };
+    let status = match client::status(&mut connection, path).await {
+        Ok(status) => status,
+        Err(error) => {
+            eprintln!("brainprint: {error}");
+            return Exit::DaemonOrProtocolFailure;
+        }
+    };
+    if json {
+        return print_json(serde_json::to_string(&status));
+    }
+    let mut out = Vec::new();
+    let _ = writeln!(
+        out,
+        "brainprintd {} (protocol {})",
+        status.daemon_version, status.protocol_version
+    );
+    let _ = writeln!(out, "  pid:    {}", status.pid);
+    let _ = writeln!(out, "  uptime: {}s", status.uptime_seconds);
+    let exit = match &status.workspace {
+        None => Exit::Ok,
+        Some(WorkspaceStatusWire::NotInitialized { path, reason }) => {
+            line(&mut out, "workspace", &format!("not initialized: {path}"));
+            line(&mut out, "  reason", reason);
+            line(&mut out, "  next", "brainprint init");
+            Exit::WorkspaceConflict
+        }
+        Some(WorkspaceStatusWire::Ambiguous { path, workspaces }) => {
+            line(&mut out, "workspace", &format!("ambiguous: {path}"));
+            line(&mut out, "  candidates", &workspaces.join(", "));
+            Exit::WorkspaceConflict
+        }
+        Some(WorkspaceStatusWire::Initialized(report)) => {
+            line(&mut out, "workspace", &report.workspace_root);
+            line(&mut out, "  project", &report.project_id);
+            line(&mut out, "  workspace", &report.workspace_id);
+            match &report.basis {
+                StoredBasisWire::Stable(basis) => {
+                    line(&mut out, "  revision", &basis.workspace_revision);
+                    line(
+                        &mut out,
+                        "  generation",
+                        &format!(
+                            "{} (basis revision {})",
+                            basis.generation_no, basis.generation_basis_revision
+                        ),
+                    );
+                    line(
+                        &mut out,
+                        "  incarnation",
+                        &basis.index_incarnation.to_string(),
+                    );
                 }
-            };
-            if !runtime.is_empty() {
-                line(&mut out, "  runtime", runtime);
+                StoredBasisWire::NeverPublished => {
+                    line(&mut out, "  generation", "none published yet");
+                }
+                StoredBasisWire::Unreadable { detail } => {
+                    line(&mut out, "  generation", &format!("unreadable: {detail}"));
+                }
             }
-            if let Some(watcher) = watcher {
-                line(&mut out, "  watcher", &watcher_state(watcher));
-            }
+            line(&mut out, "  index", &index(&report.index));
+            runtime_lines(&mut out, &report.runtime);
             semantic(&mut out, &report.semantic);
             Exit::Ok
         }
@@ -339,6 +407,21 @@ fn index(index: &IndexCheckWire) -> String {
         IndexCheckWire::Current => "current".to_owned(),
         IndexCheckWire::NotCurrent { detail } => format!("not current ({detail})"),
         IndexCheckWire::NotMeasured { reason } => format!("not measured ({reason})"),
+    }
+}
+
+fn runtime_lines(out: &mut Vec<u8>, runtime: &RuntimeCheckWire) {
+    match runtime {
+        RuntimeCheckWire::Inactive => {
+            line(out, "  runtime", "inactive (the next query activates it)");
+        }
+        RuntimeCheckWire::Active { watcher } => {
+            line(out, "  runtime", "active");
+            line(out, "  watcher", &watcher_state(watcher));
+        }
+        RuntimeCheckWire::Unavailable { detail } => {
+            line(out, "  runtime", &format!("unavailable: {detail}"));
+        }
     }
 }
 

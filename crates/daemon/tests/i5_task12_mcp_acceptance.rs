@@ -779,7 +779,7 @@ async fn parity_context_status() {
 
     let Response::Status(direct) = send(
         &mut connection,
-        Request::Status(brainprint_core::protocol::StatusRequest),
+        Request::Status(brainprint_core::protocol::StatusRequest::default()),
     )
     .await
     else {
@@ -857,7 +857,7 @@ async fn workspace_ambiguous_never_first_match() {
     assert!(matches!(
         send(
             &mut connection,
-            Request::Status(brainprint_core::protocol::StatusRequest)
+            Request::Status(brainprint_core::protocol::StatusRequest::default())
         )
         .await,
         Response::Status(_)
