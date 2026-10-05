@@ -23,7 +23,7 @@ use brainprint_core::{
     PROTOCOL_VERSION, WorkspaceId,
     protocol::{
         self, ClientConnection, ErrorKind, ErrorResponse, HandshakeRequest, InitRequest,
-        InitResponse, Request, Response,
+        InitResponse, InstallRequest, Request, Response,
         maintenance::{
             DoctorRequest, DoctorWorkspaceWire, RebuildRequest, SyncRequest, SyncResponse,
             UninitRequest, UninitResponse, WatcherCheckWire,
@@ -38,12 +38,14 @@ use brainprint_daemon::{
     server::Server,
 };
 use brainprint_engine::{
+    db::{self, DbKind, Migration},
     generation::{GenerationState, GenerationStore},
     knowledge::{
         NewPolicy, NewWorkItem, PriorityClass, ProjectKnowledgeStore, ProtectionClass, Provenance,
         SourceKind, WorkItemSourceKind, WorkRuntime,
     },
     paths::{GlobalPaths, WorkspacePaths},
+    schema,
     watch::{RawWatchEvent, WatchSource},
 };
 use rusqlite::{Connection, OpenFlags};
@@ -1225,6 +1227,316 @@ async fn an_unsupported_language_file_is_usable_and_never_a_false_zero() {
     fs::write(root.join("src/main.go"), "package main\n").expect("edit");
     let synced = synced(&daemon.sync(root).await.expect("sync"));
     assert_eq!((synced.created, synced.updated, synced.deleted), (0, 1, 0));
+    daemon.stop().await;
+}
+
+// ======================================================= #66 upgrade
+
+/// Every table's columns, sorted: the schema a migration list produces.
+fn schema_shape(connection: &Connection) -> BTreeMap<String, Vec<String>> {
+    let tables: Vec<String> = connection
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
+        .expect("tables")
+        .query_map([], |row| row.get(0))
+        .expect("tables")
+        .collect::<Result<_, _>>()
+        .expect("tables");
+    tables
+        .into_iter()
+        .map(|table| {
+            let mut columns: Vec<String> = connection
+                .prepare(&format!("PRAGMA table_info(\"{table}\")"))
+                .expect("table_info")
+                .query_map([], |row| row.get(1))
+                .expect("columns")
+                .collect::<Result<_, _>>()
+                .expect("columns");
+            columns.sort();
+            (table, columns)
+        })
+        .collect()
+}
+
+/// Turn the DB at `path` back into what this binary's *previous*
+/// migration list wrote: undo the real last migration's tables and
+/// columns and its ledger row. The result is checked against a fresh
+/// N-1 database, so the fixture is exactly an older install's schema.
+fn rewind_last_migration(path: &Path, kind: DbKind, migrations: &[Migration]) {
+    let previous = &migrations[..migrations.len() - 1];
+    let scratch = TestDir::create("shape");
+    let shape = |list: &[Migration]| {
+        let file = scratch.path().join(format!("v{}.db", list.len()));
+        schema_shape(&db::open(&file, kind, list).expect("fresh").connection)
+    };
+    let (old, new) = (shape(previous), shape(migrations));
+    let connection = Connection::open(path).expect("db");
+    for (table, columns) in &new {
+        match old.get(table) {
+            None => connection
+                .execute_batch(&format!("DROP TABLE \"{table}\""))
+                .expect("drop table"),
+            Some(kept) => {
+                for column in columns.iter().filter(|column| !kept.contains(column)) {
+                    connection
+                        .execute_batch(&format!("ALTER TABLE \"{table}\" DROP COLUMN \"{column}\""))
+                        .expect("drop column");
+                }
+            }
+        }
+    }
+    let version = previous.last().expect("previous").version;
+    connection
+        .execute_batch(&format!(
+            "DELETE FROM schema_migration WHERE version > {version};
+             UPDATE db_meta SET schema_version = {version} WHERE id = 0;"
+        ))
+        .expect("ledger");
+    assert_eq!(
+        schema_shape(&connection),
+        old,
+        "a faithful N-1 {kind} schema"
+    );
+}
+
+fn schema_version(db: &Path) -> (u32, u32) {
+    let connection = Connection::open_with_flags(db, OpenFlags::SQLITE_OPEN_READ_ONLY).expect("db");
+    connection
+        .query_row(
+            "SELECT (SELECT schema_version FROM db_meta WHERE id = 0), \
+                    (SELECT MAX(version) FROM schema_migration)",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("version")
+}
+
+fn doctor_schemas(response: &Response) -> Vec<(String, String)> {
+    let Response::Doctor(doctor) = response else {
+        panic!("expected doctor: {response:?}")
+    };
+    let DoctorWorkspaceWire::Initialized(workspace) = &doctor.workspace else {
+        panic!("initialized: {doctor:?}")
+    };
+    std::iter::once(&doctor.global_db)
+        .chain(&workspace.databases)
+        .map(|check| (check.kind.clone(), format!("{:?}", check.state)))
+        .collect()
+}
+
+fn index_identity(root: &Path) -> (Vec<u8>, Vec<(i64, String)>) {
+    let index = WorkspacePaths::from_root(root).index_db;
+    let incarnation = Connection::open_with_flags(&index, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .expect("index.db")
+        .query_row(
+            "SELECT index_incarnation_uid FROM db_meta WHERE id = 0",
+            [],
+            |row| row.get(0),
+        )
+        .expect("incarnation");
+    (incarnation, generations(root))
+}
+
+/// #66: a Workspace whose global / project / workspace databases are one
+/// real migration behind is picked up by the current binary in place:
+/// doctor reports it pending without writing, the first plain query
+/// migrates and serves, identity / Project knowledge / Working State /
+/// source survive, and the compatible index is not rebuilt.
+#[tokio::test]
+async fn an_older_schema_install_upgrades_in_place_without_a_rebuild() {
+    let home = TestDir::create("home");
+    let global = GlobalPaths::from_home(home.path());
+    let workspace = fixture_workspace("upgrade");
+    let root = workspace.path();
+    let paths = WorkspacePaths::from_root(root);
+    let daemon = Daemon::start(&global, Some(deaf())).await;
+    let Response::Install(_) = daemon.send(Request::Install(InstallRequest)).await else {
+        panic!("install")
+    };
+    let init = daemon.init(root).await;
+    let id: WorkspaceId = init.workspace_id.parse().expect("id");
+    seed_policy(root, "i7-task4-kept");
+    seed_work_item(root, id, "survive the upgrade");
+    daemon.stop().await;
+
+    let durable_before = durable(root);
+    let source = snapshot(root);
+    let index_before = index_identity(root);
+    for (db, kind, migrations) in [
+        (
+            &global.global_db,
+            DbKind::Global,
+            schema::global::GLOBAL_MIGRATIONS,
+        ),
+        (
+            &paths.project_db,
+            DbKind::Project,
+            schema::project::PROJECT_MIGRATIONS,
+        ),
+        (
+            &paths.workspace_db,
+            DbKind::Workspace,
+            schema::workspace::WORKSPACE_MIGRATIONS,
+        ),
+    ] {
+        rewind_last_migration(db, kind, migrations);
+        let latest = migrations.last().expect("latest").version;
+        assert_eq!(schema_version(db), (latest - 1, latest - 1));
+    }
+
+    // The current binary: doctor reports the Workspace's databases
+    // pending and changes nothing.
+    let daemon = Daemon::start(&global, Some(deaf())).await;
+    let latest = |list: &[Migration]| list.last().expect("latest").version;
+    let pending = doctor_schemas(
+        &daemon
+            .send(Request::Doctor(DoctorRequest { path: path(root) }))
+            .await,
+    );
+    for kind in ["project", "workspace"] {
+        let (_, state) = pending.iter().find(|(k, _)| k == kind).expect(kind);
+        assert!(state.contains("MigrationPending"), "{kind}: {state}");
+    }
+    assert_eq!(
+        schema_version(&paths.project_db).0,
+        latest(schema::project::PROJECT_MIGRATIONS) - 1,
+        "doctor never migrates"
+    );
+
+    // A repeated install over the existing one recreates nothing.
+    let Response::Install(install) = daemon.send(Request::Install(InstallRequest)).await else {
+        panic!("install")
+    };
+    assert!(
+        !install.config_freshly_created && !install.db_freshly_created,
+        "{install:?}"
+    );
+
+    // The first plain query activates, migrates and serves.
+    assert!(
+        work_items(&daemon, id)
+            .await
+            .contains("survive the upgrade")
+    );
+    assert!(rules(&daemon, id).await.contains("keep helper() pure"));
+    for (db, list) in [
+        (&global.global_db, schema::global::GLOBAL_MIGRATIONS),
+        (&paths.project_db, schema::project::PROJECT_MIGRATIONS),
+        (&paths.workspace_db, schema::workspace::WORKSPACE_MIGRATIONS),
+    ] {
+        assert_eq!(schema_version(db), (latest(list), latest(list)));
+    }
+    let current = doctor_schemas(
+        &daemon
+            .send(Request::Doctor(DoctorRequest { path: path(root) }))
+            .await,
+    );
+    assert!(
+        current.iter().all(|(_, state)| state.contains("Current")),
+        "{current:?}"
+    );
+
+    // Identity and durable rows: the old rows are all still there.
+    let durable_after = durable(root);
+    for (table, rows) in &durable_before {
+        if table.ends_with(":schema_migration") {
+            continue;
+        }
+        let after = &durable_after[table];
+        let ids = |rows: &[String]| -> Vec<String> {
+            rows.iter()
+                .map(|row| row.split(", ").take(2).collect::<Vec<_>>().join(", "))
+                .collect()
+        };
+        assert_eq!(ids(after), ids(rows), "{table}");
+    }
+    let reinit = daemon.init(root).await;
+    assert_eq!(
+        (reinit.project_id, reinit.workspace_id),
+        (init.project_id, init.workspace_id)
+    );
+
+    // A compatible index is reused, not rebuilt; source is untouched.
+    assert_eq!(index_identity(root), index_before, "no rebuild");
+    assert_eq!(snapshot(root), source);
+    assert_eq!(daemon.callers(id, "helper").await, 1);
+    let synced = synced(&daemon.sync(root).await.expect("sync"));
+    assert_eq!((synced.created, synced.updated, synced.deleted), (0, 0, 0));
+    daemon.stop().await;
+}
+
+/// #66: a durable migration that fails rolls back: no ledger row, no
+/// version bump, the Project's knowledge and the blocking state kept,
+/// the Workspace refused rather than served, doctor still pending -- and
+/// once the cause is gone the next open migrates normally.
+#[tokio::test]
+async fn a_failed_durable_migration_records_nothing_and_keeps_the_rows() {
+    let home = TestDir::create("home");
+    let global = GlobalPaths::from_home(home.path());
+    let workspace = fixture_workspace("failed-upgrade");
+    let root = workspace.path();
+    let paths = WorkspacePaths::from_root(root);
+    let daemon = Daemon::start(&global, Some(deaf())).await;
+    let id = daemon.init_id(root).await;
+    seed_policy(root, "i7-task4-failure");
+    daemon.stop().await;
+
+    let migrations = schema::project::PROJECT_MIGRATIONS;
+    let latest = migrations.last().expect("latest").version;
+    rewind_last_migration(&paths.project_db, DbKind::Project, migrations);
+    // The fault: an object already holding the name the real pending
+    // migration creates, so its CREATE TABLE fails inside the runner.
+    Connection::open(&paths.project_db)
+        .expect("project.db")
+        .execute_batch("CREATE TABLE knowledge_promotion (blocker INTEGER); INSERT INTO knowledge_promotion VALUES (1);")
+        .expect("blocker");
+    let before = rows(&paths.project_db);
+
+    let daemon = Daemon::start(&global, Some(deaf())).await;
+    let outcome = daemon
+        .query_outcome(
+            WorkspaceSelectorWire::Id { workspace_id: id },
+            QueryOperationWire::Knowledge(KnowledgeWire::WorkItems {
+                statuses: vec![WorkItemStatusWire::Open],
+                limit: NonZeroUsize::new(10).expect("nz"),
+            }),
+        )
+        .await;
+    assert!(matches!(outcome, QueryOutcomeWire::Err(_)), "{outcome:?}");
+    let Response::Error(error) = daemon
+        .send(Request::Init(InitRequest { path: path(root) }))
+        .await
+    else {
+        panic!("a failed migration is never a successful init")
+    };
+    // #13 §9: the driver detail stays in the daemon log; the client gets
+    // the typed internal kind, and doctor says what is pending.
+    assert_eq!(error.kind, ErrorKind::DaemonInternal, "{}", error.message);
+
+    assert_eq!(schema_version(&paths.project_db), (latest - 1, latest - 1));
+    assert_eq!(
+        rows(&paths.project_db),
+        before,
+        "rolled back, nothing reset"
+    );
+    let pending = doctor_schemas(
+        &daemon
+            .send(Request::Doctor(DoctorRequest { path: path(root) }))
+            .await,
+    );
+    let (_, state) = pending
+        .iter()
+        .find(|(k, _)| k == "project")
+        .expect("project");
+    assert!(state.contains("MigrationPending"), "{state}");
+
+    // The cause removed, the same binary migrates and serves.
+    Connection::open(&paths.project_db)
+        .expect("project.db")
+        .execute_batch("DROP TABLE knowledge_promotion")
+        .expect("unblock");
+    daemon.init(root).await;
+    assert_eq!(schema_version(&paths.project_db), (latest, latest));
+    assert!(rules(&daemon, id).await.contains("keep helper() pure"));
     daemon.stop().await;
 }
 

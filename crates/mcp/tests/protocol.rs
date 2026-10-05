@@ -122,3 +122,96 @@ async fn tools_call_with_no_daemon_running_is_a_typed_failure_not_a_panic() {
     client.cancel().await.expect("client should close cleanly");
     server.await.expect("server task should not panic");
 }
+
+/// #66: a protocol mismatch with a running daemon is a typed transport
+/// error naming both versions and which side to restart -- never a
+/// silent answer. A newer daemon means this long-lived MCP process is the
+/// stale one; Brainprint only says so, it never restarts its host.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_protocol_mismatch_names_the_stale_side_in_both_directions() {
+    use brainprint_core::{
+        PROTOCOL_VERSION,
+        protocol::{HandshakeResponse, Listener, Request, Response, framing},
+    };
+
+    for (daemon_version, remedy) in [
+        (
+            PROTOCOL_VERSION + 1,
+            "restart or reconnect the Brainprint MCP server",
+        ),
+        (PROTOCOL_VERSION - 1, "the running brainprintd is older"),
+    ] {
+        let endpoint = EndpointPaths::from_runtime_root(std::env::temp_dir().join(format!(
+            "bp-mcp-mismatch-{}-{daemon_version}",
+            std::process::id()
+        )));
+        #[cfg(unix)]
+        let mut listener = {
+            std::fs::create_dir_all(&endpoint.runtime_root).expect("runtime root");
+            let _ = std::fs::remove_file(&endpoint.socket_path);
+            Listener::bind(&endpoint.socket_path).expect("listener")
+        };
+        #[cfg(windows)]
+        let mut listener = Listener::bind(&endpoint.pipe_name).expect("listener");
+        let fake_daemon = tokio::spawn(async move {
+            let mut connection = listener.accept().await.expect("accept");
+            let Request::Handshake(handshake) = framing::read_message(&mut connection)
+                .await
+                .expect("handshake")
+            else {
+                panic!("the handshake comes first")
+            };
+            framing::write_message(
+                &mut connection,
+                &Response::Handshake(HandshakeResponse::VersionMismatch {
+                    server_protocol_version: daemon_version,
+                    client_protocol_version: handshake.protocol_version,
+                }),
+            )
+            .await
+            .expect("reply");
+            // Anything after a refused handshake is never served.
+            let after: std::io::Result<Request> = framing::read_message(&mut connection).await;
+            after.is_ok()
+        });
+
+        let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+        let mcp_endpoint = endpoint.clone();
+        let server = tokio::spawn(async move {
+            let running = BrainprintMcp::with_endpoint(std::env::temp_dir(), mcp_endpoint)
+                .serve(server_io)
+                .await
+                .expect("server should start");
+            running.waiting().await.expect("clean shutdown");
+        });
+        let client = timeout(STEP_TIMEOUT, ().serve(client_io))
+            .await
+            .expect("initialize timed out")
+            .expect("client should initialize");
+
+        let mut call = CallToolRequestParams::default();
+        call.name = "brainprint.find".into();
+        call.arguments = serde_json::json!({ "mode": "files" }).as_object().cloned();
+        let result = timeout(STEP_TIMEOUT, client.call_tool(call))
+            .await
+            .expect("tools/call timed out")
+            .expect("a mismatch is a tool-level result, not an MCP protocol error");
+        assert_eq!(result.is_error, Some(true), "{result:?}");
+        let structured = result.structured_content.expect("structured");
+        assert_eq!(structured["outcome"], "transport_error");
+        let message = structured["payload"]["message"].as_str().expect("message");
+        assert!(
+            message.contains(&format!("brainprintd speaks {daemon_version}"))
+                && message.contains(&format!("brainprint-mcp speaks {PROTOCOL_VERSION}"))
+                && message.contains(remedy),
+            "{message}"
+        );
+
+        client.cancel().await.expect("client should close cleanly");
+        server.await.expect("server task should not panic");
+        assert!(
+            !fake_daemon.await.expect("fake daemon"),
+            "no request follows a refused handshake"
+        );
+    }
+}

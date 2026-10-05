@@ -1913,6 +1913,35 @@ mod tests {
         }
     }
 
+    /// #66 / #3: an extractor-semantics change is a new `analysis_profile`
+    /// row and a Rebuild verdict for what it produced -- never a schema
+    /// migration of `index.db`.
+    #[test]
+    fn an_extractor_semantics_change_is_a_rebuild_verdict_not_a_migration() {
+        let current =
+            AnalysisProfile::semantic(&context(), &capabilities(&context(), Support::Supported));
+        let mut older = current.clone();
+        older.extractor_semantics_version = "0";
+        older.profile_key = format!("{}-extractor-0", current.profile_key);
+        assert_eq!(
+            stored_of(&older).compatibility_with(&current),
+            BackendCompatibility::Rebuild
+        );
+
+        let dir = std::env::temp_dir().join(format!("bp-extractor-profile-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let opened = crate::schema::index::open(&dir.join("index.db")).expect("index.db");
+        let version = opened.schema_version;
+        let old_id = crate::symbol::ensure_profile(&opened.connection, &older).expect("older");
+        let new_id = crate::symbol::ensure_profile(&opened.connection, &current).expect("current");
+        assert_ne!(old_id, new_id, "two profiles, side by side");
+        drop(opened);
+        let reopened = crate::schema::index::open(&dir.join("index.db")).expect("reopen");
+        assert_eq!(reopened.schema_version, version, "no schema change");
+        drop(reopened);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn compatibility_is_a_deterministic_verdict_over_what_changed() {
         let base =
