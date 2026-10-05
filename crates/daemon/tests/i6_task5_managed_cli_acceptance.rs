@@ -342,7 +342,11 @@ fn run_cli_in(home: &Path, cwd: Option<&Path>, args: &[&str], stdin: Option<&str
         .expect("brainprint should run");
     let mut input = child.stdin.take().expect("stdin");
     if let Some(text) = stdin {
-        input.write_all(text.as_bytes()).expect("write stdin");
+        // A CLI that rejects its arguments exits without reading stdin;
+        // writing after that is a broken pipe, not a test failure.
+        if let Err(error) = input.write_all(text.as_bytes()) {
+            assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe, "write stdin");
+        }
     }
     drop(input);
     child.wait_with_output().expect("output")
