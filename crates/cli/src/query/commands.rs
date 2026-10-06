@@ -100,10 +100,6 @@ pub enum Cli {
         #[arg(long)]
         json: bool,
     },
-    /// #70: a keyboard-first terminal view of this Workspace -- status,
-    /// inspect, relations, impact, Working State, doctor/sync/rebuild/
-    /// uninit -- over the same daemon queries as the commands above.
-    /// Quitting it never stops the daemon.
     /// #72: the local Web UI for this Workspace -- Overview, Explorer
     /// (inspect / relations / impact), Context (Working State, rules,
     /// decisions) -- served on 127.0.0.1 only. Read-only; stopping it
@@ -120,6 +116,10 @@ pub enum Cli {
         #[arg(long)]
         locale: Option<String>,
     },
+    /// #70: a keyboard-first terminal view of this Workspace -- status,
+    /// inspect, relations, impact, Working State, doctor/sync/rebuild/
+    /// uninit -- over the same daemon queries as the commands above.
+    /// Quitting it never stops the daemon.
     Tui {
         /// Workspace locator; canonicalized before it crosses IPC.
         #[arg(long, default_value = ".")]

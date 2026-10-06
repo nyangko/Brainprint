@@ -286,6 +286,10 @@ async fn the_bridge_passes_the_daemons_truth_through() {
         .unwrap_or_else(|_| panic!("direct inspect"));
     assert_eq!(lines(&inspect["body"]), compact(&direct_inspect));
     assert_eq!(inspect["currentness"], Msg::WorkspaceCurrent.key());
+    // #78: the body cites `helper` (canonical line 0) at its editor lines, never a Debug span.
+    let body = lines(&inspect["body"]).join("\n");
+    assert!(body.contains("helper src/shared.ts:1-3"), "{body}");
+    assert!(!body.contains("line:"), "{body}");
     assert_eq!(inspect["more_available"], false);
 
     // Relations: each direction summarized exactly as `present` does.
@@ -318,6 +322,13 @@ async fn the_bridge_passes_the_daemons_truth_through() {
     assert_eq!(incoming["direction"], Msg::LabelIncoming.key());
     assert_eq!(incoming["confirmed"], 1);
     assert_eq!(incoming["kinds"][0]["kind"], "Calls");
+    // #78: the body states each direction's coverage, never confirmed rows alone.
+    let body = lines(&relations["body"]);
+    assert!(
+        body.iter()
+            .any(|line| line.starts_with("Incoming: 1 confirmed, coverage ")),
+        "{body:?}"
+    );
 
     // Impact: the daemon's traversal for the chosen change form.
     let impact = get(
@@ -353,6 +364,12 @@ async fn the_bridge_passes_the_daemons_truth_through() {
     assert_eq!(outgoing["direction"], Msg::LabelOutgoing.key());
     assert_eq!(outgoing["coverage"], Msg::CoverageUnsupported.key());
     assert_eq!(outgoing["none"], Msg::CoverageUnsupported.key());
+    let body = lines(&data(&go_relations)["body"]);
+    assert!(
+        body.iter()
+            .any(|line| line.starts_with("Outgoing: Unsupported")),
+        "#78: an unsupported zero is never a silent body: {body:?}"
+    );
 
     // Continuation: a bounded page, then the next one the daemon names.
     let many = get(port, "/api/find?q=src/many.ts").await;

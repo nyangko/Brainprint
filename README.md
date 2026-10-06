@@ -315,14 +315,13 @@ So **Brainprint 0.1.0 does not deliver lower provider cost than native-only expl
 
 ## Known limitations
 
-1. **`relations` / `structure` human output omits coverage.** The compact CLI `relations` output prints confirmed edges only, and compact `structure` prints group/boundary counts only; neither prints the coverage/gap state. Use `--json`, `inspect`, or the TUI/Web relations summary for coverage. Correction: [#78](https://github.com/nyangko/Brainprint/issues/78).
-2. **Debug-form evidence in human output.** Compact CLI/TUI/Web evidence bodies print some symbol/coverage items in Rust `Debug` form; their `line:` / `column:` fields are 0-based internal coordinates. Source headers like `[19:1-19:42]`, `line_1based`, and candidate labels are 1-based. Correction: [#78](https://github.com/nyangko/Brainprint/issues/78).
-3. **Columns are bytes.** The human column is byte offset + 1, not a visual column on non-ASCII lines.
-4. **`wide` budget can be too large for some MCP clients.** Its output may exceed a client's tool-output limit; use `compact`/`standard` and continuation.
-5. **Text search can truncate on large ignored trees.** Whole-Workspace `find text` on repos with large git-ignored vendor directories can return `TRUNCATED` ([#63](https://github.com/nyangko/Brainprint/issues/63)), because `.gitignore` is not parsed. Workaround: `extra_excluded_directory_names`, or `--path-prefix`.
-6. **Semantic backends are separate installs.** Without them, results are structural with explicit gaps; C#/Rust additionally need `project_execution_trust = "Trusted"`.
-7. **No cost-saving guarantee.** See [Benchmarks](#benchmark-and-economy-results).
-8. **Manual setup.** No packages, no auto-start of the daemon, no service unit, no client auto-configuration; `find files` listings are capped (default 200).
+1. **Compact rows are terse, not prose.** Relation rows name endpoints by id, a relation gap is located as `<resource id>:<line>`, and evidence without a source span (target selection, coverage reports) prints in Rust `Debug` form. Coverage is always stated (`Incoming: 4 confirmed, coverage Partial (…)`, `boundary edges: None found -- coverage incomplete`), and every line number shown is the 1-based editor line ([#78](https://github.com/nyangko/Brainprint/issues/78)).
+2. **Columns are bytes.** The human column is byte offset + 1, not a visual column on non-ASCII lines.
+3. **`wide` budget can be too large for some MCP clients.** Its output may exceed a client's tool-output limit; use `compact`/`standard` and continuation.
+4. **Text search can truncate on large ignored trees.** Whole-Workspace `find text` on repos with large git-ignored vendor directories can return `TRUNCATED` ([#63](https://github.com/nyangko/Brainprint/issues/63)), because `.gitignore` is not parsed. Workaround: `extra_excluded_directory_names`, or `--path-prefix`.
+5. **Semantic backends are separate installs.** Without them, results are structural with explicit gaps; C#/Rust additionally need `project_execution_trust = "Trusted"`.
+6. **No cost-saving guarantee.** See [Benchmarks](#benchmark-and-economy-results).
+7. **Manual setup.** No packages, no auto-start of the daemon, no service unit, no client auto-configuration; `find files` listings are capped (default 200).
 
 ## Roadmap
 
