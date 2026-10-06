@@ -1,0 +1,285 @@
+{
+ "client_versions": {
+  "claude": "2.1.291 (Claude Code)",
+  "codex": "codex-cli 0.157.1"
+ },
+ "C1_claude_deny_reason_carries_substitute": {
+  "tool_uses": [
+   {
+    "tool": "Read",
+    "input": {
+     "file_path": "@P0_ROOT@/ws/fixture.txt",
+     "offset": 20,
+     "limit": 1
+    }
+   }
+  ],
+  "tool_results": [
+   {
+    "is_error": true,
+    "content": "PreToolUse:Read hook error: [substitute] @P0_ROOT@/ws/fixture.txt line 20 (current, complete):\n    20\tline 20: CODEWORD = 'amber-falcon-7'"
+   }
+  ],
+  "result": {
+   "text": "amber-falcon-7",
+   "num_turns": 2,
+   "total_cost_usd": 0.1330986
+  },
+  "hook_log": [
+   {
+    "t": 1791272318.13061,
+    "ev": "PreToolUse",
+    "tool": "Read",
+    "input": {
+     "file_path": "@P0_ROOT@/ws/fixture.txt",
+     "offset": 20,
+     "limit": 1
+    },
+    "agent": null
+   }
+  ]
+ },
+ "C2_claude_deny_plus_additionalContext": {
+  "tool_uses": [
+   {
+    "tool": "Read",
+    "input": {
+     "file_path": "@P0_ROOT@/ws/fixture.txt",
+     "offset": 20,
+     "limit": 1
+    }
+   }
+  ],
+  "tool_results": [
+   {
+    "is_error": true,
+    "content": "PreToolUse:Read hook error: served by index"
+   }
+  ],
+  "result": {
+   "text": "amber-falcon-7",
+   "num_turns": 2,
+   "total_cost_usd": 0.012467200000000001
+  },
+  "hook_log": [
+   {
+    "t": 1791272324.1592581,
+    "ev": "PreToolUse",
+    "tool": "Read",
+    "input": {
+     "file_path": "@P0_ROOT@/ws/fixture.txt",
+     "offset": 20,
+     "limit": 1
+    },
+    "agent": null
+   }
+  ],
+  "transcript_note": "session transcript: attachment hook_additional_context (substitute text) stored before the tool_result 'PreToolUse:Read hook error: served by index'; model answered amber-falcon-7"
+ },
+ "C3_claude_brainprint_substitute_bounded_read": {
+  "tool_uses": [
+   {
+    "tool": "Read",
+    "input": {
+     "file_path": "@T74_ROOT@/w0/crates/agent/src/util.rs",
+     "offset": 15,
+     "limit": 16
+    }
+   }
+  ],
+  "tool_results": [
+   {
+    "is_error": true,
+    "content": "PreToolUse:Read hook error: Brainprint current source, crates/agent/src/util.rs lines 15-30:\n    15\tpub fn fingerprint<'a>(parts: impl IntoIterator<Item = &'a str>) -> String {\n    16\t    const OFFSET_BASIS: u128 = 0x6c62_272e_07bb_0142_62b8_2175_6295_c58d;\n    17\t    const PRIME: u128 = 0x0000_0000_0100_0000_0000_0000_0000_013b;\n    18\t\n    19\t    let mut hash = OFFSET_BASIS;\n    20\t    let mut feed = |bytes: &[u8]| {\n    21\t        for byte in bytes {\n    22\t            hash ^= u128::from(*byte);\n    23\t            hash = hash.wrapping_mul(PRIME);\n    24\t        }\n    25\t    };\n    26\t    for part in parts {\n    27\t        feed(&(part.len() as u64).to_le_bytes());\n    28\t        feed(part.as_bytes());\n    29\t    }\n    30\t    format!(\"{hash:032x}\")"
+   }
+  ],
+  "result": {
+   "text": "0x0000_0000_0100_0000_0000_0000_0000_013b",
+   "num_turns": 2,
+   "total_cost_usd": 0.15468679999999999
+  },
+  "hook_log": [
+   {
+    "t": 1791272756.274914,
+    "tool_use_id": "toolu_01CcdU1mr5vLFrNsBJzp4wEF",
+    "agent_id": null,
+    "tool": "Read",
+    "input": {
+     "file_path": "@T74_ROOT@/w0/crates/agent/src/util.rs",
+     "offset": 15,
+     "limit": 16
+    },
+    "bp_queries": 1,
+    "bp_bytes": 18606,
+    "bp_ms": 131,
+    "action": "SOURCE_READ",
+    "decision": "SUBSTITUTE",
+    "reason": null,
+    "sub_bytes": 731,
+    "hook_ms": 131
+   }
+  ]
+ },
+ "C4_claude_natural_prompt": {
+  "tool_uses": [
+   {
+    "tool": "Grep",
+    "input": {
+     "pattern": "fn fingerprint|PRIME",
+     "path": "crates/agent/src/util.rs",
+     "output_mode": "content"
+    }
+   },
+   {
+    "tool": "Grep",
+    "input": {
+     "pattern": "fingerprint\\(",
+     "path": "crates/agent/src"
+    }
+   }
+  ],
+  "tool_results": [
+   {
+    "is_error": true,
+    "content": "PreToolUse:Grep hook error: Brainprint current complete search of crates/agent/src/util.rs (1 files):\ncrates/agent/src/util.rs:15:pub fn fingerprint<'a>(parts: impl IntoIterator<Item = &'a str>) -> String {\ncrates/agent/src/util.rs:17:    const PRIME: u128 = 0x0000_0000_0100_0000_0000_0000_0000_013b;\ncrates/agent/src/util.rs:23:            hash = hash.wrapping_mul(PRIME);\ncrates/agent/src/util.rs:79:    fn fingerprint_is_deterministic_and_boundary_aware() {"
+   },
+   {
+    "is_error": true,
+    "content": "PreToolUse:Grep hook error: Brainprint current complete search of crates/agent/src (14 files):\ncrates/agent/src/delivery.rs\ncrates/agent/src/gateway.rs\ncrates/agent/src/probe.rs\ncrates/agent/src/state.rs\ncrates/agent/src/telemetry.rs\ncrates/agent/src/util.rs"
+   }
+  ],
+  "result": {
+   "text": "Results come from the Brainprint hook, which reported them as current and complete.\n\n- **Function:** `crates/agent/src/util.rs:15`, which is `pub fn fingerprint<'a>(parts: impl IntoIterator<Item = &'a str>) -> String`\n- **PRIME** (line 17): `const PRIME: u128 = 0x0000_0000_0100_0000_0000_0000_0000_013b;`\n- **Files under `crates/agent/src` containing `fingerprint(`** (6 of the 14 files searched):\n  - `crates/agent/src/delivery.rs`\n  - `crates/agent/src/gateway.rs`\n  - `crates/agent/src/probe.rs`\n  - `crates/agent/src/state.rs`\n  - `crates/agent/src/telemetry.rs`\n  - `crates/agent/src/util.rs`",
+   "num_turns": 3,
+   "total_cost_usd": 0.1468308
+  },
+  "hook_log": [
+   {
+    "t": 1791272786.6304169,
+    "tool_use_id": "toolu_01Jw7pNzf3GNzLsqXL1jEBJV",
+    "agent_id": null,
+    "tool": "Grep",
+    "input": {
+     "pattern": "fn fingerprint|PRIME",
+     "path": "crates/agent/src/util.rs",
+     "output_mode": "content"
+    },
+    "bp_queries": 1,
+    "bp_bytes": 1589,
+    "bp_ms": 25,
+    "action": "TEXT_SEARCH",
+    "local_universe_ms": 6,
+    "decision": "SUBSTITUTE",
+    "reason": null,
+    "sub_bytes": 433,
+    "hook_ms": 31
+   },
+   {
+    "t": 1791272787.0873852,
+    "tool_use_id": "toolu_01LPSxitoxmHBsSRA5wjAjoB",
+    "agent_id": null,
+    "tool": "Grep",
+    "input": {
+     "pattern": "fingerprint\\(",
+     "path": "crates/agent/src"
+    },
+    "bp_queries": 2,
+    "bp_bytes": 11990,
+    "bp_ms": 51,
+    "action": "TEXT_SEARCH",
+    "local_universe_ms": 10,
+    "decision": "SUBSTITUTE",
+    "reason": null,
+    "sub_bytes": 230,
+    "hook_ms": 61
+   }
+  ]
+ },
+ "X1_codex_native_routes_observed": {
+  "hook_log": [
+   {
+    "ev": "PreToolUse",
+    "tool": "Bash",
+    "input": {
+     "command": "pwd && rg --files -g '*' -g '!**/.git/**'"
+    }
+   },
+   {
+    "ev": "PreToolUse",
+    "tool": "Bash",
+    "input": {
+     "command": "rg -l 'filler' . && rg -n 'filler' . | wc -l"
+    }
+   },
+   {
+    "ev": "PreToolUse",
+    "tool": "Bash",
+    "input": {
+     "command": "cat fixture.txt"
+    }
+   },
+   {
+    "ev": "PreToolUse",
+    "tool": "Bash",
+    "input": {
+     "command": "cat /Users/pixel/.codex/RTK.md"
+    }
+   },
+   {
+    "ev": "PostToolUse",
+    "tool": "Bash",
+    "input": {
+     "command": "cat /Users/pixel/.codex/RTK.md"
+    }
+   },
+   {
+    "ev": "PostToolUse",
+    "tool": "Bash",
+    "input": {
+     "command": "cat fixture.txt"
+    }
+   },
+   {
+    "ev": "PostToolUse",
+    "tool": "Bash",
+    "input": {
+     "command": "pwd && rg --files -g '*' -g '!**/.git/**'"
+    }
+   },
+   {
+    "ev": "PostToolUse",
+    "tool": "Bash",
+    "input": {
+     "command": "rg -l 'filler' . && rg -n 'filler' . | wc -l"
+    }
+   }
+  ]
+ },
+ "X2_codex_deny_reason_carries_substitute": {
+  "items": [
+   {
+    "id": "item_4",
+    "type": "agent_message",
+    "text": "amber-falcon-7"
+   }
+  ],
+  "usage": [
+   {
+    "input_tokens": 50394,
+    "cached_input_tokens": 37504,
+    "cache_write_input_tokens": 0,
+    "output_tokens": 70,
+    "reasoning_output_tokens": 25
+   }
+  ],
+  "hook_log": [
+   {
+    "ev": "PreToolUse",
+    "tool": "Bash",
+    "input": {
+     "command": "cat fixture.txt"
+    }
+   }
+  ]
+ }
+}

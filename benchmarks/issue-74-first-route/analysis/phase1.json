@@ -1,0 +1,1002 @@
+[
+ {
+  "id": "R1 exact bounded range",
+  "action": "SOURCE_READ",
+  "tool": "Read",
+  "input": {
+   "file_path": "@T74_ROOT@/w1/src/lib.rs",
+   "offset": 6,
+   "limit": 4
+  },
+  "expect": "SUBSTITUTE",
+  "decision": "SUBSTITUTE",
+  "reason": null,
+  "match_expectation": true,
+  "bp_queries": 1,
+  "bp_bytes": 6489,
+  "sub_bytes": 223,
+  "hook_ms": 23,
+  "substitute": "Brainprint current source, src/lib.rs lines 6-9:\n     6\t    let mut counts = HashMap::new();\n     7\t    for word in text.split_whitespace() {\n     8\t        *counts.entry(word.to_lowercase()).or_insert(0) += 1;\n     9\t    }"
+ },
+ {
+  "id": "R2 larger range",
+  "action": "SOURCE_READ",
+  "tool": "Read",
+  "input": {
+   "file_path": "@T74_ROOT@/w1/src/lib.rs",
+   "offset": 5,
+   "limit": 20
+  },
+  "expect": "RANGE_NOT_COVERED",
+  "decision": "NATIVE",
+  "reason": "RANGE_NOT_COVERED",
+  "match_expectation": true,
+  "bp_queries": 1,
+  "bp_bytes": 6489,
+  "sub_bytes": null,
+  "hook_ms": 14,
+  "substitute": null
+ },
+ {
+  "id": "R3 different range (imports)",
+  "action": "SOURCE_READ",
+  "tool": "Read",
+  "input": {
+   "file_path": "@T74_ROOT@/w1/src/lib.rs",
+   "offset": 1,
+   "limit": 3
+  },
+  "expect": "RANGE_NOT_COVERED",
+  "decision": "NATIVE",
+  "reason": "RANGE_NOT_COVERED",
+  "match_expectation": true,
+  "bp_queries": 1,
+  "bp_bytes": 6489,
+  "sub_bytes": null,
+  "hook_ms": 14,
+  "substitute": null
+ },
+ {
+  "id": "R4 range incl. declaration end line",
+  "action": "SOURCE_READ",
+  "tool": "Read",
+  "input": {
+   "file_path": "@T74_ROOT@/w1/src/lib.rs",
+   "offset": 6,
+   "limit": 6
+  },
+  "expect": "RANGE_NOT_COVERED",
+  "decision": "NATIVE",
+  "reason": "RANGE_NOT_COVERED",
+  "match_expectation": true,
+  "bp_queries": 1,
+  "bp_bytes": 6489,
+  "sub_bytes": null,
+  "hook_ms": 21,
+  "substitute": null
+ },
+ {
+  "id": "R5 unbounded whole file",
+  "action": "SOURCE_READ",
+  "tool": "Read",
+  "input": {
+   "file_path": "@T74_ROOT@/w1/src/lib.rs"
+  },
+  "expect": "UNBOUNDED_RANGE",
+  "decision": "NATIVE",
+  "reason": "UNBOUNDED_RANGE",
+  "match_expectation": true,
+  "bp_queries": 0,
+  "bp_bytes": 0,
+  "sub_bytes": null,
+  "hook_ms": 0,
+  "substitute": null
+ },
+ {
+  "id": "R6 missing",
+  "action": "SOURCE_READ",
+  "tool": "Read",
+  "input": {
+   "file_path": "@T74_ROOT@/w1/src/nope.rs",
+   "offset": 1,
+   "limit": 1
+  },
+  "expect": "MISSING",
+  "decision": "NATIVE",
+  "reason": "MISSING",
+  "match_expectation": true,
+  "bp_queries": 0,
+  "bp_bytes": 0,
+  "sub_bytes": null,
+  "hook_ms": 0,
+  "substitute": null
+ },
+ {
+  "id": "R7 outside Workspace",
+  "action": "SOURCE_READ",
+  "tool": "Read",
+  "input": {
+   "file_path": "/etc/hosts",
+   "offset": 1,
+   "limit": 1
+  },
+  "expect": "OUTSIDE_WORKSPACE",
+  "decision": "NATIVE",
+  "reason": "OUTSIDE_WORKSPACE",
+  "match_expectation": true,
+  "bp_queries": 0,
+  "bp_bytes": 0,
+  "sub_bytes": null,
+  "hook_ms": 0,
+  "substitute": null
+ },
+ {
+  "id": "R8 no source spans (partial: .txt)",
+  "action": "SOURCE_READ",
+  "tool": "Read",
+  "input": {
+   "file_path": "@T74_ROOT@/w1/docs/notes.txt",
+   "offset": 1,
+   "limit": 1
+  },
+  "expect": "RANGE_NOT_COVERED",
+  "decision": "NATIVE",
+  "reason": "RANGE_NOT_COVERED",
+  "match_expectation": true,
+  "bp_queries": 1,
+  "bp_bytes": 2189,
+  "sub_bytes": null,
+  "hook_ms": 23,
+  "substitute": null
+ },
+ {
+  "id": "R9 unsupported arg (pages)",
+  "action": "SOURCE_READ",
+  "tool": "Read",
+  "input": {
+   "file_path": "@T74_ROOT@/w1/src/lib.rs",
+   "offset": 6,
+   "limit": 4,
+   "pages": "1"
+  },
+  "expect": "UNSUPPORTED_ARG",
+  "decision": "NATIVE",
+  "reason": "UNSUPPORTED_ARG",
+  "match_expectation": true,
+  "bp_queries": 0,
+  "bp_bytes": 0,
+  "sub_bytes": null,
+  "hook_ms": 0,
+  "substitute": null
+ },
+ {
+  "id": "R10 method inside impl (span starts mid-line)",
+  "action": "SOURCE_READ",
+  "tool": "Read",
+  "input": {
+   "file_path": "@T74_ROOT@/w1/src/lib.rs",
+   "offset": 21,
+   "limit": 2
+  },
+  "expect": "SUBSTITUTE",
+  "decision": "SUBSTITUTE",
+  "reason": null,
+  "match_expectation": true,
+  "bp_queries": 1,
+  "bp_bytes": 6489,
+  "sub_bytes": 108,
+  "hook_ms": 26,
+  "substitute": "Brainprint current source, src/lib.rs lines 21-22:\n    21\t        self.level += 1;\n    22\t        self.level"
+ },
+ {
+  "id": "G1 literal",
+  "action": "TEXT_SEARCH",
+  "tool": "Grep",
+  "input": {
+   "pattern": "alpha_helper",
+   "path": "src"
+  },
+  "expect": "SUBSTITUTE",
+  "decision": "SUBSTITUTE",
+  "reason": null,
+  "match_expectation": true,
+  "bp_queries": 3,
+  "bp_bytes": 2090,
+  "sub_bytes": 68,
+  "hook_ms": 67,
+  "substitute": "Brainprint current complete search of src (2 files):\nsrc/sub/util.rs"
+ },
+ {
+  "id": "G2 regex content",
+  "action": "TEXT_SEARCH",
+  "tool": "Grep",
+  "input": {
+   "pattern": "fn [a-z_]+\\(",
+   "path": "src",
+   "output_mode": "content"
+  },
+  "expect": "SUBSTITUTE",
+  "decision": "SUBSTITUTE",
+  "reason": null,
+  "match_expectation": true,
+  "bp_queries": 3,
+  "bp_bytes": 2617,
+  "sub_bytes": 229,
+  "hook_ms": 64,
+  "substitute": "Brainprint current complete search of src (2 files):\nsrc/lib.rs:5:pub fn count_words(text: &str) -> HashMap<String, usize> {\nsrc/lib.rs:20:    pub fn bump(&mut self) -> u32 {\nsrc/sub/util.rs:1:pub fn alpha_helper(x: u32) -> u32 {"
+ },
+ {
+  "id": "G3 case-sensitive",
+  "action": "TEXT_SEARCH",
+  "tool": "Grep",
+  "input": {
+   "pattern": "ALPHA",
+   "path": "src",
+   "output_mode": "content",
+   "-n": true
+  },
+  "expect": "SUBSTITUTE",
+  "decision": "SUBSTITUTE",
+  "reason": null,
+  "match_expectation": true,
+  "bp_queries": 3,
+  "bp_bytes": 2327,
+  "sub_bytes": 139,
+  "hook_ms": 62,
+  "substitute": "Brainprint current complete search of src (2 files):\nsrc/sub/util.rs:6:pub fn ALPHA_upper() -> &'static str {\nsrc/sub/util.rs:7:    \"ALPHA\""
+ },
+ {
+  "id": "G4 case-insensitive",
+  "action": "TEXT_SEARCH",
+  "tool": "Grep",
+  "input": {
+   "pattern": "alpha",
+   "path": "src",
+   "output_mode": "content",
+   "-i": true
+  },
+  "expect": "SUBSTITUTE",
+  "decision": "SUBSTITUTE",
+  "reason": null,
+  "match_expectation": true,
+  "bp_queries": 3,
+  "bp_bytes": 3089,
+  "sub_bytes": 297,
+  "hook_ms": 62,
+  "substitute": "Brainprint current complete search of src (2 files):\nsrc/lib.rs:4:/// Counts words; Alpha marker.\nsrc/lib.rs:13:pub const LIMIT: usize = 42; // alpha limit\nsrc/sub/util.rs:1:pub fn alpha_helper(x: u32) -> u32 {\nsrc/sub/util.rs:6:pub fn ALPHA_upper() -> &'static str {\nsrc/sub/util.rs:7:    \"ALPHA\""
+ },
+ {
+  "id": "G5 count",
+  "action": "TEXT_SEARCH",
+  "tool": "Grep",
+  "input": {
+   "pattern": "alpha",
+   "path": "src",
+   "output_mode": "count",
+   "-i": true
+  },
+  "expect": "SUBSTITUTE",
+  "decision": "SUBSTITUTE",
+  "reason": null,
+  "match_expectation": true,
+  "bp_queries": 3,
+  "bp_bytes": 3089,
+  "sub_bytes": 83,
+  "hook_ms": 52,
+  "substitute": "Brainprint current complete search of src (2 files):\nsrc/lib.rs:2\nsrc/sub/util.rs:3"
+ },
+ {
+  "id": "G6 single file scope",
+  "action": "TEXT_SEARCH",
+  "tool": "Grep",
+  "input": {
+   "pattern": "LIMIT",
+   "path": "src/lib.rs",
+   "output_mode": "content"
+  },
+  "expect": "SUBSTITUTE",
+  "decision": "SUBSTITUTE",
+  "reason": null,
+  "match_expectation": true,
+  "bp_queries": 1,
+  "bp_bytes": 674,
+  "sub_bytes": 117,
+  "hook_ms": 28,
+  "substitute": "Brainprint current complete search of src/lib.rs (1 files):\nsrc/lib.rs:13:pub const LIMIT: usize = 42; // alpha limit"
+ },
+ {
+  "id": "G7 no match",
+  "action": "TEXT_SEARCH",
+  "tool": "Grep",
+  "input": {
+   "pattern": "zzz_nothing",
+   "path": "src"
+  },
+  "expect": "SUBSTITUTE",
+  "decision": "SUBSTITUTE",
+  "reason": null,
+  "match_expectation": true,
+  "bp_queries": 3,
+  "bp_bytes": 1840,
+  "sub_bytes": 63,
+  "hook_ms": 50,
+  "substitute": "Brainprint current complete search of src (2 files): no matches"
+ },
+ {
+  "id": "G8 unsupported flag -C",
+  "action": "TEXT_SEARCH",
+  "tool": "Grep",
+  "input": {
+   "pattern": "alpha",
+   "path": "src",
+   "output_mode": "content",
+   "-C": 2
+  },
+  "expect": "UNSUPPORTED_ARG",
+  "decision": "NATIVE",
+  "reason": "UNSUPPORTED_ARG",
+  "match_expectation": true,
+  "bp_queries": 0,
+  "bp_bytes": 0,
+  "sub_bytes": null,
+  "hook_ms": 0,
+  "substitute": null
+ },
+ {
+  "id": "G9 unsupported glob filter",
+  "action": "TEXT_SEARCH",
+  "tool": "Grep",
+  "input": {
+   "pattern": "alpha",
+   "path": "src",
+   "glob": "*.rs"
+  },
+  "expect": "UNSUPPORTED_ARG",
+  "decision": "NATIVE",
+  "reason": "UNSUPPORTED_ARG",
+  "match_expectation": true,
+  "bp_queries": 0,
+  "bp_bytes": 0,
+  "sub_bytes": null,
+  "hook_ms": 0,
+  "substitute": null
+ },
+ {
+  "id": "G10 unsupported type filter",
+  "action": "TEXT_SEARCH",
+  "tool": "Grep",
+  "input": {
+   "pattern": "alpha",
+   "type": "rust"
+  },
+  "expect": "UNSUPPORTED_ARG",
+  "decision": "NATIVE",
+  "reason": "UNSUPPORTED_ARG",
+  "match_expectation": true,
+  "bp_queries": 0,
+  "bp_bytes": 0,
+  "sub_bytes": null,
+  "hook_ms": 0,
+  "substitute": null
+ },
+ {
+  "id": "G11 anchored pattern",
+  "action": "TEXT_SEARCH",
+  "tool": "Grep",
+  "input": {
+   "pattern": "^pub",
+   "path": "src"
+  },
+  "expect": "UNSUPPORTED_PATTERN",
+  "decision": "NATIVE",
+  "reason": "UNSUPPORTED_PATTERN",
+  "match_expectation": true,
+  "bp_queries": 0,
+  "bp_bytes": 0,
+  "sub_bytes": null,
+  "hook_ms": 0,
+  "substitute": null
+ },
+ {
+  "id": "G12 match would span lines",
+  "action": "TEXT_SEARCH",
+  "tool": "Grep",
+  "input": {
+   "pattern": "counts\\s+\\}",
+   "path": "src"
+  },
+  "expect": "MULTILINE_MATCH",
+  "decision": "NATIVE",
+  "reason": "MULTILINE_MATCH",
+  "match_expectation": true,
+  "bp_queries": 3,
+  "bp_bytes": 2062,
+  "sub_bytes": null,
+  "hook_ms": 59,
+  "substitute": null
+ },
+ {
+  "id": "G13 root scope (hidden/gitignored universe differs)",
+  "action": "TEXT_SEARCH",
+  "tool": "Grep",
+  "input": {
+   "pattern": "alpha",
+   "-i": true
+  },
+  "expect": "UNIVERSE_MISMATCH",
+  "decision": "NATIVE",
+  "reason": "UNIVERSE_MISMATCH",
+  "match_expectation": true,
+  "bp_queries": 7,
+  "bp_bytes": 4040,
+  "sub_bytes": null,
+  "hook_ms": 101,
+  "substitute": null
+ },
+ {
+  "id": "G14 outside Workspace",
+  "action": "TEXT_SEARCH",
+  "tool": "Grep",
+  "input": {
+   "pattern": "alpha",
+   "path": "/etc"
+  },
+  "expect": "OUTSIDE_WORKSPACE",
+  "decision": "NATIVE",
+  "reason": "OUTSIDE_WORKSPACE",
+  "match_expectation": true,
+  "bp_queries": 0,
+  "bp_bytes": 0,
+  "sub_bytes": null,
+  "hook_ms": 0,
+  "substitute": null
+ },
+ {
+  "id": "G15 Agent shell cwd drifted to src, relative scope",
+  "action": "TEXT_SEARCH",
+  "tool": "Grep",
+  "input": {
+   "pattern": "alpha_helper",
+   "path": "sub"
+  },
+  "expect": "SUBSTITUTE",
+  "decision": "SUBSTITUTE",
+  "reason": null,
+  "match_expectation": true,
+  "bp_queries": 2,
+  "bp_bytes": 1383,
+  "sub_bytes": 72,
+  "hook_ms": 41,
+  "substitute": "Brainprint current complete search of src/sub (1 files):\nsrc/sub/util.rs"
+ },
+ {
+  "id": "G16 Agent shell cwd drifted to src, scope = Workspace root",
+  "action": "TEXT_SEARCH",
+  "tool": "Grep",
+  "input": {
+   "pattern": "alpha",
+   "path": "@T74_ROOT@/w1"
+  },
+  "expect": "UNIVERSE_MISMATCH",
+  "decision": "NATIVE",
+  "reason": "UNIVERSE_MISMATCH",
+  "match_expectation": true,
+  "bp_queries": 7,
+  "bp_bytes": 4040,
+  "sub_bytes": null,
+  "hook_ms": 105,
+  "substitute": null
+ },
+ {
+  "id": "G17 hidden directory scope",
+  "action": "TEXT_SEARCH",
+  "tool": "Grep",
+  "input": {
+   "pattern": "alpha",
+   "path": ".hidden",
+   "output_mode": "content"
+  },
+  "expect": "SUBSTITUTE",
+  "decision": "SUBSTITUTE",
+  "reason": null,
+  "match_expectation": true,
+  "bp_queries": 2,
+  "bp_bytes": 1362,
+  "sub_bytes": 96,
+  "hook_ms": 40,
+  "substitute": "Brainprint current complete search of .hidden (1 files):\n.hidden/h.rs:1:pub fn hidden_alpha() {}"
+ },
+ {
+  "id": "G18 gitignored directory scope (native skips nothing explicit)",
+  "action": "TEXT_SEARCH",
+  "tool": "Grep",
+  "input": {
+   "pattern": "alpha",
+   "path": "ignored"
+  },
+  "expect": "SUBSTITUTE",
+  "decision": "SUBSTITUTE",
+  "reason": null,
+  "match_expectation": true,
+  "bp_queries": 2,
+  "bp_bytes": 1363,
+  "sub_bytes": 69,
+  "hook_ms": 36,
+  "substitute": "Brainprint current complete search of ignored (1 files):\nignored/x.rs"
+ },
+ {
+  "id": "T1 recursive ext",
+  "action": "PROJECT_TREE_DISCOVERY",
+  "tool": "Glob",
+  "input": {
+   "pattern": "**/*.rs",
+   "path": "@T74_ROOT@/w1/src"
+  },
+  "expect": "SUBSTITUTE",
+  "decision": "SUBSTITUTE",
+  "reason": null,
+  "match_expectation": true,
+  "bp_queries": 2,
+  "bp_bytes": 1424,
+  "sub_bytes": 93,
+  "hook_ms": 32,
+  "substitute": "Brainprint current complete file list of src matching **/*.rs (2):\nsrc/lib.rs\nsrc/sub/util.rs"
+ },
+ {
+  "id": "T2 recursive all",
+  "action": "PROJECT_TREE_DISCOVERY",
+  "tool": "Glob",
+  "input": {
+   "pattern": "**/*",
+   "path": "@T74_ROOT@/w1/src"
+  },
+  "expect": "SUBSTITUTE",
+  "decision": "SUBSTITUTE",
+  "reason": null,
+  "match_expectation": true,
+  "bp_queries": 2,
+  "bp_bytes": 1424,
+  "sub_bytes": 90,
+  "hook_ms": 31,
+  "substitute": "Brainprint current complete file list of src matching **/* (2):\nsrc/lib.rs\nsrc/sub/util.rs"
+ },
+ {
+  "id": "T3 slash-free pattern (matches at any depth)",
+  "action": "PROJECT_TREE_DISCOVERY",
+  "tool": "Glob",
+  "input": {
+   "pattern": "*.rs",
+   "path": "@T74_ROOT@/w1/src"
+  },
+  "expect": "SUBSTITUTE",
+  "decision": "SUBSTITUTE",
+  "reason": null,
+  "match_expectation": true,
+  "bp_queries": 2,
+  "bp_bytes": 1424,
+  "sub_bytes": 90,
+  "hook_ms": 31,
+  "substitute": "Brainprint current complete file list of src matching *.rs (2):\nsrc/lib.rs\nsrc/sub/util.rs"
+ },
+ {
+  "id": "T4 changed scope (src/sub)",
+  "action": "PROJECT_TREE_DISCOVERY",
+  "tool": "Glob",
+  "input": {
+   "pattern": "**/*",
+   "path": "@T74_ROOT@/w1/src/sub"
+  },
+  "expect": "SUBSTITUTE",
+  "decision": "SUBSTITUTE",
+  "reason": null,
+  "match_expectation": true,
+  "bp_queries": 1,
+  "bp_bytes": 717,
+  "sub_bytes": 83,
+  "hook_ms": 22,
+  "substitute": "Brainprint current complete file list of src/sub matching **/* (1):\nsrc/sub/util.rs"
+ },
+ {
+  "id": "T5 root scope (hidden/gitignored universe differs)",
+  "action": "PROJECT_TREE_DISCOVERY",
+  "tool": "Glob",
+  "input": {
+   "pattern": "**/*.rs"
+  },
+  "expect": "UNIVERSE_MISMATCH",
+  "decision": "NATIVE",
+  "reason": "UNIVERSE_MISMATCH",
+  "match_expectation": true,
+  "bp_queries": 25,
+  "bp_bytes": 8915,
+  "sub_bytes": null,
+  "hook_ms": 359,
+  "substitute": null
+ },
+ {
+  "id": "T8 hidden directory scope",
+  "action": "PROJECT_TREE_DISCOVERY",
+  "tool": "Glob",
+  "input": {
+   "pattern": "**/*",
+   "path": "@T74_ROOT@/w1/.hidden"
+  },
+  "expect": "SUBSTITUTE",
+  "decision": "SUBSTITUTE",
+  "reason": null,
+  "match_expectation": true,
+  "bp_queries": 1,
+  "bp_bytes": 710,
+  "sub_bytes": 80,
+  "hook_ms": 19,
+  "substitute": "Brainprint current complete file list of .hidden matching **/* (1):\n.hidden/h.rs"
+ },
+ {
+  "id": "T9 gitignored directory scope",
+  "action": "PROJECT_TREE_DISCOVERY",
+  "tool": "Glob",
+  "input": {
+   "pattern": "**/*.rs",
+   "path": "@T74_ROOT@/w1/ignored"
+  },
+  "expect": "SUBSTITUTE",
+  "decision": "SUBSTITUTE",
+  "reason": null,
+  "match_expectation": true,
+  "bp_queries": 1,
+  "bp_bytes": 710,
+  "sub_bytes": 83,
+  "hook_ms": 20,
+  "substitute": "Brainprint current complete file list of ignored matching **/*.rs (1):\nignored/x.rs"
+ },
+ {
+  "id": "T6 filtered glob (path inside pattern)",
+  "action": "PROJECT_TREE_DISCOVERY",
+  "tool": "Glob",
+  "input": {
+   "pattern": "src/**/*.rs"
+  },
+  "expect": "UNSUPPORTED_GLOB",
+  "decision": "NATIVE",
+  "reason": "UNSUPPORTED_GLOB",
+  "match_expectation": true,
+  "bp_queries": 0,
+  "bp_bytes": 0,
+  "sub_bytes": null,
+  "hook_ms": 0,
+  "substitute": null
+ },
+ {
+  "id": "T7 filtered glob (alternation)",
+  "action": "PROJECT_TREE_DISCOVERY",
+  "tool": "Glob",
+  "input": {
+   "pattern": "**/{lib,util}.rs",
+   "path": "@T74_ROOT@/w1/src"
+  },
+  "expect": "UNSUPPORTED_GLOB",
+  "decision": "NATIVE",
+  "reason": "UNSUPPORTED_GLOB",
+  "match_expectation": true,
+  "bp_queries": 0,
+  "bp_bytes": 0,
+  "sub_bytes": null,
+  "hook_ms": 0,
+  "substitute": null
+ },
+ {
+  "id": "U1 unrelated Bash",
+  "action": "UNRELATED",
+  "tool": "Bash",
+  "input": {
+   "command": "ls src"
+  },
+  "expect": "UNRELATED",
+  "decision": "NATIVE",
+  "reason": "UNRELATED",
+  "match_expectation": true,
+  "bp_queries": 0,
+  "bp_bytes": 0,
+  "sub_bytes": null,
+  "hook_ms": 0,
+  "substitute": null
+ },
+ {
+  "id": "U2 unrelated ToolSearch",
+  "action": "UNRELATED",
+  "tool": "ToolSearch",
+  "input": {
+   "query": "select:Read"
+  },
+  "expect": "UNRELATED",
+  "decision": "NATIVE",
+  "reason": "UNRELATED",
+  "match_expectation": true,
+  "bp_queries": 0,
+  "bp_bytes": 0,
+  "sub_bytes": null,
+  "hook_ms": 0,
+  "substitute": null
+ },
+ {
+  "id": "U3 unrelated Edit",
+  "action": "UNRELATED",
+  "tool": "Edit",
+  "input": {
+   "file_path": "@T74_ROOT@/w1/src/lib.rs",
+   "old_string": "a",
+   "new_string": "b"
+  },
+  "expect": "UNRELATED",
+  "decision": "NATIVE",
+  "reason": "UNRELATED",
+  "match_expectation": true,
+  "bp_queries": 0,
+  "bp_bytes": 0,
+  "sub_bytes": null,
+  "hook_ms": 0,
+  "substitute": null
+ },
+ {
+  "id": "M1 revision changed just before read [immediate]",
+  "action": "SOURCE_READ",
+  "tool": "Read",
+  "input": {
+   "file_path": "@T74_ROOT@/w1/src/lib.rs",
+   "offset": 6,
+   "limit": 4
+  },
+  "expect": "NATIVE or current SUBSTITUTE",
+  "decision": "NATIVE",
+  "reason": "RANGE_NOT_COVERED",
+  "bp_queries": 1,
+  "bp_bytes": 5616,
+  "sub_bytes": null,
+  "hook_ms": 16,
+  "substitute": null,
+  "disk_at_hook": "    let mut tally = HashMap::new();\n    for word in text.split_whitespace() {\n        *counts.entry(word.to_lowercase()).or_insert(0) += 1;\n    }"
+ },
+ {
+  "id": "M1 revision changed just before read [settled]",
+  "action": "SOURCE_READ",
+  "tool": "Read",
+  "input": {
+   "file_path": "@T74_ROOT@/w1/src/lib.rs",
+   "offset": 6,
+   "limit": 4
+  },
+  "expect": "NATIVE or current SUBSTITUTE",
+  "decision": "SUBSTITUTE",
+  "reason": null,
+  "bp_queries": 1,
+  "bp_bytes": 6488,
+  "sub_bytes": 222,
+  "hook_ms": 15,
+  "substitute": "Brainprint current source, src/lib.rs lines 6-9:\n     6\t    let mut tally = HashMap::new();\n     7\t    for word in text.split_whitespace() {\n     8\t        *counts.entry(word.to_lowercase()).or_insert(0) += 1;\n     9\t    }",
+  "disk_at_hook": "    let mut tally = HashMap::new();\n    for word in text.split_whitespace() {\n        *counts.entry(word.to_lowercase()).or_insert(0) += 1;\n    }"
+ },
+ {
+  "id": "M2 revision changed just before search [immediate]",
+  "action": "TEXT_SEARCH",
+  "tool": "Grep",
+  "input": {
+   "pattern": "alpha_helper",
+   "path": "src",
+   "output_mode": "content"
+  },
+  "expect": "NATIVE or current SUBSTITUTE",
+  "decision": "SUBSTITUTE",
+  "reason": null,
+  "bp_queries": 3,
+  "bp_bytes": 1840,
+  "sub_bytes": 63,
+  "hook_ms": 54,
+  "substitute": "Brainprint current complete search of src (2 files): no matches",
+  "disk_at_hook": "src/sub/util.rs\nsrc/lib.rs\n"
+ },
+ {
+  "id": "M2 revision changed just before search [settled]",
+  "action": "TEXT_SEARCH",
+  "tool": "Grep",
+  "input": {
+   "pattern": "alpha_helper",
+   "path": "src",
+   "output_mode": "content"
+  },
+  "expect": "NATIVE or current SUBSTITUTE",
+  "decision": "SUBSTITUTE",
+  "reason": null,
+  "bp_queries": 3,
+  "bp_bytes": 1840,
+  "sub_bytes": 63,
+  "hook_ms": 48,
+  "substitute": "Brainprint current complete search of src (2 files): no matches",
+  "disk_at_hook": "src/sub/util.rs\nsrc/lib.rs\n"
+ },
+ {
+  "id": "M3 resource universe changed (file added) [immediate]",
+  "action": "PROJECT_TREE_DISCOVERY",
+  "tool": "Glob",
+  "input": {
+   "pattern": "**/*.rs",
+   "path": "@T74_ROOT@/w1/src"
+  },
+  "expect": "NATIVE or current SUBSTITUTE",
+  "decision": "SUBSTITUTE",
+  "reason": null,
+  "bp_queries": 2,
+  "bp_bytes": 1894,
+  "sub_bytes": 108,
+  "hook_ms": 103,
+  "substitute": "Brainprint current complete file list of src matching **/*.rs (3):\nsrc/lib.rs\nsrc/sub/new.rs\nsrc/sub/util.rs",
+  "disk_at_hook": "src/sub/new.rs\nsrc/sub/util.rs\nsrc/lib.rs\n"
+ },
+ {
+  "id": "M3 resource universe changed (file added) [settled]",
+  "action": "PROJECT_TREE_DISCOVERY",
+  "tool": "Glob",
+  "input": {
+   "pattern": "**/*.rs",
+   "path": "@T74_ROOT@/w1/src"
+  },
+  "expect": "NATIVE or current SUBSTITUTE",
+  "decision": "SUBSTITUTE",
+  "reason": null,
+  "bp_queries": 2,
+  "bp_bytes": 1894,
+  "sub_bytes": 108,
+  "hook_ms": 34,
+  "substitute": "Brainprint current complete file list of src matching **/*.rs (3):\nsrc/lib.rs\nsrc/sub/new.rs\nsrc/sub/util.rs",
+  "disk_at_hook": "src/sub/new.rs\nsrc/sub/util.rs\nsrc/lib.rs\n"
+ },
+ {
+  "id": "M4 resource universe changed (file removed) [immediate]",
+  "action": "TEXT_SEARCH",
+  "tool": "Grep",
+  "input": {
+   "pattern": "alpha",
+   "path": "src",
+   "-i": true
+  },
+  "expect": "NATIVE or current SUBSTITUTE",
+  "decision": "SUBSTITUTE",
+  "reason": null,
+  "bp_queries": 2,
+  "bp_bytes": 1627,
+  "sub_bytes": 63,
+  "hook_ms": 42,
+  "substitute": "Brainprint current complete search of src (1 files):\nsrc/lib.rs",
+  "disk_at_hook": "src/lib.rs\n"
+ },
+ {
+  "id": "M4 resource universe changed (file removed) [settled]",
+  "action": "TEXT_SEARCH",
+  "tool": "Grep",
+  "input": {
+   "pattern": "alpha",
+   "path": "src",
+   "-i": true
+  },
+  "expect": "NATIVE or current SUBSTITUTE",
+  "decision": "SUBSTITUTE",
+  "reason": null,
+  "bp_queries": 2,
+  "bp_bytes": 1627,
+  "sub_bytes": 63,
+  "hook_ms": 40,
+  "substitute": "Brainprint current complete search of src (1 files):\nsrc/lib.rs",
+  "disk_at_hook": "src/lib.rs\n"
+ },
+ {
+  "id": "M5 unreadable resource (search) [immediate]",
+  "action": "TEXT_SEARCH",
+  "tool": "Grep",
+  "input": {
+   "pattern": "alpha",
+   "path": "src",
+   "-i": true
+  },
+  "expect": "NATIVE or current SUBSTITUTE",
+  "decision": "NATIVE",
+  "reason": "NOT_CURRENT",
+  "bp_queries": 1,
+  "bp_bytes": 733,
+  "sub_bytes": null,
+  "hook_ms": 23,
+  "substitute": null,
+  "disk_at_hook": "src/sub/util.rs\nsrc/lib.rs\n"
+ },
+ {
+  "id": "M5 unreadable resource (search) [settled]",
+  "action": "TEXT_SEARCH",
+  "tool": "Grep",
+  "input": {
+   "pattern": "alpha",
+   "path": "src",
+   "-i": true
+  },
+  "expect": "NATIVE or current SUBSTITUTE",
+  "decision": "NATIVE",
+  "reason": "NOT_CURRENT",
+  "bp_queries": 1,
+  "bp_bytes": 733,
+  "sub_bytes": null,
+  "hook_ms": 27,
+  "substitute": null,
+  "disk_at_hook": "src/sub/util.rs\nsrc/lib.rs\n"
+ },
+ {
+  "id": "M6 unreadable directory (tree) [immediate]",
+  "action": "PROJECT_TREE_DISCOVERY",
+  "tool": "Glob",
+  "input": {
+   "pattern": "**/*",
+   "path": "@T74_ROOT@/w1/src"
+  },
+  "expect": "NATIVE or current SUBSTITUTE",
+  "decision": "NATIVE",
+  "reason": "UNIVERSE_UNREADABLE",
+  "bp_queries": 0,
+  "bp_bytes": 0,
+  "sub_bytes": null,
+  "hook_ms": 12,
+  "substitute": null,
+  "disk_at_hook": "src/lib.rs\nrg: src/sub: Permission denied (os error 13)\n"
+ },
+ {
+  "id": "M6 unreadable directory (tree) [settled]",
+  "action": "PROJECT_TREE_DISCOVERY",
+  "tool": "Glob",
+  "input": {
+   "pattern": "**/*",
+   "path": "@T74_ROOT@/w1/src"
+  },
+  "expect": "NATIVE or current SUBSTITUTE",
+  "decision": "NATIVE",
+  "reason": "UNIVERSE_UNREADABLE",
+  "bp_queries": 0,
+  "bp_bytes": 0,
+  "sub_bytes": null,
+  "hook_ms": 9,
+  "substitute": null,
+  "disk_at_hook": "src/lib.rs\nrg: src/sub: Permission denied (os error 13)\n"
+ },
+ {
+  "id": "M7 unreadable resource (read) [immediate]",
+  "action": "SOURCE_READ",
+  "tool": "Read",
+  "input": {
+   "file_path": "@T74_ROOT@/w1/src/sub/util.rs",
+   "offset": 2,
+   "limit": 2
+  },
+  "expect": "NATIVE or current SUBSTITUTE",
+  "decision": "NATIVE",
+  "reason": "NOT_CURRENT",
+  "bp_queries": 1,
+  "bp_bytes": 3602,
+  "sub_bytes": null,
+  "hook_ms": 28,
+  "substitute": null,
+  "disk_at_hook": "ERR PermissionError"
+ },
+ {
+  "id": "M7 unreadable resource (read) [settled]",
+  "action": "SOURCE_READ",
+  "tool": "Read",
+  "input": {
+   "file_path": "@T74_ROOT@/w1/src/sub/util.rs",
+   "offset": 2,
+   "limit": 2
+  },
+  "expect": "NATIVE or current SUBSTITUTE",
+  "decision": "NATIVE",
+  "reason": "NOT_CURRENT",
+  "bp_queries": 1,
+  "bp_bytes": 3602,
+  "sub_bytes": null,
+  "hook_ms": 18,
+  "substitute": null,
+  "disk_at_hook": "ERR PermissionError"
+ }
+]

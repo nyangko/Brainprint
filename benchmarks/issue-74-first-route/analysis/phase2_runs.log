@@ -1,0 +1,9 @@
+N-O1-r1 N O1 exit=0 wall_s=104.8
+S-O1-r1 S O1 exit=0 wall_s=102.8
+S-O2-r1 S O2 exit=0 wall_s=103.3
+N-O2-r1 N O2 exit=0 wall_s=106.2
+S-O1-r2 S O1 exit=0 wall_s=109.5
+N-O1-r2 N O1 exit=0 wall_s=94.7
+N-O2-r2 N O2 exit=0 wall_s=92.7
+S-O2-r2 S O2 exit=0 wall_s=98.6
+ALL_DONE

@@ -1,0 +1,319 @@
+[
+ {
+  "id": "R1 exact bounded range",
+  "verdict": "EQUAL",
+  "native_facts": [
+   [
+    6,
+    "    let mut counts = HashMap::new();"
+   ],
+   [
+    7,
+    "    for word in text.split_whitespace() {"
+   ],
+   [
+    8,
+    "        *counts.entry(word.to_lowercase()).or_insert(0) += 1;"
+   ],
+   [
+    9,
+    "    }"
+   ]
+  ],
+  "substitute_facts": [
+   [
+    6,
+    "    let mut counts = HashMap::new();"
+   ],
+   [
+    7,
+    "    for word in text.split_whitespace() {"
+   ],
+   [
+    8,
+    "        *counts.entry(word.to_lowercase()).or_insert(0) += 1;"
+   ],
+   [
+    9,
+    "    }"
+   ]
+  ],
+  "native_response_bytes": 379,
+  "substitute_bytes": 223
+ },
+ {
+  "id": "R10 method inside impl (span starts mid-line)",
+  "verdict": "EQUAL",
+  "native_facts": [
+   [
+    21,
+    "        self.level += 1;"
+   ],
+   [
+    22,
+    "        self.level"
+   ]
+  ],
+  "substitute_facts": [
+   [
+    21,
+    "        self.level += 1;"
+   ],
+   [
+    22,
+    "        self.level"
+   ]
+  ],
+  "native_response_bytes": 275,
+  "substitute_bytes": 108
+ },
+ {
+  "id": "G1 literal",
+  "verdict": "EQUAL",
+  "native_facts": [
+   "src/sub/util.rs"
+  ],
+  "substitute_facts": [
+   "src/sub/util.rs"
+  ],
+  "native_response_bytes": 96,
+  "substitute_bytes": 68
+ },
+ {
+  "id": "G2 regex content",
+  "verdict": "EQUAL",
+  "native_facts": [
+   [
+    "src/lib.rs",
+    5,
+    "pub fn count_words(text: &str) -> HashMap<String, usize> {"
+   ],
+   [
+    "src/lib.rs",
+    20,
+    "    pub fn bump(&mut self) -> u32 {"
+   ],
+   [
+    "src/sub/util.rs",
+    1,
+    "pub fn alpha_helper(x: u32) -> u32 {"
+   ]
+  ],
+  "substitute_facts": [
+   [
+    "src/lib.rs",
+    5,
+    "pub fn count_words(text: &str) -> HashMap<String, usize> {"
+   ],
+   [
+    "src/lib.rs",
+    20,
+    "    pub fn bump(&mut self) -> u32 {"
+   ],
+   [
+    "src/sub/util.rs",
+    1,
+    "pub fn alpha_helper(x: u32) -> u32 {"
+   ]
+  ],
+  "native_response_bytes": 276,
+  "substitute_bytes": 229
+ },
+ {
+  "id": "G3 case-sensitive",
+  "verdict": "EQUAL",
+  "native_facts": [
+   [
+    "src/sub/util.rs",
+    6,
+    "pub fn ALPHA_upper() -> &'static str {"
+   ],
+   [
+    "src/sub/util.rs",
+    7,
+    "    \"ALPHA\""
+   ]
+  ],
+  "substitute_facts": [
+   [
+    "src/sub/util.rs",
+    6,
+    "pub fn ALPHA_upper() -> &'static str {"
+   ],
+   [
+    "src/sub/util.rs",
+    7,
+    "    \"ALPHA\""
+   ]
+  ],
+  "native_response_bytes": 187,
+  "substitute_bytes": 139
+ },
+ {
+  "id": "G4 case-insensitive",
+  "verdict": "EQUAL",
+  "native_facts": [
+   [
+    "src/lib.rs",
+    4,
+    "/// Counts words; Alpha marker."
+   ],
+   [
+    "src/lib.rs",
+    13,
+    "pub const LIMIT: usize = 42; // alpha limit"
+   ],
+   [
+    "src/sub/util.rs",
+    1,
+    "pub fn alpha_helper(x: u32) -> u32 {"
+   ],
+   [
+    "src/sub/util.rs",
+    6,
+    "pub fn ALPHA_upper() -> &'static str {"
+   ],
+   [
+    "src/sub/util.rs",
+    7,
+    "    \"ALPHA\""
+   ]
+  ],
+  "substitute_facts": [
+   [
+    "src/lib.rs",
+    4,
+    "/// Counts words; Alpha marker."
+   ],
+   [
+    "src/lib.rs",
+    13,
+    "pub const LIMIT: usize = 42; // alpha limit"
+   ],
+   [
+    "src/sub/util.rs",
+    1,
+    "pub fn alpha_helper(x: u32) -> u32 {"
+   ],
+   [
+    "src/sub/util.rs",
+    6,
+    "pub fn ALPHA_upper() -> &'static str {"
+   ],
+   [
+    "src/sub/util.rs",
+    7,
+    "    \"ALPHA\""
+   ]
+  ],
+  "native_response_bytes": 348,
+  "substitute_bytes": 297
+ },
+ {
+  "id": "G5 count",
+  "verdict": "EQUAL",
+  "native_facts": [
+   [
+    "src/lib.rs",
+    "2"
+   ],
+   [
+    "src/sub/util.rs",
+    "3"
+   ]
+  ],
+  "substitute_facts": [
+   [
+    "src/lib.rs",
+    "2"
+   ],
+   [
+    "src/sub/util.rs",
+    "3"
+   ]
+  ],
+  "native_response_bytes": 112,
+  "substitute_bytes": 83
+ },
+ {
+  "id": "G6 single file scope",
+  "verdict": "EQUAL",
+  "native_facts": [
+   [
+    "src/lib.rs",
+    13,
+    "pub const LIMIT: usize = 42; // alpha limit"
+   ]
+  ],
+  "substitute_facts": [
+   [
+    "src/lib.rs",
+    13,
+    "pub const LIMIT: usize = 42; // alpha limit"
+   ]
+  ],
+  "native_response_bytes": 144,
+  "substitute_bytes": 117
+ },
+ {
+  "id": "G7 no match",
+  "verdict": "EQUAL",
+  "native_facts": [],
+  "substitute_facts": [],
+  "native_response_bytes": 79,
+  "substitute_bytes": 63
+ },
+ {
+  "id": "T1 recursive ext",
+  "verdict": "EQUAL",
+  "native_facts": [
+   "src/lib.rs",
+   "src/sub/util.rs"
+  ],
+  "substitute_facts": [
+   "src/lib.rs",
+   "src/sub/util.rs"
+  ],
+  "native_response_bytes": 145,
+  "substitute_bytes": 93
+ },
+ {
+  "id": "T2 recursive all",
+  "verdict": "EQUAL",
+  "native_facts": [
+   "src/lib.rs",
+   "src/sub/util.rs"
+  ],
+  "substitute_facts": [
+   "src/lib.rs",
+   "src/sub/util.rs"
+  ],
+  "native_response_bytes": 145,
+  "substitute_bytes": 90
+ },
+ {
+  "id": "T3 one level",
+  "verdict": "FALSE_SHORT_CIRCUIT",
+  "native_facts": [
+   "src/lib.rs",
+   "src/sub/util.rs"
+  ],
+  "substitute_facts": [
+   "src/lib.rs"
+  ],
+  "native_response_bytes": 145,
+  "substitute_bytes": 74
+ },
+ {
+  "id": "T4 changed scope (src/sub)",
+  "verdict": "EQUAL",
+  "native_facts": [
+   "src/sub/util.rs"
+  ],
+  "substitute_facts": [
+   "src/sub/util.rs"
+  ],
+  "native_response_bytes": 130,
+  "substitute_bytes": 83
+ }
+]

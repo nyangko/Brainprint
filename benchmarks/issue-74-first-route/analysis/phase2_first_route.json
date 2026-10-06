@@ -1,0 +1,202 @@
+{
+ "N-O1-r1": {
+  "native_requested": 13,
+  "native_executed": 13,
+  "native_executed_by_tool": {
+   "Bash": 10,
+   "Glob": 0,
+   "Grep": 2,
+   "Read": 1
+  },
+  "native_executed_result_bytes": 26855,
+  "first_exploration_route": "Grep"
+ },
+ "N-O1-r2": {
+  "native_requested": 13,
+  "native_executed": 13,
+  "native_executed_by_tool": {
+   "Bash": 12,
+   "Glob": 0,
+   "Grep": 0,
+   "Read": 1
+  },
+  "native_executed_result_bytes": 32500,
+  "first_exploration_route": "Bash"
+ },
+ "N-O2-r1": {
+  "native_requested": 16,
+  "native_executed": 16,
+  "native_executed_by_tool": {
+   "Bash": 10,
+   "Glob": 0,
+   "Grep": 4,
+   "Read": 2
+  },
+  "native_executed_result_bytes": 28631,
+  "first_exploration_route": "Bash"
+ },
+ "N-O2-r2": {
+  "native_requested": 19,
+  "native_executed": 19,
+  "native_executed_by_tool": {
+   "Bash": 14,
+   "Glob": 0,
+   "Grep": 5,
+   "Read": 0
+  },
+  "native_executed_result_bytes": 25192,
+  "first_exploration_route": "Bash"
+ },
+ "S-O1-r1": {
+  "native_requested": 14,
+  "native_executed": 14,
+  "native_executed_by_tool": {
+   "Bash": 13,
+   "Glob": 0,
+   "Grep": 0,
+   "Read": 1
+  },
+  "native_executed_result_bytes": 31011,
+  "first_exploration_route": "Bash",
+  "hook_events": 14,
+  "p0_events": 1,
+  "substitutes": 0,
+  "substitutes_by_action": {
+   "SOURCE_READ": 0,
+   "TEXT_SEARCH": 0,
+   "PROJECT_TREE_DISCOVERY": 0
+  },
+  "fallback_reasons": {
+   "RANGE_NOT_COVERED": 1
+  },
+  "bp_queries": 1,
+  "bp_bytes": 76814,
+  "bp_ms": 46,
+  "unrelated_bp_queries": 0,
+  "hook_ms_total": 46,
+  "hook_ms_p0_max": 46,
+  "substitute_bytes_hook": 0,
+  "substitute_bytes_agent_visible": 0,
+  "immediate_retry": 0,
+  "rediscovery_auto": [],
+  "false_short_circuit": [],
+  "substitutes_detail": []
+ },
+ "S-O1-r2": {
+  "native_requested": 16,
+  "native_executed": 16,
+  "native_executed_by_tool": {
+   "Bash": 15,
+   "Glob": 0,
+   "Grep": 0,
+   "Read": 1
+  },
+  "native_executed_result_bytes": 32258,
+  "first_exploration_route": "Bash",
+  "hook_events": 16,
+  "p0_events": 1,
+  "substitutes": 0,
+  "substitutes_by_action": {
+   "SOURCE_READ": 0,
+   "TEXT_SEARCH": 0,
+   "PROJECT_TREE_DISCOVERY": 0
+  },
+  "fallback_reasons": {
+   "RANGE_NOT_COVERED": 1
+  },
+  "bp_queries": 1,
+  "bp_bytes": 76814,
+  "bp_ms": 66,
+  "unrelated_bp_queries": 0,
+  "hook_ms_total": 67,
+  "hook_ms_p0_max": 67,
+  "substitute_bytes_hook": 0,
+  "substitute_bytes_agent_visible": 0,
+  "immediate_retry": 0,
+  "rediscovery_auto": [],
+  "false_short_circuit": [],
+  "substitutes_detail": []
+ },
+ "S-O2-r1": {
+  "native_requested": 16,
+  "native_executed": 16,
+  "native_executed_by_tool": {
+   "Bash": 13,
+   "Glob": 0,
+   "Grep": 3,
+   "Read": 0
+  },
+  "native_executed_result_bytes": 25308,
+  "first_exploration_route": "Bash",
+  "hook_events": 16,
+  "p0_events": 3,
+  "substitutes": 0,
+  "substitutes_by_action": {
+   "SOURCE_READ": 0,
+   "TEXT_SEARCH": 0,
+   "PROJECT_TREE_DISCOVERY": 0
+  },
+  "fallback_reasons": {
+   "UNIVERSE_MISMATCH": 3
+  },
+  "bp_queries": 312,
+  "bp_bytes": 780792,
+  "bp_ms": 4655,
+  "unrelated_bp_queries": 0,
+  "hook_ms_total": 4719,
+  "hook_ms_p0_max": 1671,
+  "substitute_bytes_hook": 0,
+  "substitute_bytes_agent_visible": 0,
+  "immediate_retry": 0,
+  "rediscovery_auto": [],
+  "false_short_circuit": [],
+  "substitutes_detail": []
+ },
+ "S-O2-r2": {
+  "native_requested": 15,
+  "native_executed": 14,
+  "native_executed_by_tool": {
+   "Bash": 11,
+   "Glob": 0,
+   "Grep": 2,
+   "Read": 1
+  },
+  "native_executed_result_bytes": 30007,
+  "first_exploration_route": "Bash",
+  "hook_events": 15,
+  "p0_events": 4,
+  "substitutes": 1,
+  "substitutes_by_action": {
+   "SOURCE_READ": 0,
+   "TEXT_SEARCH": 1,
+   "PROJECT_TREE_DISCOVERY": 0
+  },
+  "fallback_reasons": {
+   "RANGE_NOT_COVERED": 1,
+   "UNIVERSE_MISMATCH": 1,
+   "UNSUPPORTED_ARG": 1
+  },
+  "bp_queries": 154,
+  "bp_bytes": 497002,
+  "bp_ms": 2369,
+  "unrelated_bp_queries": 0,
+  "hook_ms_total": 2414,
+  "hook_ms_p0_max": 1519,
+  "substitute_bytes_hook": 441,
+  "substitute_bytes_agent_visible": 469,
+  "immediate_retry": 0,
+  "rediscovery_auto": [],
+  "false_short_circuit": [],
+  "substitutes_detail": [
+   {
+    "tool": "Grep",
+    "input": {
+     "pattern": "updated_unix_ms|timestamp_unix_ms",
+     "output_mode": "content",
+     "path": "@T74_ROOT@/ab/wts/S-O2-r2/crates"
+    },
+    "bytes": 469
+   }
+  ]
+ }
+}
