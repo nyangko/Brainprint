@@ -254,7 +254,7 @@ Persona が実際に測定可能な価値をほとんど生まないのであれ
 
 ## 現在の実装状況
 
-Brainprint は現在 **0.1.0 を実装中**です。
+**Pre-release です。Brainprint 0.1.0 は実装済みですが、まだ acceptance もリリースもされていません。** interface、storage、protocol(現在 protocol 14)は変更される可能性があります。
 
 実装ロードマップは [#12 — P0 実装ロードマップ](https://github.com/nyangko/Brainprint/issues/12) で管理します。
 
@@ -263,13 +263,19 @@ Brainprint は現在 **0.1.0 を実装中**です。
 | I0 — Benchmark Harness / Skeleton | 完了 |
 | I1 — Core Runtime Foundation | 完了 |
 | I2 — Structural Intelligence | 完了 |
-| I3 — Relation Graph | 進行中 |
-| I4 — Semantic Backends | 予定 |
-| I5 — Project Intelligence + Projection + MCP/Skill | 予定 |
-| I6 — Command Intelligence | 予定 |
-| I7 — UX / Recovery / Acceptance | 予定 |
+| I3 — Relation Graph | 完了 |
+| I4 — Semantic Backends | 完了 |
+| I5 — Project Intelligence + Projection + MCP/Skill | 完了 |
+| I6 — Command Intelligence | 完了 |
+| I7 — UX / Recovery / Acceptance | 進行中 — 最終 acceptance gate [#77](https://github.com/nyangko/Brainprint/issues/77)、未 accept |
 
-実装は意図的に下から積み上げます。まず信頼できる project fact と freshness を作り、その上に relation と semantic を構築し、最後に projection と Agent-facing interface を接続します。
+現在のバイナリ: `brainprintd`(ユーザーごとに 1 つの global daemon)、`brainprint`(CLI、TUI、127.0.0.1 限定の read-only Web UI)、`brainprint-mcp`(MCP stdio adapter、4 つの tool: `brainprint.find` / `inspect` / `relations` / `context`)、`brainprint-agent`(Claude Code / Codex CLI / Gemini CLI 向け hook bridge)。CLI は daemon を自動起動しません。
+
+Semantic backend(Python、TypeScript/JavaScript、Svelte、C#、Rust)は任意で、ユーザーが自分でインストールし config に locator を指定する必要があります。未設定の場合は tree-sitter ベースの structural 結果と、明示的な coverage/gap 報告で動作します。
+
+**コストの測定結果:** Brainprint 0.1.0 は native-only の探索より低い model/provider コストを保証しません。#32、#35、#74、#75 の測定では、Brainprint 経路はいずれも native-only より高コストでした(例: #32 native $0.579/session vs Brainprint $0.974/session、+68%)。0.1.0 が目指すのは、local-first な共有 current truth、セッション/Agent をまたぐ Project/Workspace/Working State の継続性、決定論的な準備、明示的な freshness/coverage セマンティクス、bounded/continuation delivery です。
+
+> **インストール、クイックスタート、CLI/MCP リファレンス、保存場所、リカバリ、ベンチマーク、known limitations など 0.1.0 の完全な利用ドキュメントは [English README](../README.md) を基準とします。**
 
 ## 0.1.0 で目指す使用感
 
@@ -363,9 +369,9 @@ Marketplace ごとの packaging や、より豊富な one-click distribution は
 
 ## ドキュメント
 
-pre-1.0 開発中もドキュメントは継続して更新しますが、**1.0.0 昇格前には実際に acceptance された実装を基準に README/Wiki を最終監査**します。
+0.1.0 のドキュメント基準は [English README](../README.md) です。GitHub Wiki はまだ作成されていません。1.0.0 昇格前には、実際に acceptance された実装を基準にドキュメントを再監査します。
 
-Wiki では次を扱う予定です。
+今後 Wiki を作成する場合は、次を扱う予定です。
 
 - architecture と identity model
 - freshness/revision/generation

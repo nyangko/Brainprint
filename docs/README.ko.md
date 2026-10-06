@@ -254,7 +254,7 @@ Persona가 실제 측정 가능한 가치를 거의 만들지 못한다면 최�
 
 ## 현재 구현 상태
 
-현재 Brainprint는 **0.1.0을 구현 중**입니다.
+**Pre-release입니다. Brainprint 0.1.0은 구현되었지만 아직 acceptance되거나 릴리스되지 않았습니다.** interface, storage, protocol(현재 protocol 14)은 바뀔 수 있습니다.
 
 구현 로드맵은 [#12 — P0 구현 로드맵](https://github.com/nyangko/Brainprint/issues/12)에서 관리합니다.
 
@@ -263,13 +263,19 @@ Persona가 실제 측정 가능한 가치를 거의 만들지 못한다면 최�
 | I0 — Benchmark Harness / Skeleton | 완료 |
 | I1 — Core Runtime Foundation | 완료 |
 | I2 — Structural Intelligence | 완료 |
-| I3 — Relation Graph | 진행 중 |
-| I4 — Semantic Backends | 예정 |
-| I5 — Project Intelligence + Projection + MCP/Skill | 예정 |
-| I6 — Command Intelligence | 예정 |
-| I7 — UX / Recovery / Acceptance | 예정 |
+| I3 — Relation Graph | 완료 |
+| I4 — Semantic Backends | 완료 |
+| I5 — Project Intelligence + Projection + MCP/Skill | 완료 |
+| I6 — Command Intelligence | 완료 |
+| I7 — UX / Recovery / Acceptance | 진행 중 — 최종 acceptance gate [#77](https://github.com/nyangko/Brainprint/issues/77), 아직 accept되지 않음 |
 
-구현은 의도적으로 아래부터 쌓아 올립니다. 먼저 신뢰할 수 있는 project fact와 freshness를 만들고, 그 위에 relation과 semantic을 올린 뒤, projection과 Agent-facing interface를 연결합니다.
+현재 바이너리: `brainprintd`(사용자당 하나의 global daemon), `brainprint`(CLI, TUI, 127.0.0.1 전용 read-only Web UI), `brainprint-mcp`(MCP stdio adapter, 4개 tool: `brainprint.find` / `inspect` / `relations` / `context`), `brainprint-agent`(Claude Code / Codex CLI / Gemini CLI hook bridge). CLI는 daemon을 자동으로 시작하지 않습니다.
+
+Semantic backend(Python, TypeScript/JavaScript, Svelte, C#, Rust)는 선택 사항이며 사용자가 직접 설치하고 config에 locator를 지정해야 합니다. 없으면 tree-sitter 기반 structural 결과와 명시적인 coverage/gap 보고로 동작합니다.
+
+**비용에 대한 측정 결과:** Brainprint 0.1.0은 native-only 탐색보다 낮은 model/provider 비용을 보장하지 않습니다. #32, #35, #74, #75 측정에서 Brainprint 경로는 모두 native-only보다 비쌌습니다(예: #32 native $0.579/session vs Brainprint $0.974/session, +68%). 0.1.0이 목표로 하는 것은 local-first 공유 current truth, 세션/Agent 간 Project/Workspace/Working State 연속성, 결정론적 준비, 명시적인 freshness/coverage 의미론, bounded/continuation delivery입니다.
+
+> **설치, 빠른 시작, CLI/MCP 레퍼런스, 저장 위치, 복구, 벤치마크, known limitations 등 0.1.0의 전체 사용 문서는 [English README](../README.md)를 기준으로 합니다.**
 
 ## 0.1.0에서 기대하는 사용감
 
@@ -363,9 +369,9 @@ Marketplace별 packaging이나 더 풍부한 one-click distribution은 0.1.0 int
 
 ## 문서화
 
-pre-1.0 개발 중에도 문서는 계속 갱신하지만, **1.0.0 승격 전에는 실제 acceptance된 구현을 기준으로 README/Wiki를 최종 감사**합니다.
+0.1.0의 문서 기준은 [English README](../README.md)입니다. GitHub Wiki는 아직 만들어지지 않았습니다. 1.0.0 승격 전에는 실제 acceptance된 구현을 기준으로 문서를 다시 감사합니다.
 
-Wiki는 다음 범위를 다루게 됩니다.
+향후 Wiki가 만들어지면 다음 범위를 다룰 예정입니다.
 
 - architecture와 identity model
 - freshness/revision/generation

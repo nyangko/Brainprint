@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <strong>A local-first context runtime that helps AI coding agents read less, rediscover less, and spend their reasoning on the work that actually needs judgment.</strong>
+  <strong>A local-first context runtime that keeps current, structured project truth for AI coding agents.</strong>
 </p>
 
 <p align="center">
@@ -12,378 +12,336 @@
 
 # Brainprint
 
-AI coding agents are good at reasoning, but they repeatedly spend context and tool calls on work ordinary software can do more cheaply:
+AI coding agents spend many tool calls and much context rediscovering things ordinary software can prepare: repository structure, unchanged source, callers and imports, project rules, and where the previous session left off.
 
-- rediscovering repository structure,
-- rereading unchanged source,
-- tracing the same callers and imports,
-- reconstructing project state after a new session or compaction,
-- sorting, deduplicating, grouping, and filtering raw tool output,
-- repeating Git/test/build exploration that could have been prepared once.
+Brainprint is a **local daemon** (`brainprintd`) that indexes a Workspace, keeps that index current while files change, and serves deterministic answers (resources, symbols, relations, impact, rules, decisions, Working State) to agents over MCP and to people over a CLI, a TUI, and a local Web UI.
 
-Brainprint is being built as a **persistent, local-first context runtime** between the project and the agent.
+> If Brainprint can know, derive, sort, deduplicate, prepare, or verify something deterministically, the agent should not have to spend reasoning on it again.
 
-Its job is not to replace the agent's judgment. Its job is to make sure the agent receives the smallest sufficient, current, structured view of the project so the model can spend its reasoning on implementation, trade-offs, and verification.
+The project stays the source of truth. Brainprint is not a source backup, a Git replacement, an autonomous project manager, or a conversation archive. It prepares facts; the agent still decides, edits, and verifies.
 
-> **If Brainprint can know, derive, sort, deduplicate, prepare, or verify something deterministically, the agent should not have to spend reasoning tokens doing it again.**
+Principles the implementation follows:
 
-## The core idea
+- **Correctness before savings.** `NOT_CURRENT`, `PARTIAL`, unresolved, unsupported and truncated results stay explicit. Hiding uncertainty to save tokens counts as failure.
+- **Shared truth, not shared giant context.** Several agents on one Workspace share one daemon and one index instead of each re-exploring.
+- **Deterministic work belongs in software.** Sorting, deduplication, bounding, pagination and continuation happen in Brainprint, not in the model.
 
-Traditional agent workflows often look like this:
+## Status
 
-```text
-Agent
-  → ls / find
-  → rg
-  → read files
-  → reconstruct imports and callers
-  → sort / dedupe / filter raw results
-  → inspect Git state
-  → rediscover project rules
-  → finally start reasoning about the change
-```
+**Pre-release. Brainprint 0.1.0 is implemented but not yet accepted or released.** Interfaces, storage and protocol (currently protocol 14) may still change.
 
-Brainprint aims to move the support work out of the model:
-
-```text
-Project / Workspace
-        ↓
-    brainprintd
-        ↓
-  fresh structured truth
-        ↓
-  prepare / dedupe / bound
-        ↓
-      MCP / CLI
-        ↓
-      Agent
-        ↓
-  judgment / editing / verification
-```
-
-The project remains the source of truth. Brainprint is not a source backup, Git replacement, autonomous project manager, or general-purpose conversation archive.
-
-## Product principles
-
-### 1. Substitution, not addition
-
-Brainprint should replace repeated exploration, not add another tool call before the agent performs the same `ls/find/rg/read/git` work anyway.
-
-### 2. Prepare enough to work
-
-Returning only a filename or line number is not enough when Brainprint already knows the exact current source range, direct consumers, relevant tests, and uncertainty around the result.
-
-### 3. Deterministic work belongs in Brainprint
-
-The runtime should handle cheap, repeatable operations such as:
-
-```text
-sort
-dedupe
-filter
-group
-count
-set intersection
-range merge
-overlap removal
-stable ordering
-candidate bounding
-pagination
-continuation
-diff
-known-state comparison
-budget enforcement
-deterministic output compaction
-```
-
-Sending hundreds of raw items to the model and asking it to sort and reduce them is not token optimization; it is moving ordinary compute into the most expensive layer.
-
-### 4. Shared truth, not shared giant context
-
-Multiple agents can share the same current project/workspace truth without copying a huge parent transcript into every worker.
-
-### 5. Correctness before savings
-
-`STALE`, `PARTIAL`, `UNRESOLVED`, `UNSUPPORTED`, and truncated results must remain explicit. Brainprint must not hide uncertainty just to reduce tokens.
-
-### 6. The agent keeps the skilled work
-
-Brainprint prepares facts, evidence, state, rules, and verification targets.
-
-The agent remains responsible for:
-
-- understanding the problem,
-- choosing a change strategy,
-- writing code,
-- evaluating trade-offs,
-- interpreting uncertainty,
-- making the final verification judgment.
-
-## Architecture
-
-Brainprint is designed around one global local daemon with workspace-scoped runtimes.
-
-```text
-Codex / Claude / Gemini / other agents
-                │
-          MCP / thin Skill
-                │
-                ▼
-          global brainprintd
-                │
-        ┌───────┼────────┐
-        ▼       ▼        ▼
-   Workspace A  B        C
-        │
-        ├─ Resource / Symbol / Occurrence
-        ├─ Relation / unresolved / candidates
-        ├─ freshness / revision / generation
-        ├─ current source preparation
-        ├─ project / working state
-        └─ command intelligence
-```
-
-The intended model is:
-
-- **Project truth is shared.**
-- **Task context is not.**
-- Expensive parsing/semantic work should be reusable across agents on the same workspace.
-- WorkItem / Role / Persona metadata may shape later projections, but they must never change source facts, relations, or freshness.
-
-## Brainprint 0.1.0 → 0.5.0 → 1.0.0
-
-Brainprint will evolve through five pre-1.0 product stages, then enter a separate stabilization/hardening gate before 1.0.0.
-
-These versions describe the **primary improvement axis** of each release. They do not mean that a required baseline capability is absent until a later version.
-
-| Version | Primary goal | Core question |
-| --- | --- | --- |
-| **0.1.0** | **Token & Context Economy** | How much repeated reading, searching, context, and support work can we remove while remaining correct? |
-| **0.2.0** | **Deterministic Work Offload** | What ordinary computation can software perform so the LLM does not have to? |
-| **0.3.0** | **Rules & Project Intelligence** | Can the agent receive only the project rules, decisions, and working state relevant to the current task? |
-| **0.4.0** | **Language & Ecosystem Expansion** | How much more of the real software system can Brainprint understand accurately? |
-| **0.5.0** | **Persona & Role Awareness** | Can presentation adapt to the worker without changing project truth? |
-| **1.0.0** | **Stable Release / Hardening** | Is Brainprint correct, stable, optimized, maintainable, recoverable, and documented enough to call stable? |
-
-The detailed release goals are tracked in [#18 — Brainprint 0.1.0–0.5.0 → 1.0.0 product roadmap](https://github.com/nyangko/Brainprint/issues/18).
-
-### 0.1.0 — Token & Context Economy
-
-The first practical release is not intended to be an indexing demo. It must be usable on real projects.
-
-The 0.1.0 baseline includes:
-
-- local daemon and workspace identity,
-- structural code intelligence,
-- Relation Graph and impact evidence,
-- current-source preparation,
-- semantic backend baseline,
-- project rules / decisions / working-state baseline,
-- request-shaped context projection,
-- Git/test/lint/typecheck/build intelligence,
-- high-level MCP + thin Skill,
-- deterministic sort/dedupe/filter/bounding baseline,
-- multi-agent shared truth,
-- real-project benchmark and dogfooding.
-
-### 0.2.0 — Deterministic Work Offload
-
-Expand the 0.1.0 baseline so the model performs less mechanical work: result shaping, repeated diagnostics reduction, deterministic diff/state comparison, delivery reuse, verification deltas, and measured adaptive optimizations where they prove useful.
-
-### 0.3.0 — Rules & Project Intelligence
-
-Strengthen project policy, decisions, blueprints, working-state lineage, precedence, conflict handling, handoff/resume, and compact applicable-rule projection.
-
-The goal is to stop making every new agent rediscover **how this project is supposed to be worked on**.
-
-### 0.4.0 — Language & Ecosystem Expansion
-
-0.1.0 already targets a practical baseline for Python, TypeScript/JavaScript, React, Svelte, C#, and Rust.
-
-0.4.0 expands semantic depth and ecosystem understanding: additional languages, framework adapters, ORM/database relations, routes, events, queues, cache/config semantics, and cross-project relations where evidence is reliable.
-
-### 0.5.0 — Persona & Role Awareness
-
-Persona is intentionally last.
-
-Role/Persona may change **what evidence is emphasized or how much detail is projected**, but it must never change project truth.
-
-```text
-Truth
-  → task/context selection
-  → optional Role/Persona adjustment
-```
-
-Not:
-
-```text
-Persona
-  → truth interpretation
-```
-
-If Persona provides little measurable value, it stays small.
-
-### 1.0.0 — Stable Release
-
-1.0.0 is not another feature bucket after 0.5.0. It is the first release Brainprint will call stable only after separate hardening.
-
-Before promotion to 1.0.0, the project must verify:
-
-- correctness and major bug closure on real projects,
-- regression coverage for core workflows,
-- acceptable CPU/RAM/I/O/index-size and long-running background cost,
-- measured token/context/tool-call improvements,
-- multi-agent stability and recovery behavior,
-- migration/upgrade paths,
-- code quality and maintainability of critical modules,
-- stable enough CLI/MCP/public contracts,
-- README/Wiki/API behavior consistency,
-- honest language/feature coverage and known limitations.
-
-0.5.0 completion alone is **not** sufficient to tag 1.0.0.
-
-## Current implementation status
-
-Brainprint 0.1.0 is currently under active implementation.
-
-The implementation roadmap is tracked in [#12 — P0 implementation roadmap](https://github.com/nyangko/Brainprint/issues/12).
-
-Current workstreams:
-
-| Workstream | Status |
+| Workstream ([#12](https://github.com/nyangko/Brainprint/issues/12)) | Status |
 | --- | --- |
 | I0 — Benchmark Harness / Skeleton | Complete |
 | I1 — Core Runtime Foundation | Complete |
 | I2 — Structural Intelligence | Complete |
-| I3 — Relation Graph | In progress |
-| I4 — Semantic Backends | Planned |
-| I5 — Project Intelligence + Projection + MCP/Skill | Planned |
-| I6 — Command Intelligence | Planned |
-| I7 — UX / Recovery / Acceptance | Planned |
+| I3 — Relation Graph | Complete |
+| I4 — Semantic Backends | Complete |
+| I5 — Project Intelligence + Projection + MCP/Skill | Complete |
+| I6 — Command Intelligence | Complete |
+| I7 — UX / Recovery / Acceptance | In progress — final acceptance gate [#77](https://github.com/nyangko/Brainprint/issues/77), not yet accepted |
 
-The implementation is intentionally being built bottom-up: first trustworthy project facts and freshness, then relations and semantics, then projection and agent-facing interfaces.
+## What 0.1.0 guarantees — and what it does not
 
-## What 0.1.0 should feel like
+**0.1.0 aims to guarantee:**
 
-For a request such as:
+- local-first, shared current truth about a Workspace, held by one daemon per user;
+- Project / Workspace / Working State continuity across sessions and agents;
+- deterministic preparation of Resources, Symbols, Relations, Policies, Decisions and Working State;
+- explicit freshness / currentness / coverage / partial / unsupported semantics on every answer;
+- minimum-sufficient, bounded and resumable (continuation) delivery;
+- fact-based measurement of its own cost (see [Benchmarks](#benchmark-and-economy-results)).
 
-```text
-"Change this method signature and update everything affected."
+**0.1.0 does not guarantee:**
+
+- lower model/provider cost (USD) than native-only exploration on every workload — the measurements so far show the opposite (see below);
+- fewer native tool calls on every client;
+- that MCP / hook / tool-schema overhead is always amortized;
+- that a reduction in bytes delivered turns into a token or USD saving.
+
+## Install and build from source
+
+There are no prebuilt binaries or packages yet. Build from source:
+
+```sh
+git clone https://github.com/nyangko/Brainprint.git
+cd Brainprint
+cargo build --release
 ```
 
-the target experience is not:
+- Toolchain: `rust-toolchain.toml` pins the `stable` channel (with `clippy`, `rustfmt`); the minimum supported Rust is **1.88** (`rust-version` in `Cargo.toml`).
+- The Web UI page is committed prebuilt (`web/build/index.html`) and embedded into the `brainprint` binary, so Node is **not** needed to build. Only rebuild it (`cd web && npm ci && npm run build`) if you change `web/src`.
+- CI (`.github/workflows/acceptance.yml`) runs fmt, clippy, build and the full test suite on Linux, macOS and Windows.
 
-```text
-Agent → search → read → search → inspect imports → search callers
-      → find tests → reread source → reconstruct state → edit
+The build produces four binaries in `target/release/`; put them on your `PATH`:
+
+| Binary | Role |
+| --- | --- |
+| `brainprintd` | The global daemon, one per user. Runs in the foreground until Ctrl+C. |
+| `brainprint` | The CLI (also hosts the TUI and the Web UI). |
+| `brainprint-mcp` | MCP server over stdio; a thin adapter to the daemon exposing four tools. |
+| `brainprint-agent` | Optional client hook bridge for Claude Code, Codex CLI and Gemini CLI. |
+
+## Quick start
+
+```sh
+brainprintd &                 # 1. start the daemon (the CLI never auto-starts it)
+brainprint install            # 2. create ~/.brainprint/config.toml and ~/.brainprint/data/global.db
+brainprint init ~/src/myrepo  # 3. attach a Workspace: creates <repo>/.brainprint/ and runs the initial index
+brainprint status ~/src/myrepo
 ```
 
-It should be closer to:
+If the daemon is not running, commands fail with `brainprintd is not running -- start it, then retry`. The CLI and daemon must speak the same protocol version (use binaries from the same build); a mismatch is reported, not tolerated.
 
-```text
-Brainprint
-  → current target source
-  → confirmed callers / references / type consumers
-  → relevant current source ranges
-  → related tests
-  → applicable project rules
-  → unresolved / unsupported gaps
-  → current workspace state
+After `init`, the daemon watches the Workspace and keeps the index current; ordinary edits need no further command. `status <path>` shows identity, revision/generation, `index: current`, `runtime: active`, `watcher: attached`, and each semantic backend's availability.
 
-Agent
-  → decide
-  → edit
-  → verify
+A first query (most query commands take a target selector, a `--budget` and a `--retention`):
+
+```sh
+cd ~/src/myrepo
+brainprint inspect --symbol-name build_profile --budget compact --retention fresh
+brainprint impact  --symbol-name build_profile --change public-signature --budget compact --retention fresh
+brainprint find text --literal build_profile --search-budget compact
 ```
 
-## How success is measured
+## CLI reference
 
-Feature count is not the primary success metric.
+Every command has `--help`. Workspace-scoped commands default to the current directory (`[PATH]` or `--workspace`, canonicalized to an absolute path). `--json` prints the machine-readable response.
 
-Brainprint should measure whether it actually reduces:
+**Lifecycle and recovery**
 
-- agent tool calls,
-- repeated unchanged reads,
-- raw source bytes delivered,
-- context/token volume,
-- duplicated analysis across agents,
-- avoidable agent-side sort/dedupe/filter/group/count work,
-- support-work ratio in long-running tasks.
+| Command | What it does |
+| --- | --- |
+| `install` | Create the global config and `global.db`. |
+| `status [PATH] [--json]` | Daemon status; with a path, the Workspace's compact status. Read-only. |
+| `init [PATH]` | Create `.brainprint/` and attach the Workspace (initial index + watcher). On a detached Workspace it re-attaches. |
+| `doctor [PATH] [--json]` | Read-only diagnosis: databases and schemas, identity binding, index currentness, runtime/watcher, semantic backends. Never repairs. |
+| `sync [PATH] [--json]` | Reconcile the index with the filesystem now (after a checkout/rebase or while the daemon was stopped). Never modifies source. |
+| `rebuild [PATH] [--json]` | Rebuild the rebuildable index (Resources, Symbols, Relations, semantic publications) from current source. Identity, config, durable knowledge, Working State and source are kept. |
+| `uninit [PATH] [--json]` | Detach: stop the watcher and runtime. Source, `.brainprint/`, durable knowledge and index are kept; `init` attaches again. |
+| `tui [--workspace] [--locale]` | Keyboard-first terminal view. |
+| `web [--workspace] [--port 7470] [--locale]` | Local read-only Web UI on `127.0.0.1`. |
 
-At the same time it must track:
+**Queries** (all accept `--workspace`, `--json`, `--client-id`, `--session-id`)
 
-- correctness and missed dependencies,
-- false-positive relations,
-- stale/partial errors,
-- latency,
-- CPU/RAM/I/O,
-- index size.
+| Command | What it answers |
+| --- | --- |
+| `find target <selector>` | Candidates for a selector. Reads no source. |
+| `find files [--directory --recursive --path-prefix --role --language --kind --limit]` | Resource inventory from the index (default limit 200). Reads no source. |
+| `find text --literal\|--regex … --search-budget compact\|standard\|wide` | Explicit source-text search, bounded by results/files/bytes/deadline. Never an automatic fallback. |
+| `inspect <selector>` | Exact current declaration source plus direct relations in both directions. |
+| `relations <selector> --direction outgoing\|incoming\|both [--kind …]` | Direct confirmed relations, one hop, unpaged. |
+| `impact <selector> --change <kind>` | What a declared change would affect (`public-signature`, `rename`, `module-move`, `base-interface`, `delete`, `domain-contract`), including related tests. |
+| `context change <selector>` | Context for an edit at a target. |
+| `context resume --work-item <id>` | Context to resume a WorkItem's handoff. |
+| `knowledge rules \| work-items --status … \| lineage \| handoffs --work-item …` | Applicable rules; WorkItems by status; one-hop Policy/Decision lineage; handoff history. |
+| `structure --group-…` | Structural summary grouped by exactly one dimension: `--group-path LABEL=PREFIX` (repeatable), `--group-directory --root R --depth N`, `--group-resource-role`, `--group-resource-language`, `--group-resource-kind`. |
 
-Token savings that come from hiding uncertainty are considered failure.
+Target selectors: `--resource-id`, `--resource-path`, `--resource-basename`, `--resource-prefix`, `--symbol-id`, `--qualified`, `--symbol-name`, `--partial-symbol`, or `--target-json`; narrowed with `--in-resource`, `--symbol-kind`, `--language`.
 
-## Data model and storage philosophy
+Delivery options on `find target`, `inspect`, `impact`, `context change|resume`:
 
-Brainprint stores structured understanding, not a second copy of the project.
+- `--budget compact|standard|wide` (required), optionally `--budget-items N` / `--budget-bytes N`;
+- `--retention retained|fresh|disabled` (required): `retained` = earlier acknowledged payloads are still in the caller's context, `fresh` = new/compacted context, send everything in full, `disabled` = no reuse ledger;
+- `--continuation <token>` to fetch the next page after `MORE_AVAILABLE`.
 
-Examples of retained knowledge:
+**Working State and verification** (JSON input on stdin or `--input FILE`)
 
-- stable project/workspace/resource identity,
-- symbols and occurrences,
-- canonical relations,
-- unresolved/candidate evidence,
-- fingerprints and revision state,
-- project decisions and working state.
+| Command | What it does |
+| --- | --- |
+| `work start` / `work result` | Record caller-observed Git state for a WorkItem (OPEN → ACTIVE, then partial/complete/abandon). Runs no Git. |
+| `verification start --idempotency-key K` | Start a daemon-managed verification Job (`{"commands":[{"label","argv","cwd","env","timeout_secs","capture"}]}`; argv is executed without a shell) and return at once. |
+| `verification poll <JOB_ID> [--after N --limit N]` / `verification cancel <JOB_ID>` | Read a Job's events / cancel it. |
+| `artifact read <HANDLE> --stream stdout\|stderr --part head\|tail` | Read a retained head/tail chunk of captured command output (ephemeral). |
 
-Original source, images, audio, video, and other project assets remain external resources referenced by identity/location/fingerprint. Rebuildable indexes should remain disposable.
+## MCP and thin Skill integration
 
-## Agent integration
+`brainprint-mcp` speaks MCP over stdio and exposes four tools:
 
-The intended 0.1.0 integration model is:
+| Tool | Use |
+| --- | --- |
+| `brainprint.find` | Location: exact/search target, file listing, or explicit text search (`mode`: target, files, text). |
+| `brainprint.inspect` | Exact current source and direct relations of one resolved target. |
+| `brainprint.relations` | Direct relations of one anchor, or the impact of a declared change. |
+| `brainprint.context` | Edit context, WorkItem resume, applicable rules, WorkItem/Decision/Policy history, structure. |
 
-```text
-Agent plugin / extension
-        │
-   thin Skill + MCP
-        │
-        ▼
-   brainprintd
+It never ranks, resolves ambiguity or picks a Working State on its own; typed outcomes such as `NOT_INITIALIZED` or partial coverage are returned as-is. Each call may pass `workspace_path` or `workspace_id`; without either, the server's startup working directory is used. The daemon must already be running.
+
+Register it with any MCP client as a stdio server, for example a project `.mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "brainprint": { "type": "stdio", "command": "/absolute/path/to/brainprint-mcp", "args": [] }
+  }
+}
 ```
 
-Agent-specific packaging may differ, but the Core should remain shared. Codex, Claude, Gemini, and other clients should not each run a separate project intelligence engine for the same workspace.
+The thin Skill is [`integrations/brainprint/SKILL.md`](./integrations/brainprint/SKILL.md): prefer Brainprint for project facts when it answers current and complete; fall back to native tools when it reports partial, stale, unsupported or ambiguous. Install it the way your client loads skills/instructions (for example copy it into the client's skills directory). There is no `brainprint.run` tool.
 
-Marketplace-specific packaging and richer one-click distribution can evolve after the 0.1.0 integration contract is proven.
+### Client hook bridge (optional)
+
+`brainprint-agent` translates client hook payloads into a common event and can steer the agent toward Brainprint for supported exploration:
+
+```sh
+brainprint-agent config --client claude-code --mode prefer   # prints a hook config fragment; never edits config
+brainprint-agent probe  --client claude-code                 # reports the installed client and the capability matrix
+```
+
+- Clients: `claude-code`, `codex-cli`, `gemini-cli`. Ready-made fragments live in `integrations/brainprint/clients/`.
+- Modes: `observe`, `prefer` (the dogfood default), `guard` (opt-in; can block a native exploration; `bypass-once --session S` allows exactly one).
+- Merge the fragment into the client's hook settings yourself.
+- Optional local adoption telemetry: set `BRAINPRINT_ADOPTION_TELEMETRY_PATH` to a file to append one JSONL line per event (labels, counts, digests; no prompt, source or tool-result body). Unset = disabled (default).
+
+## TUI and Web UI
+
+- `brainprint tui` — keyboard-first terminal view: status, inspect, relations, impact, Working State, and doctor/sync/rebuild/uninit, over the same daemon queries as the CLI. Quitting never stops the daemon.
+- `brainprint web` — local Web UI (Overview; Explorer: inspect / relations / impact; Context: Working State, rules, decisions). Binds **127.0.0.1 only**, default port **7470** (`--port 0` picks a free port), read-only; stopping it never stops the daemon.
+- Locale: `--locale en|ko`; an unsupported tag falls back to English. Default comes from the global config:
+
+```toml
+# ~/.brainprint/config.toml
+format_version = 1
+[ui]
+locale = "ko"
+```
+
+## Supported languages and capability boundary
+
+Baseline: **Python, TypeScript/JavaScript, React (TSX/JSX), Svelte, C#, Rust.** Other files are indexed as resources (path, role, kind) without symbols.
+
+Two layers:
+
+1. **Structural (always on, built in):** tree-sitter extraction of symbols, occurrences, imports and structural relations, with explicit unresolved/candidate evidence where a name cannot be bound structurally.
+2. **Semantic (optional, external):** language-server backends you install yourself. Brainprint never downloads or searches for them. With no locator configured, `status`/`doctor` show each backend as `unavailable: no backend locator in the Workspace or global config`, and answers use structural results with explicit coverage limits and gaps.
+
+Backend locators go in `~/.brainprint/config.toml` or, per Workspace (overriding the global entry), in `<workspace>/.brainprint/config.toml`:
+
+```toml
+[semantic_backends.python]      # install_root contains node_modules/pyright-typeserver
+install_root = "/opt/bp/pyright"
+node = "/usr/local/bin/node"    # optional, default "node"
+
+[semantic_backends.typescript]  # install_root contains node_modules/typescript
+install_root = "/opt/bp/typescript"
+
+[semantic_backends.svelte]      # install_root contains node_modules/svelte-language-server
+install_root = "/opt/bp/svelte"
+
+[semantic_backends.csharp]      # install_root contains packages/microsoft.codeanalysis.languageserver.<rid>/<version>
+install_root = "/opt/bp/roslyn"
+
+[semantic_backends.rust]        # path to a rust-analyzer executable
+executable = "/opt/bp/rust-analyzer"
+```
+
+**C# and Rust load the project** (MSBuild evaluation; Cargo build scripts and proc macros), so they run only after an explicit per-Workspace trust decision in `<workspace>/.brainprint/config.toml`:
+
+```toml
+project_execution_trust = "Trusted"
+```
+
+Absent means Untrusted; there is deliberately no global equivalent. An untrusted C#/Rust backend is reported unavailable, never started. Backends run as separate child processes; that is crash isolation, not a security boundary.
+
+## Freshness, coverage and continuation
+
+Every answer states how far it can be trusted:
+
+- **Currentness** — `Current` when the index matches the Workspace revision the runtime holds; `NOT_CURRENT` otherwise. Brainprint fails closed rather than presenting stale facts as current.
+- **Coverage** — complete / partial / unsupported, with the limits that caused it (for example unresolved evidence, unattributed gaps, a reverse scope that cannot be enumerated). "No result under complete coverage" and "no result with incomplete coverage" are different answers.
+- **Bounding** — `PARTIAL`, `TRUNCATED`, `MORE_AVAILABLE` plus a `CONTINUATION` token. Pass the token back with `--continuation` (CLI) or the continuation parameter (MCP) for the next page.
+- **Locations** — internal spans are 0-based; JSON evidence sites carry `line_1based`, and human source headers such as `[4:1-5:50]` are 1-based `line:column`. The human column is **byte offset + 1**, not an editor's visual column on non-ASCII lines.
+
+## Recovery
+
+| Situation | Command |
+| --- | --- |
+| Something looks wrong | `brainprint doctor [PATH]` (read-only) |
+| Branch switch / rebase / edits while the daemon was down | `brainprint sync [PATH]` |
+| Index suspected corrupt or inconsistent | `brainprint rebuild [PATH]` |
+| Stop managing a Workspace for now | `brainprint uninit [PATH]`, later `brainprint init [PATH]` |
+| Daemon not running | start `brainprintd` |
+
+None of these modify source files. There is no `uninstall` command; to remove Brainprint completely, stop the daemon and delete `~/.brainprint/` and each Workspace's `.brainprint/`.
+
+## Storage and data locations
+
+| Location | Contents |
+| --- | --- |
+| `~/.brainprint/config.toml` | Global config (`format_version`, `[semantic_backends.*]`, `[ui]`). |
+| `~/.brainprint/data/global.db` | Project/Workspace registry, user policies and preferences, blueprints. |
+| `~/.brainprint/logs/`, `~/.brainprint/cache/` | Logs (e.g. backend logs) and cache. |
+| `$XDG_RUNTIME_DIR/brainprint/` or `~/.brainprint/runtime/` | Daemon lock, IPC socket (`brainprintd.sock`; a short path under the OS temp dir if the full path is too long for a Unix socket), ephemeral verification artifacts. |
+| `<workspace>/.brainprint/workspace.toml` | Workspace identity. |
+| `<workspace>/.brainprint/config.toml` | Workspace config: `extra_excluded_directory_names`, `[semantic_backends.*]` overrides, `project_execution_trust`. |
+| `<workspace>/.brainprint/data/project.db` | Durable project knowledge (policies, decisions, project state). |
+| `<workspace>/.brainprint/data/workspace.db` | Working State, WorkItems, verification jobs. |
+| `<workspace>/.brainprint/data/index.db` | The rebuildable index (resources, symbols, occurrences, relations, semantic publications). |
+
+On Windows the IPC endpoint is a named pipe and home is `%USERPROFILE%`.
+
+**Source ownership.** The source tree remains the source of truth. `.brainprint/` stores structured understanding (identities, symbols with signatures and spans, relations, fingerprints, knowledge, state), not a copy of file bodies — a schema test (`no_schema_stores_raw_source_body`) enforces this. Source text shown in answers is read from the current file at query time. Add `.brainprint/` to your `.gitignore`.
+
+Discovery always skips `.git`, `.brainprint`, `node_modules`, `venv`, `.venv`, `virtualenv`, and skips `target`, `bin`, `obj`, `build`, `dist` when project markers show they are build output. `.gitignore` is **not** parsed; add more directory names (names, not globs) with:
+
+```toml
+# <workspace>/.brainprint/config.toml
+extra_excluded_directory_names = ["vendor", "third_party"]
+```
+
+### Measured footprint (one example, not a guarantee)
+
+On this repository (579 files, macOS, release build, no semantic backend configured): daemon idle RSS ~6 MiB; ~16 MiB steady with one Workspace after the initial index; `init` + initial index ~7.7 s; `.brainprint/` ~60 MB (`index.db` ~30 MB + WAL ~30 MB). Your numbers will differ with repository size and configured backends.
+
+## Local-first and privacy
+
+- Daemon IPC is a local Unix socket (Windows: named pipe). The only TCP listener is the optional Web UI, bound to `127.0.0.1`.
+- Brainprint contains no HTTP client and sends no telemetry anywhere. The only optional telemetry is the `brainprint-agent` JSONL file you enable with `BRAINPRINT_ADOPTION_TELEMETRY_PATH`, written locally.
+- External processes are only the semantic backends you configure and the verification commands you explicitly submit; what those programs do is up to them.
+- Nothing is uploaded; there is no account or cloud component.
+
+## Benchmark and economy results
+
+Brainprint measures itself against native-only exploration (the same agent with Read/Grep/Glob/shell and no Brainprint). Results so far with Claude Code on this repository:
+
+| Benchmark | Result |
+| --- | --- |
+| [#32](https://github.com/nyangko/Brainprint/issues/32) I5 economy (`benchmarks/i5-task14/`) | Brainprint integration path cost **more**: native $0.579/session vs Brainprint $0.974/session (+68%), although native exploration calls fell 41% and native result bytes fell 44%. |
+| [#35](https://github.com/nyangko/Brainprint/issues/35) MCP contract alternatives A–E (`benchmarks/issue-35-contracts/`) | Every tested contract cost more than native (+$0.30 to +$0.49 per session). |
+| [#74](https://github.com/nyangko/Brainprint/issues/74) first-route exact substitution (`benchmarks/issue-74-first-route/`) | The substitution candidate cost more than native ($0.538 vs $0.500 per session). |
+| [#75](https://github.com/nyangko/Brainprint/issues/75) adaptive routing on a real project (`benchmarks/issue-75-adaptive-routing/`) | In every measured class and condition: native < adaptive routing < forced Brainprint. No production router ships. |
+
+So **Brainprint 0.1.0 does not deliver lower provider cost than native-only exploration** in these measurements. What it offers today is the shared, current, explicitly-qualified project truth and continuity listed under [guarantees](#what-010-guarantees--and-what-it-does-not). Raw data, harnesses and per-task tables are in `benchmarks/`.
+
+## Known limitations
+
+1. **`relations` / `structure` human output omits coverage.** The compact CLI `relations` output prints confirmed edges only, and compact `structure` prints group/boundary counts only; neither prints the coverage/gap state. Use `--json`, `inspect`, or the TUI/Web relations summary for coverage. Correction: [#78](https://github.com/nyangko/Brainprint/issues/78).
+2. **Debug-form evidence in human output.** Compact CLI/TUI/Web evidence bodies print some symbol/coverage items in Rust `Debug` form; their `line:` / `column:` fields are 0-based internal coordinates. Source headers like `[19:1-19:42]`, `line_1based`, and candidate labels are 1-based. Correction: [#78](https://github.com/nyangko/Brainprint/issues/78).
+3. **Columns are bytes.** The human column is byte offset + 1, not a visual column on non-ASCII lines.
+4. **`wide` budget can be too large for some MCP clients.** Its output may exceed a client's tool-output limit; use `compact`/`standard` and continuation.
+5. **Text search can truncate on large ignored trees.** Whole-Workspace `find text` on repos with large git-ignored vendor directories can return `TRUNCATED` ([#63](https://github.com/nyangko/Brainprint/issues/63)), because `.gitignore` is not parsed. Workaround: `extra_excluded_directory_names`, or `--path-prefix`.
+6. **Semantic backends are separate installs.** Without them, results are structural with explicit gaps; C#/Rust additionally need `project_execution_trust = "Trusted"`.
+7. **No cost-saving guarantee.** See [Benchmarks](#benchmark-and-economy-results).
+8. **Manual setup.** No packages, no auto-start of the daemon, no service unit, no client auto-configuration; `find files` listings are capped (default 200).
+
+## Roadmap
+
+| Version | Primary axis |
+| --- | --- |
+| 0.1.0 | Token & Context Economy — the baseline above |
+| 0.2.0 | Deterministic Work Offload |
+| 0.3.0 | Rules & Project Intelligence |
+| 0.4.0 | Language & Ecosystem Expansion |
+| 0.5.0 | Persona & Role Awareness (presentation only, never truth) |
+| 1.0.0 | Stable release after a separate hardening gate |
+
+- [#12 — P0 implementation roadmap](https://github.com/nyangko/Brainprint/issues/12)
+- [#18 — 0.1.0–0.5.0 → 1.0.0 product roadmap](https://github.com/nyangko/Brainprint/issues/18)
 
 ## Documentation
 
-Documentation will evolve during pre-1.0 development, but README/Wiki will receive a final audit against the **actual accepted implementation** before 1.0.0.
+This README is the 0.1.0 documentation baseline; the GitHub Wiki is not set up. Command details: `brainprint <command> --help`. Agent instructions: `integrations/brainprint/SKILL.md`. Benchmark reports: `benchmarks/`.
 
-The Wiki is expected to cover:
+## License
 
-- architecture and identity model,
-- freshness/revision/generation,
-- structural and semantic intelligence,
-- Relation Graph,
-- project/working state,
-- context projection and task packets,
-- MCP / Skill / agent integration,
-- CLI,
-- storage/data policy,
-- multi-agent concurrency,
-- recovery/troubleshooting,
-- benchmarks and acceptance,
-- language coverage,
-- design decisions and known limitations,
-- developer/contributor guidance.
-
-## Design and implementation tracking
-
-- [#12 — P0 implementation roadmap](https://github.com/nyangko/Brainprint/issues/12)
-- [#18 — Brainprint 0.1.0–0.5.0 → 1.0.0 product roadmap](https://github.com/nyangko/Brainprint/issues/18)
-
-The design issues remain the source of truth for architectural decisions while implementation issues track executable work.
-
-## Current maturity
-
-**Active pre-1.0 development. Current target: 0.1.0.**
-
-Interfaces, storage details, and integration contracts may still change throughout 0.x development. Brainprint will not be promoted to 1.0.0 merely because the planned feature stages are complete: correctness, bugs, performance, resource usage, code quality, upgrade/recovery, public contracts, and documentation must pass a separate stabilization/hardening review.
+GPL-3.0-only. See [LICENSE](./LICENSE).
