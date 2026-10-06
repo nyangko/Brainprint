@@ -37,7 +37,10 @@ pub const PACKAGE_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// `Sync`/`Uninit` requests and responses and
 /// `NotInitializedReasonWire::WorkspaceDetached`. Bumped to 13 by #70: a
 /// path-scoped `StatusRequest` and the Workspace status it answers with.
-pub const PROTOCOL_VERSION: u32 = 13;
+/// Bumped to 14 by #73: `EvidenceWire::Relation` carries
+/// `ProjectedRelationWire` (each evidence site's path, 1-based line and
+/// containing Symbol name).
+pub const PROTOCOL_VERSION: u32 = 14;
 
 /// Minimal build identity that benchmark and runtime boundaries can record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

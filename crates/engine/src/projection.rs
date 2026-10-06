@@ -519,6 +519,37 @@ impl CoverageEvidence {
     }
 }
 
+/// #73: a confirmed relation with each evidence site's human locator, so
+/// a caller list needs no file read to say where and inside what a site
+/// is. `sites[i]` describes `relation.evidence[i]`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectedRelation {
+    pub relation: RelationResult,
+    pub sites: Vec<EvidenceSite>,
+}
+
+/// Where one evidence location is, for a reader: derived from the index,
+/// never from source text and never inferred.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EvidenceSite {
+    /// The evidence Resource's current Workspace-relative path; `None`
+    /// when the Resource is no longer active.
+    pub path_rel: Option<String>,
+    /// `span.start.line + 1`: the canonical 0-based span is unchanged.
+    pub line_1based: usize,
+    /// The containing Symbol's name, only when its stored row describes
+    /// the Resource's current revision.
+    pub owner: Option<SiteOwner>,
+}
+
+/// The containing Symbol's human identity (its id is the location's
+/// `containing_symbol`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SiteOwner {
+    pub qualified_name: String,
+    pub kind: SymbolKind,
+}
+
 /// One fact a packet may carry. The variant decides the origin.
 ///
 /// Source text lives only in [`Self::CurrentSource`]; a relation, gap, or
@@ -530,7 +561,7 @@ pub enum EvidenceItem {
     // STORED
     Resource(Resource),
     Symbol(SymbolCandidate),
-    Relation(RelationResult),
+    Relation(ProjectedRelation),
     RelationGap(RelationGap),
     Policy(Resolved<Policy>),
     Decision(Resolved<Decision>),

@@ -6,7 +6,7 @@
 use super::{
     delivery::{
         FixedTokens, broad_fixture, budget, chain, change_shared, flatten, is_optional_source,
-        items, required_cost, understand_shared,
+        items, required_cost, understand_shared, with_site_sources,
     },
     *,
 };
@@ -49,7 +49,7 @@ fn pending_with(
     ledger: &mut DeliveryLedger,
     retention: ContextRetention,
 ) -> PendingDelivery {
-    let projection = planner.plan(request).expect("plan");
+    let projection = with_site_sources(planner.plan(request).expect("plan"));
     planner
         .deliver_pending(
             request,
@@ -176,7 +176,8 @@ fn raw_available_is_what_the_query_surfaces_returned() {
     assert_ne!(Measure::Known(0), Measure::Unknown);
 
     // UNDERSTAND: selection + both direct answers + range candidates
-    // before dedupe/merge, from the surfaces themselves.
+    // before dedupe/merge, from the surfaces themselves (#73: outgoing
+    // evidence spans only).
     let shared = fixture.endpoint("src/shared.ts", "shared");
     let relations = planner.tests.traversal().relations();
     let outgoing = relations.outgoing(&shared, &[]).expect("outgoing");
@@ -184,7 +185,6 @@ fn raw_available_is_what_the_query_surfaces_returned() {
     let spans: usize = outgoing
         .confirmed
         .iter()
-        .chain(&incoming.confirmed)
         .map(|relation| relation.evidence.len())
         .sum();
     let expected = 1
@@ -220,7 +220,7 @@ fn prepared_counts_the_deduped_merged_universe_once() {
     let mut ledger = ledger();
 
     let request = understand_shared(&fixture);
-    let projection = planner.plan(&request).expect("plan");
+    let projection = with_site_sources(planner.plan(&request).expect("plan"));
     let optional = projection
         .source_plan
         .iter()
@@ -383,7 +383,7 @@ fn telemetry_and_reuse_add_no_work() {
         Some("s1"),
     );
     let planner = fixture.planner();
-    let projection = planner.plan(&request).expect("plan");
+    let projection = with_site_sources(planner.plan(&request).expect("plan"));
     let (required, _) = required_cost(&planner, &request, &projection);
     let everything = planner
         .deliver(&request, &projection, &items(10_000), None, None)
@@ -481,7 +481,7 @@ fn without_a_client_or_session_reuse_is_disabled() {
         planner
             .deliver(
                 &request,
-                &planner.plan(&request).expect("plan"),
+                &with_site_sources(planner.plan(&request).expect("plan")),
                 &items(10_000),
                 None,
                 None

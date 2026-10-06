@@ -1407,7 +1407,7 @@ fn impact_is_the_i3_traversal_and_its_tests() {
     let related = tests.from_impact(&walked).expect("tests");
     assert_eq!(
         sorted_debug(page(&answer).iter().filter_map(|item| match item {
-            EvidenceItem::Relation(relation) => Some(relation),
+            EvidenceItem::Relation(projected) => Some(&projected.relation),
             _ => None,
         })),
         sorted_debug(walked.edges.iter().map(|edge| &edge.relation))
@@ -1498,7 +1498,7 @@ fn delete_and_domain_contract_are_direct_incoming_only() {
         let relations: Vec<_> = page(&answer)
             .iter()
             .filter_map(|item| match item {
-                EvidenceItem::Relation(relation) => Some(relation),
+                EvidenceItem::Relation(projected) => Some(&projected.relation),
                 _ => None,
             })
             .collect();

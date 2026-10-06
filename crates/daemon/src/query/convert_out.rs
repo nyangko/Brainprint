@@ -1375,7 +1375,21 @@ fn evidence_item_wire(item: EvidenceItem) -> EvidenceWire {
     match item {
         EvidenceItem::Resource(resource) => EvidenceWire::Resource(resource_wire(resource)),
         EvidenceItem::Symbol(candidate) => EvidenceWire::Symbol(symbol_candidate_wire(candidate)),
-        EvidenceItem::Relation(result) => EvidenceWire::Relation(relation_result_wire(result)),
+        EvidenceItem::Relation(projected) => EvidenceWire::Relation(ProjectedRelationWire {
+            relation: relation_result_wire(projected.relation),
+            sites: projected
+                .sites
+                .into_iter()
+                .map(|site| EvidenceSiteWire {
+                    path_rel: site.path_rel,
+                    line_1based: site.line_1based,
+                    owner: site.owner.map(|owner| SiteOwnerWire {
+                        qualified_name: owner.qualified_name,
+                        kind: symbol_kind_wire(owner.kind),
+                    }),
+                })
+                .collect(),
+        }),
         EvidenceItem::RelationGap(gap) => EvidenceWire::RelationGap(relation_gap_wire(gap)),
         EvidenceItem::Policy(resolved) => {
             EvidenceWire::Policy(resolved_wire(resolved, policy_wire))

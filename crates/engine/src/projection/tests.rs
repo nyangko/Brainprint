@@ -625,7 +625,10 @@ fn stored_facts_are_stored() {
     for item in [
         EvidenceItem::Resource(resource()),
         EvidenceItem::Symbol(symbol_candidate()),
-        EvidenceItem::Relation(relation()),
+        EvidenceItem::Relation(ProjectedRelation {
+            relation: relation(),
+            sites: Vec::new(),
+        }),
         EvidenceItem::RelationGap(gap(Vec::new(), false)),
         EvidenceItem::Policy(resolved(policy(SourceKind::UserExplicit))),
         EvidenceItem::Decision(resolved(decision)),
@@ -759,7 +762,10 @@ fn relation_evidence_is_a_locator_that_matches_its_source_by_identity() {
         )
     );
     let items = [
-        EvidenceItem::Relation(relation),
+        EvidenceItem::Relation(ProjectedRelation {
+            relation,
+            sites: Vec::new(),
+        }),
         EvidenceItem::CurrentSource(range),
     ];
     assert_eq!(items[0].origin(), EvidenceOrigin::Stored);

@@ -232,6 +232,31 @@ pub enum ProjectionGapWire {
     UnconfirmedCallerOwners(usize),
 }
 
+/// Mirrors `brainprint_engine::projection::ProjectedRelation` (#73): the
+/// relation's own fields, then `sites[i]` for `evidence[i]`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectedRelationWire {
+    #[serde(flatten)]
+    pub relation: RelationResultWire,
+    pub sites: Vec<EvidenceSiteWire>,
+}
+
+/// Mirrors `brainprint_engine::projection::EvidenceSite`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EvidenceSiteWire {
+    pub path_rel: Option<String>,
+    /// `span.start.line + 1` of the matching evidence span.
+    pub line_1based: usize,
+    pub owner: Option<SiteOwnerWire>,
+}
+
+/// Mirrors `brainprint_engine::projection::SiteOwner`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SiteOwnerWire {
+    pub qualified_name: String,
+    pub kind: SymbolKindWire,
+}
+
 /// Mirrors `brainprint_engine::projection::EvidenceItem`, variant-for-
 /// variant. Nested wire records preserve every public field required to
 /// reconstruct the public Task 10 result; the adapter adds no payload.
@@ -240,7 +265,7 @@ pub enum EvidenceWire {
     // STORED
     Resource(ResourceWire),
     Symbol(SymbolCandidateWire),
-    Relation(RelationResultWire),
+    Relation(ProjectedRelationWire),
     RelationGap(RelationGapWire),
     Policy(ResolvedPolicyWire),
     Decision(ResolvedDecisionWire),

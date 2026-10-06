@@ -187,10 +187,10 @@ impl ReuseIdentity {
         Some(match item {
             EvidenceItem::Resource(resource) => Self::Resource(resource.id),
             EvidenceItem::Symbol(candidate) => Self::Symbol(candidate.symbol.id),
-            EvidenceItem::Relation(relation) => Self::Relation {
-                kind: relation.kind,
-                source: relation.source.clone(),
-                target: relation.target.clone(),
+            EvidenceItem::Relation(projected) => Self::Relation {
+                kind: projected.relation.kind,
+                source: projected.relation.source.clone(),
+                target: projected.relation.target.clone(),
             },
             EvidenceItem::Policy(entry) => Self::Policy(entry.item.uid),
             EvidenceItem::Decision(entry) => Self::Decision(entry.item.uid),

@@ -605,7 +605,7 @@ fn relations(projection: &PreparedProjection) -> Vec<&crate::relations::Relation
         .evidence
         .iter()
         .filter_map(|item| match item {
-            EvidenceItem::Relation(relation) => Some(relation),
+            EvidenceItem::Relation(projected) => Some(&projected.relation),
             _ => None,
         })
         .collect()
@@ -1489,7 +1489,23 @@ fn many_impacted_callers_do_not_become_many_reads() {
         .iter()
         .filter(|range| range.requirement == SourceRequirement::Optional)
         .count();
-    assert_eq!(optional, 40, "every call site stays a locator candidate");
+    // #73: no call site becomes a source candidate; each one is located
+    // on its relation instead -- path, 1-based line, enclosing function.
+    assert_eq!(optional, 0, "no evidence-span source candidate");
+    for item in &projection.evidence {
+        let EvidenceItem::Relation(projected) = item else {
+            continue;
+        };
+        let [site] = projected.sites.as_slice() else {
+            panic!("one site per call: {projected:?}");
+        };
+        let path = site.path_rel.as_deref().expect("path");
+        let index = &path["src/c".len().."src/c".len() + 2];
+        assert_eq!(site.line_1based, 4, "{path}");
+        let owner = site.owner.as_ref().expect("owner");
+        assert_eq!(owner.qualified_name, format!("c{index}"));
+        assert_eq!(owner.kind, crate::symbol::SymbolKind::Function);
+    }
 }
 
 // ---------------------------------------------------------- RESUME_HANDOFF
@@ -1784,7 +1800,12 @@ fn evidence_reached_twice_is_emitted_once_in_category_order() {
         .expect("incoming");
     let mut items = projection.evidence.clone();
     items.extend(projection.evidence.iter().cloned());
-    items.extend(direct.confirmed.into_iter().map(EvidenceItem::Relation));
+    items.extend(direct.confirmed.into_iter().map(|relation| {
+        EvidenceItem::Relation(crate::projection::ProjectedRelation {
+            relation,
+            sites: Vec::new(),
+        })
+    }));
     let reordered = order(items);
 
     let identities = |items: &[EvidenceItem]| -> Vec<Vec<u8>> {

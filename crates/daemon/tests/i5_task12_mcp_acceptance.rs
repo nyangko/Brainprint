@@ -472,6 +472,59 @@ async fn parity_inspect() {
     );
 }
 
+/// #73: one caller answer says where each call site is and inside what --
+/// path, 1-based line, enclosing function -- with no evidence-span source.
+#[tokio::test]
+async fn inspect_caller_sites_name_path_line_and_enclosing_function() {
+    let (fixture, _connection, _server, _endpoint) = populated_fixture("caller-sites").await;
+    let mcp = mcp_server(&fixture);
+    let mut params = workspace_json(&fixture);
+    merge(&mut params, json!({"symbol_name": "helper"}));
+    let result = mcp
+        .inspect(Parameters(from_json(params)))
+        .await
+        .expect("brainprint.inspect should succeed");
+    let QueryResultWire::Inspect(answer) = payload(&result) else {
+        panic!("expected Inspect result")
+    };
+    let calls: Vec<_> = answer
+        .page
+        .evidence
+        .iter()
+        .filter_map(|item| match item {
+            DeliveredItemWire::Full(EvidenceWire::Relation(projected))
+                if projected.relation.kind == RelationKindWire::Calls =>
+            {
+                Some(projected)
+            }
+            _ => None,
+        })
+        .collect();
+    let [call] = calls.as_slice() else {
+        panic!("one call of helper(): {calls:?}")
+    };
+    let [location] = call.relation.evidence.as_slice() else {
+        panic!("one call site")
+    };
+    let [site] = call.sites.as_slice() else {
+        panic!("one site per evidence")
+    };
+    assert_eq!(site.path_rel.as_deref(), Some("src/app.ts"));
+    assert_eq!(site.line_1based, 4);
+    assert_eq!(site.line_1based, location.span.start.line + 1);
+    let owner = site.owner.as_ref().expect("enclosing function");
+    assert_eq!(owner.qualified_name, "run");
+    assert_eq!(owner.kind, SymbolKindWire::Function);
+    assert!(
+        !answer.page.evidence.iter().any(|item| matches!(
+            item,
+            DeliveredItemWire::Full(EvidenceWire::CurrentSource(range))
+                if range.role == RangeRoleWire::EvidenceSpan
+        )),
+        "the call token is not repeated as source"
+    );
+}
+
 #[tokio::test]
 async fn parity_relations_direct() {
     let (fixture, mut connection, _server, _endpoint) = populated_fixture("relations-direct").await;

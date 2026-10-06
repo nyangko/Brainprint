@@ -36,9 +36,9 @@ use std::{
 use brainprint_core::{BlueprintApplicationId, ProjectId, ResourceId, WorkItemId, WorkspaceId};
 
 use super::{
-    ChangeKind, CoverageEvidence, CoverageSubject, EvidenceItem, GenerationBasis, OutlineEntry,
-    ProjectionIntent, ProjectionKnowledgeRefs, ProjectionRequest, ProjectionRequestError,
-    ProjectionTarget, ResourceOutline, TargetSelection,
+    ChangeKind, CoverageEvidence, CoverageSubject, EvidenceItem, EvidenceSite, GenerationBasis,
+    OutlineEntry, ProjectedRelation, ProjectionIntent, ProjectionKnowledgeRefs, ProjectionRequest,
+    ProjectionRequestError, ProjectionTarget, ResourceOutline, SiteOwner, TargetSelection,
     canonical::{self, Canonical},
 };
 use crate::{
@@ -658,7 +658,7 @@ impl ProjectionPlanner {
             plan.raw.known(&answer.gaps);
             let report = answer.coverage.limits();
             let confirmed = answer.confirmed_count();
-            plan.relations(answer.confirmed);
+            self.relations(answer.confirmed, plan)?;
             plan.items
                 .extend(answer.gaps.into_iter().map(EvidenceItem::RelationGap));
             plan.items.push(EvidenceItem::Coverage(CoverageEvidence {
@@ -712,13 +712,13 @@ impl ProjectionPlanner {
             confirmed: tests.candidates.len(),
         }));
         for edge in &impact.edges {
-            let identity = describe(&EvidenceItem::Relation(edge.relation.clone())).3;
-            if let Some(identity) = identity {
-                let depth = plan.depths.entry(identity).or_insert(edge.depth);
-                *depth = (*depth).min(edge.depth);
-            }
+            let depth = plan
+                .depths
+                .entry(relation_identity(&edge.relation))
+                .or_insert(edge.depth);
+            *depth = (*depth).min(edge.depth);
         }
-        plan.relations(impact.edges.into_iter().map(|edge| edge.relation));
+        self.relations(impact.edges.into_iter().map(|edge| edge.relation), plan)?;
         plan.items.extend(
             impact
                 .gaps
@@ -735,6 +735,49 @@ impl ProjectionPlanner {
                         candidate,
                     }),
             );
+        Ok(())
+    }
+
+    /// #73: each confirmed relation with its evidence sites' path, 1-based
+    /// line and containing Symbol name -- index metadata only, no read.
+    fn relations(
+        &self,
+        relations: impl IntoIterator<Item = crate::relations::RelationResult>,
+        plan: &mut Plan,
+    ) -> Result<(), PlannerError> {
+        for relation in relations {
+            let mut sites = Vec::with_capacity(relation.evidence.len());
+            for location in &relation.evidence {
+                let path_rel = self
+                    .index()
+                    .active_resource(location.resource)?
+                    .map(|resource| resource.path_rel);
+                let owner = match location.containing_symbol {
+                    Some(symbol) => match self.reader.inspect_symbol_metadata(symbol) {
+                        Ok(metadata) if metadata.is_current => Some(SiteOwner {
+                            qualified_name: metadata.symbol.qualified_name,
+                            kind: metadata.symbol.kind,
+                        }),
+                        Err(ReadError::Query(error)) => return Err(error.into()),
+                        Err(ReadError::Sqlite(error)) => {
+                            return Err(QueryError::Sqlite(error).into());
+                        }
+                        // No current row: unknown, never guessed.
+                        _ => None,
+                    },
+                    None => None,
+                };
+                sites.push(EvidenceSite {
+                    path_rel,
+                    line_1based: location.span.start.line + 1,
+                    owner,
+                });
+            }
+            plan.items.push(EvidenceItem::Relation(ProjectedRelation {
+                relation,
+                sites,
+            }));
+        }
         Ok(())
     }
 
@@ -1106,11 +1149,6 @@ impl Plan {
         }
     }
 
-    fn relations(&mut self, relations: impl IntoIterator<Item = crate::relations::RelationResult>) {
-        self.items
-            .extend(relations.into_iter().map(EvidenceItem::Relation));
-    }
-
     /// Record how a selector resolved: the selection itself for a
     /// selector (or a failed exact endpoint), its coverage when that is
     /// incomplete or empty, and the gap when there is no exact target.
@@ -1193,12 +1231,18 @@ impl Plan {
             self.gap(ProjectionGap::RequiresSemantics);
         }
 
-        // Optional candidates: every evidence span of a projected
-        // relation, without its body.
+        // Optional candidates: the evidence span of each outgoing relation,
+        // without its body -- the only written name of a target the
+        // packet otherwise holds as an id. #73: an incoming span names the
+        // anchor (or an impact node already named as a site owner), so it
+        // is not offered again; each site's path/line/owner travels on its
+        // relation.
         let mut optional = Vec::new();
         for item in &self.items {
-            if let EvidenceItem::Relation(relation) = item {
-                for location in &relation.evidence {
+            if let EvidenceItem::Relation(projected) = item
+                && projected.relation.direction == Direction::Outgoing
+            {
+                for location in &projected.relation.evidence {
                     optional.push(PlannedSourceRange {
                         resource: location.resource,
                         resource_revision: location.basis_revision.clone(),
@@ -1328,6 +1372,17 @@ fn span_bytes(span: SourceSpan) -> Vec<u8> {
     [be(span.start_byte), be(span.end_byte)].concat()
 }
 
+fn relation_identity(relation: &crate::relations::RelationResult) -> Vec<u8> {
+    [
+        relation.kind.as_str().as_bytes(),
+        &[0],
+        &endpoint_bytes(&relation.source),
+        &[0],
+        &endpoint_bytes(&relation.target),
+    ]
+    .concat()
+}
+
 /// (category, variant, sort key, identity). An empty sort key keeps the
 /// producing surface's own deterministic order; `None` identity is never
 /// deduplicated (one per query by construction).
@@ -1383,15 +1438,8 @@ fn describe(item: &EvidenceItem) -> (u8, u8, Vec<u8>, Option<Vec<u8>>) {
         EvidenceItem::Blueprint(entry) => {
             (4, 3, Vec::new(), id(entry.item.application.uid.to_bytes()))
         }
-        EvidenceItem::Relation(relation) => {
-            let key = [
-                relation.kind.as_str().as_bytes(),
-                &[0],
-                &endpoint_bytes(&relation.source),
-                &[0],
-                &endpoint_bytes(&relation.target),
-            ]
-            .concat();
+        EvidenceItem::Relation(projected) => {
+            let key = relation_identity(&projected.relation);
             (5, 0, key.clone(), Some(key))
         }
         EvidenceItem::RelationGap(gap) => {

@@ -174,6 +174,30 @@ pub(super) fn is_optional_source(item: &EvidenceItem) -> bool {
     matches!(item, EvidenceItem::CurrentSource(range) if range.role == RangeRole::EvidenceSpan)
 }
 
+/// #73: the planner no longer offers an incoming relation's evidence span
+/// as source. These tests drive the optional-source machinery with every
+/// relation's spans, added as before #73.
+pub(super) fn with_site_sources(mut projection: PreparedProjection) -> PreparedProjection {
+    for item in &projection.evidence {
+        let EvidenceItem::Relation(projected) = item else {
+            continue;
+        };
+        for location in &projected.relation.evidence {
+            let range = PlannedSourceRange {
+                resource: location.resource,
+                resource_revision: location.basis_revision.clone(),
+                span: location.span,
+                role: RangeRole::EvidenceSpan,
+                requirement: SourceRequirement::Optional,
+            };
+            if !projection.source_plan.contains(&range) {
+                projection.source_plan.push(range);
+            }
+        }
+    }
+    projection
+}
+
 /// CHANGE(Rename) of `shared` with a Policy, a requested Decision and an
 /// explicit WorkItem: every optional tier has something in it.
 pub(super) fn change_shared(fixture: &Fixture) -> ProjectionRequest {
@@ -509,7 +533,7 @@ fn direct_then_rules_then_shallower_transitive_then_source() {
         )),
     );
     let planner = fixture.planner();
-    let projection = planner.plan(&request).expect("plan");
+    let projection = with_site_sources(planner.plan(&request).expect("plan"));
     let depth = |name: &str| {
         let source = fixture.endpoint("src/chain.ts", name);
         projection
@@ -517,7 +541,7 @@ fn direct_then_rules_then_shallower_transitive_then_source() {
             .iter()
             .zip(&projection.delivery)
             .find_map(|(item, hint)| match item {
-                EvidenceItem::Relation(relation) if relation.source == source => {
+                EvidenceItem::Relation(relation) if relation.relation.source == source => {
                     Some(hint.impact_depth)
                 }
                 _ => None,
@@ -542,7 +566,7 @@ fn direct_then_rules_then_shallower_transitive_then_source() {
     let edge_from = |name: &str| {
         let source = fixture.endpoint("src/chain.ts", name);
         position(
-            &move |item| matches!(item, EvidenceItem::Relation(relation) if relation.source == source),
+            &move |item| matches!(item, EvidenceItem::Relation(relation) if relation.relation.source == source),
         )
     };
     let rule = position(&|item| matches!(item, EvidenceItem::Policy(_)));
@@ -596,7 +620,7 @@ fn optional_source_outside_the_budget_is_never_read() {
     let fixture = Fixture::standard("unread");
     let request = understand_shared(&fixture);
     let planner = fixture.planner();
-    let projection = planner.plan(&request).expect("plan");
+    let projection = with_site_sources(planner.plan(&request).expect("plan"));
     let everything = first(&planner, &request, &projection, &items(10_000));
     let before_sources = everything
         .evidence
@@ -622,7 +646,7 @@ fn selected_optional_source_is_verified_and_read_once_per_file() {
     let fixture = Fixture::standard("read");
     let request = understand_shared(&fixture);
     let planner = fixture.planner();
-    let projection = planner.plan(&request).expect("plan");
+    let projection = with_site_sources(planner.plan(&request).expect("plan"));
     let before = planner.stats();
     let page = first(&planner, &request, &projection, &items(10_000));
     let after = planner.stats();
@@ -668,7 +692,7 @@ fn a_changed_optional_source_becomes_source_unavailable() {
     let fixture = Fixture::standard("optional-changed");
     let request = understand_shared(&fixture);
     let planner = fixture.planner();
-    let projection = planner.plan(&request).expect("plan");
+    let projection = with_site_sources(planner.plan(&request).expect("plan"));
     fs::write(
         fixture.root.join("src/other.ts"),
         OTHER_TS.replace("shared()", "shared( )"),
@@ -1197,7 +1221,7 @@ fn a_broad_change_reads_only_what_its_budget_selected() {
         Some(ProjectionTarget::Endpoint(target)),
     );
     let planner = fixture.planner();
-    let projection = planner.plan(&request).expect("plan");
+    let projection = with_site_sources(planner.plan(&request).expect("plan"));
     let everything = first(&planner, &request, &projection, &items(10_000));
     let facts = everything
         .evidence
@@ -1380,7 +1404,7 @@ fn unknown_planned_source_tokens_are_never_read_to_find_out() {
     let fixture = Fixture::standard("token-unknown");
     let request = understand_shared(&fixture);
     let planner = fixture.planner();
-    let projection = planner.plan(&request).expect("plan");
+    let projection = with_site_sources(planner.plan(&request).expect("plan"));
     let facts = units_before_sources(&planner, &request, &projection);
 
     let before = planner.stats();
@@ -1420,7 +1444,7 @@ fn exact_planned_source_tokens_select_and_read_only_what_fits() {
     let fixture = Fixture::standard("token-exact");
     let request = understand_shared(&fixture);
     let planner = fixture.planner();
-    let projection = planner.plan(&request).expect("plan");
+    let projection = with_site_sources(planner.plan(&request).expect("plan"));
     let facts = units_before_sources(&planner, &request, &projection);
 
     // Room for every fact and two of the four call-site bodies.
@@ -1492,7 +1516,7 @@ fn a_planned_token_cost_that_does_not_materialize_is_an_error() {
     let fixture = Fixture::standard("token-mismatch");
     let request = understand_shared(&fixture);
     let planner = fixture.planner();
-    let projection = planner.plan(&request).expect("plan");
+    let projection = with_site_sources(planner.plan(&request).expect("plan"));
     assert!(matches!(
         planner.deliver(
             &request,
@@ -1513,7 +1537,7 @@ fn a_selected_source_whose_correction_never_fits_is_an_error() {
     let fixture = Fixture::standard("corrective-never-fits");
     let request = understand_shared(&fixture);
     let planner = fixture.planner();
-    let projection = planner.plan(&request).expect("plan");
+    let projection = with_site_sources(planner.plan(&request).expect("plan"));
     fs::write(
         fixture.root.join("src/other.ts"),
         OTHER_TS.replace("shared()", "shared( )"),

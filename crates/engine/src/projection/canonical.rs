@@ -17,10 +17,11 @@ use brainprint_core::{
 use sha2::{Digest, Sha256};
 
 use super::{
-    ChangeKind, CoverageEvidence, CoverageSubject, DeliveryHint, EvidenceItem, GenerationBasis,
-    OutlineEntry, PlannedSourceRange, PreparedProjection, ProjectionCorrelation, ProjectionGap,
-    ProjectionIntent, ProjectionKnowledgeRefs, ProjectionRequest, ProjectionTarget, Relevance,
-    ResourceOutline, ResourceTarget, SourceRequirement, SymbolName, SymbolTarget, TargetSelection,
+    ChangeKind, CoverageEvidence, CoverageSubject, DeliveryHint, EvidenceItem, EvidenceSite,
+    GenerationBasis, OutlineEntry, PlannedSourceRange, PreparedProjection, ProjectedRelation,
+    ProjectionCorrelation, ProjectionGap, ProjectionIntent, ProjectionKnowledgeRefs,
+    ProjectionRequest, ProjectionTarget, Relevance, ResourceOutline, ResourceTarget, SiteOwner,
+    SourceRequirement, SymbolName, SymbolTarget, TargetSelection,
 };
 use crate::{
     coverage::{CoverageLimit, CoverageReport},
@@ -387,6 +388,9 @@ fields! {
         kind, source, target, direction, dispatch, target_scope, resolution, support, freshness,
         evidence,
     }
+    ProjectedRelation { relation, sites }
+    EvidenceSite { path_rel, line_1based, owner }
+    SiteOwner { qualified_name, kind }
     RelationGap {
         location, intended, lookup_name, module_hint, reason, resolution, candidates,
         candidate_truncated, resolution_context_key,
