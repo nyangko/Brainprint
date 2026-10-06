@@ -54,10 +54,10 @@ fn print_current_source(out: &mut impl Write, range: &PreparedRangeWire) -> std:
         "--- {} ({}) [{}:{}-{}:{}] ---",
         range.path_rel,
         range.resource,
-        range.span.start.line,
-        range.span.start.column,
-        range.span.end.line,
-        range.span.end.column,
+        range.span.start.line_1based(),
+        range.span.start.column_1based(),
+        range.span.end.line_1based(),
+        range.span.end.column_1based(),
     )?;
     writeln!(out, "{}", range.source)
 }
@@ -87,8 +87,8 @@ fn print_one_evidence(out: &mut impl Write, item: &EvidenceWire) -> std::io::Res
                     "{indent}{:?} {} L{}-{}",
                     entry.kind,
                     entry.name,
-                    entry.start_line + 1,
-                    entry.end_line + 1
+                    line_1based(entry.start_line),
+                    line_1based(entry.end_line)
                 )?;
             }
             Ok(false)
@@ -193,7 +193,7 @@ fn print_find_result(out: &mut impl Write, result: &FindResultWire) -> std::io::
                     out,
                     "{}:{}: {}",
                     text_match.path_rel,
-                    text_match.span.start.line,
+                    text_match.span.start.line_1based(),
                     text_match.preview.as_deref().unwrap_or_default(),
                 )?;
             }
@@ -302,4 +302,70 @@ pub fn write_compact(out: &mut impl Write, result: &QueryResultWire) -> std::io:
         QueryResultWire::Structure(summary) => print_structural_summary(out, summary)?,
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use brainprint_core::ResourceId;
+
+    use super::*;
+
+    fn span(start: usize, end: usize) -> SourceSpanWire {
+        SourceSpanWire {
+            start_byte: 0,
+            end_byte: 0,
+            start: SourcePointWire {
+                line: start,
+                column: 0,
+            },
+            end: SourcePointWire {
+                line: end,
+                column: 1,
+            },
+        }
+    }
+
+    fn compact(result: &QueryResultWire) -> String {
+        let mut out = Vec::new();
+        write_compact(&mut out, result).expect("render");
+        String::from_utf8(out).expect("utf-8")
+    }
+
+    /// #76: the shared compact renderer (CLI, TUI, Web) cites 1-based editor lines for a
+    /// canonical 0-based span: line 0 -> 1, and a multi-line range's start and end each.
+    #[test]
+    fn compact_locators_are_one_based() {
+        let text = QueryResultWire::Find(FindResultWire::Text(TextSearchResultWire {
+            status: QueryStatusWire::Found,
+            matches: vec![TextMatchWire {
+                path_rel: "src/a.rs".to_owned(),
+                resource_id: None,
+                span: span(0, 0),
+                preview: Some("fn a() {}".to_owned()),
+                source: MatchSourceWire::TextFallback,
+            }],
+            scope: ScopeReportWire::default(),
+            structural_currentness: CurrentnessWire::Current,
+            reason: FallbackReasonWire::ExplicitTextSearch,
+        }));
+        assert_eq!(compact(&text), "src/a.rs:1: fn a() {}\n");
+
+        let range = PreparedRangeWire {
+            resource: ResourceId::from_bytes([0; 16]),
+            path_rel: "src/a.rs".to_owned(),
+            resource_revision: "1".to_owned(),
+            span: span(18, 20),
+            source: "x".to_owned(),
+            role: RangeRoleWire::AnchorDeclaration,
+            verification: SourceVerificationWire {
+                expected_content_hash: String::new(),
+                observed_content_hash: String::new(),
+                currentness: CurrentnessWire::Current,
+            },
+        };
+        let mut out = Vec::new();
+        print_current_source(&mut out, &range).expect("render");
+        let header = String::from_utf8(out).expect("utf-8");
+        assert!(header.contains("[19:1-21:2]"), "{header}");
+    }
 }

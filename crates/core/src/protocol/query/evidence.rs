@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use super::{
     common::{
         CoverageNoteWire, CurrentnessWire, ResourceWire, SourceSpanWire, StructuralCoverageWire,
-        SymbolCandidateWire,
+        SymbolCandidateWire, line_1based,
     },
     knowledge::{
         BlueprintEvidenceWire, DecisionWire, KnowledgeConflictWire, PolicyWire, ProjectStateWire,
@@ -29,8 +29,10 @@ pub struct ResourceOutlineWire {
 }
 
 /// Mirrors `brainprint_engine::projection::OutlineEntry`; lines are the
-/// span's own 0-based lines.
+/// span's own 0-based lines, serialized with derived `start_line_1based` /
+/// `end_line_1based` editor lines (#76, see `SourcePointWire`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(into = "OutlineEntryOut")]
 pub struct OutlineEntryWire {
     pub symbol: SymbolId,
     pub parent: Option<SymbolId>,
@@ -38,6 +40,33 @@ pub struct OutlineEntryWire {
     pub name: String,
     pub start_line: usize,
     pub end_line: usize,
+}
+
+#[derive(Serialize)]
+struct OutlineEntryOut {
+    symbol: SymbolId,
+    parent: Option<SymbolId>,
+    kind: SymbolKindWire,
+    name: String,
+    start_line: usize,
+    end_line: usize,
+    start_line_1based: usize,
+    end_line_1based: usize,
+}
+
+impl From<OutlineEntryWire> for OutlineEntryOut {
+    fn from(entry: OutlineEntryWire) -> Self {
+        Self {
+            start_line_1based: line_1based(entry.start_line),
+            end_line_1based: line_1based(entry.end_line),
+            symbol: entry.symbol,
+            parent: entry.parent,
+            kind: entry.kind,
+            name: entry.name,
+            start_line: entry.start_line,
+            end_line: entry.end_line,
+        }
+    }
 }
 
 /// Mirrors `brainprint_engine::impact::ImpactIntent`.

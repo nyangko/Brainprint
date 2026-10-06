@@ -160,7 +160,7 @@ pub fn candidates(answer: &ProjectedAnswerWire) -> Vec<Candidate> {
                     symbol.symbol.kind,
                     symbol.symbol.qualified_name,
                     symbol.path_rel,
-                    symbol.symbol.span.start.line + 1
+                    symbol.symbol.span.start.line_1based()
                 ),
                 target: ProjectionTargetWire::Symbol(SymbolTargetWire {
                     name: SymbolNameWire::Id(symbol.symbol.id),

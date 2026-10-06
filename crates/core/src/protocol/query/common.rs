@@ -5,11 +5,49 @@ use serde::{Deserialize, Serialize};
 use super::target::{ResourceKindWire, ResourceLanguageWire, ResourceRoleWire};
 use crate::ResourceId;
 
-/// Mirrors `brainprint_engine::parser::SourcePoint`.
+/// #76: the one place a canonical 0-based source line becomes the 1-based
+/// editor line a human locator (`path:line`) cites.
+pub const fn line_1based(line: usize) -> usize {
+    line + 1
+}
+
+/// Mirrors `brainprint_engine::parser::SourcePoint`: `line` and `column` stay
+/// the canonical 0-based coordinates. Serialized with a derived
+/// `line_1based` (#76) so a reader of the wire JSON (MCP) gets the editor
+/// line; deserialization ignores it, so peers of either shape interoperate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(into = "SourcePointOut")]
 pub struct SourcePointWire {
     pub line: usize,
     pub column: usize,
+}
+
+impl SourcePointWire {
+    pub const fn line_1based(&self) -> usize {
+        line_1based(self.line)
+    }
+
+    /// The 1-based column a human `path:line:column` locator cites.
+    pub const fn column_1based(&self) -> usize {
+        self.column + 1
+    }
+}
+
+#[derive(Serialize)]
+struct SourcePointOut {
+    line: usize,
+    column: usize,
+    line_1based: usize,
+}
+
+impl From<SourcePointWire> for SourcePointOut {
+    fn from(point: SourcePointWire) -> Self {
+        Self {
+            line: point.line,
+            column: point.column,
+            line_1based: point.line_1based(),
+        }
+    }
 }
 
 /// Mirrors `brainprint_engine::parser::SourceSpan`.

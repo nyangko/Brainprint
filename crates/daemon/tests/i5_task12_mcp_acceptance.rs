@@ -199,6 +199,19 @@ async fn populated_fixture(
     tokio::task::JoinHandle<()>,
     runtime_paths::RuntimeEndpoint,
 ) {
+    populated_fixture_with(label, &[]).await
+}
+
+/// `populated_fixture` plus `extra` (path, content) files written before the baseline scan.
+async fn populated_fixture_with(
+    label: &str,
+    extra: &[(&str, &str)],
+) -> (
+    Populated,
+    ClientConnection,
+    tokio::task::JoinHandle<()>,
+    runtime_paths::RuntimeEndpoint,
+) {
     let home = TestHome::create(&format!("{label}-home"));
     let global_paths = home.global_paths();
     let (server, endpoint) = start_server(&global_paths).await;
@@ -207,6 +220,11 @@ async fn populated_fixture(
     fs::create_dir_all(workspace.path().join("src")).expect("src dir");
     fs::write(workspace.path().join("src/shared.ts"), SHARED_TS).expect("shared.ts");
     fs::write(workspace.path().join("src/app.ts"), APP_TS).expect("app.ts");
+    for (path, content) in extra {
+        let file = workspace.path().join(path);
+        fs::create_dir_all(file.parent().expect("parent")).expect("extra dir");
+        fs::write(file, content).expect("extra file");
+    }
 
     let mut connection = ready_connection(&endpoint).await;
     let workspace_id = init_workspace(&mut connection, workspace.path()).await;
@@ -1249,4 +1267,296 @@ async fn representative_byte_and_latency_measurements() {
     );
     assert!(matches!(result.is_error, Some(false)));
     assert!(matches!(direct, Response::Query(_)));
+}
+
+// ------------------------------------------------- #76 human line numbers
+
+/// The 1-based editor line of the first line of `text` containing `needle`, computed from the
+/// file text alone (independent of Brainprint).
+fn editor_line(text: &str, needle: &str) -> usize {
+    text.lines()
+        .position(|line| line.contains(needle))
+        .expect("needle in file")
+        + 1
+}
+
+/// Every editor line of `text` containing `needle`.
+fn editor_lines(text: &str, needle: &str) -> Vec<usize> {
+    text.lines()
+        .enumerate()
+        .filter(|(_, line)| line.contains(needle))
+        .map(|(n, _)| n + 1)
+        .collect()
+}
+
+/// Every JSON object under `value` that has `key`.
+fn objects_with<'a>(value: &'a serde_json::Value, key: &str, out: &mut Vec<&'a serde_json::Value>) {
+    match value {
+        serde_json::Value::Object(map) => {
+            if map.contains_key(key) {
+                out.push(value);
+            }
+            map.values().for_each(|v| objects_with(v, key, out));
+        }
+        serde_json::Value::Array(items) => items.iter().for_each(|v| objects_with(v, key, out)),
+        _ => {}
+    }
+}
+
+/// The MCP JSON the Agent reads -- not the re-decoded wire type: the human line exists only in
+/// the serialized form.
+fn agent_json(result: &rmcp::model::CallToolResult) -> serde_json::Value {
+    result
+        .structured_content
+        .clone()
+        .expect("structured content")["payload"]
+        .clone()
+}
+
+/// A canonical span object's (start, end) human lines, checked against its own 0-based lines.
+fn human_lines(span: &serde_json::Value) -> (usize, usize) {
+    let line = |point: &str, key: &str| span[point][key].as_u64().expect("line") as usize;
+    assert_eq!(
+        line("start", "line_1based"),
+        line("start", "line") + 1,
+        "{span}"
+    );
+    assert_eq!(
+        line("end", "line_1based"),
+        line("end", "line") + 1,
+        "{span}"
+    );
+    (line("start", "line_1based"), line("end", "line_1based"))
+}
+
+async fn mcp_call(
+    mcp: &BrainprintMcp,
+    fixture: &Populated,
+    tool: &str,
+    args: serde_json::Value,
+) -> serde_json::Value {
+    let mut params = workspace_json(fixture);
+    merge(&mut params, args);
+    let result = match tool {
+        "find" => mcp.find(Parameters(from_json(params))).await,
+        "inspect" => mcp.inspect(Parameters(from_json(params))).await,
+        _ => unreachable!(),
+    }
+    .expect("MCP call should succeed");
+    agent_json(&result)
+}
+
+/// #76: a declaration on line 1 is cited as line 1 (internal 0), a multi-line declaration's
+/// start/end are each the editor lines, an Outline gives editor lines, and the canonical span is
+/// unchanged.
+#[tokio::test]
+async fn human_lines_line_one_multi_line_and_outline() {
+    let (fixture, _connection, _server, _endpoint) = populated_fixture("human-line-one").await;
+    let mcp = mcp_server(&fixture);
+
+    let found = mcp_call(
+        &mcp,
+        &fixture,
+        "find",
+        json!({"mode": "target", "symbol_name": "helper"}),
+    )
+    .await;
+    let mut symbols = Vec::new();
+    objects_with(&found, "qualified_name", &mut symbols);
+    let helper = symbols
+        .iter()
+        .find(|s| s["name"] == "helper")
+        .expect("helper symbol");
+    assert_eq!(
+        helper["span"]["start"]["line"], 0,
+        "internal span stays 0-based"
+    );
+    assert_eq!(
+        human_lines(&helper["span"]),
+        (1, 3),
+        "helper() is lines 1-3 of shared.ts"
+    );
+    assert_eq!(editor_line(SHARED_TS, "export function helper"), 1);
+
+    let inspected = mcp_call(&mcp, &fixture, "inspect", json!({"symbol_name": "helper"})).await;
+    let mut sources = Vec::new();
+    objects_with(&inspected, "source", &mut sources);
+    let declaration = sources
+        .iter()
+        .find(|s| s["path_rel"] == "src/shared.ts" && s["role"] == "AnchorDeclaration")
+        .expect("helper() current source");
+    assert_eq!(human_lines(&declaration["span"]), (1, 3));
+    let first = declaration["source"]
+        .as_str()
+        .unwrap()
+        .lines()
+        .next()
+        .unwrap();
+    assert!(
+        SHARED_TS.lines().next().unwrap().contains(first),
+        "range starts on editor line 1"
+    );
+
+    let resource = mcp_call(
+        &mcp,
+        &fixture,
+        "inspect",
+        json!({"resource_path": "src/app.ts"}),
+    )
+    .await;
+    let mut entries = Vec::new();
+    objects_with(&resource, "start_line_1based", &mut entries);
+    let run = entries
+        .iter()
+        .find(|e| e["name"] == "run")
+        .expect("run() outline entry");
+    assert_eq!(
+        run["start_line"], 2,
+        "outline keeps the canonical 0-based line"
+    );
+    assert_eq!(
+        run["start_line_1based"],
+        editor_line(APP_TS, "export function run")
+    );
+    assert_eq!(run["end_line_1based"], 5);
+}
+
+/// #76: a text match and a caller site cite the call's editor line; #73's `line_1based` is not
+/// converted a second time.
+#[tokio::test]
+async fn human_lines_text_search_and_caller_site() {
+    let (fixture, _connection, _server, _endpoint) = populated_fixture("human-line-caller").await;
+    let mcp = mcp_server(&fixture);
+    let call_line = editor_line(APP_TS, "return helper()");
+    assert_eq!(call_line, 4);
+
+    let text = mcp_call(
+        &mcp,
+        &fixture,
+        "find",
+        json!({"mode": "text", "pattern": "return helper()", "search_budget_profile": "compact"}),
+    )
+    .await;
+    let mut matches = Vec::new();
+    objects_with(&text, "preview", &mut matches);
+    let [hit] = matches.as_slice() else {
+        panic!("one match: {text}")
+    };
+    assert_eq!(hit["path_rel"], "src/app.ts");
+    assert_eq!(human_lines(&hit["span"]).0, call_line);
+
+    let inspected = mcp_call(&mcp, &fixture, "inspect", json!({"symbol_name": "helper"})).await;
+    let mut relations = Vec::new();
+    objects_with(&inspected, "sites", &mut relations);
+    let call = relations
+        .iter()
+        .find(|r| r["kind"] == "Calls")
+        .expect("Calls relation");
+    let site = &call["sites"][0];
+    let span = &call["evidence"][0]["span"];
+    assert_eq!(
+        site["line_1based"], call_line,
+        "#73 site line is the editor line"
+    );
+    assert_eq!(
+        human_lines(span).0,
+        call_line,
+        "evidence span human line agrees with the site"
+    );
+    assert_eq!(
+        span["start"]["line"], 3,
+        "canonical evidence span unchanged"
+    );
+}
+
+/// #76 / #75 regression: the real files of the #75 failures -- before, an Agent cited the
+/// canonical `span.start.line` (config.rs:18, telemetry.rs:24, util.rs:14); the editor lines
+/// are 19, 25, 15.
+#[tokio::test]
+async fn human_lines_issue_75_representative_regression() {
+    const CONFIG_RS: &str = include_str!("../../engine/src/config.rs");
+    const UTIL_RS: &str = include_str!("../../agent/src/util.rs");
+    const TELEMETRY_RS: &str = include_str!("../../agent/src/telemetry.rs");
+    let (fixture, _connection, _server, _endpoint) = populated_fixture_with(
+        "human-line-75",
+        &[
+            ("crates/engine/src/config.rs", CONFIG_RS),
+            ("crates/agent/src/util.rs", UTIL_RS),
+            ("crates/agent/src/telemetry.rs", TELEMETRY_RS),
+        ],
+    )
+    .await;
+    let mcp = mcp_server(&fixture);
+
+    for (name, file, text, needle) in [
+        (
+            "CONFIG_FORMAT_VERSION",
+            "crates/engine/src/config.rs",
+            CONFIG_RS,
+            "pub const CONFIG_FORMAT_VERSION",
+        ),
+        (
+            "TelemetryEvent",
+            "crates/agent/src/telemetry.rs",
+            TELEMETRY_RS,
+            "pub struct TelemetryEvent",
+        ),
+        (
+            "fingerprint",
+            "crates/agent/src/util.rs",
+            UTIL_RS,
+            "pub fn fingerprint",
+        ),
+        (
+            "load_workspace_config",
+            "crates/engine/src/config.rs",
+            CONFIG_RS,
+            "pub fn load_workspace_config",
+        ),
+    ] {
+        let found = mcp_call(
+            &mcp,
+            &fixture,
+            "find",
+            json!({"mode": "target", "symbol_name": name}),
+        )
+        .await;
+        let mut symbols = Vec::new();
+        objects_with(&found, "qualified_name", &mut symbols);
+        let symbol = symbols
+            .iter()
+            .find(|s| s["name"] == name)
+            .unwrap_or_else(|| panic!("{name}: {found}"));
+        let mut owners = Vec::new();
+        objects_with(&found, "path_rel", &mut owners);
+        assert!(
+            owners.iter().any(|o| o["path_rel"] == file),
+            "{name} in {file}"
+        );
+        let truth = editor_line(text, needle);
+        let (start, _) = human_lines(&symbol["span"]);
+        assert_eq!(start, truth, "{name}: human line is the editor line");
+        assert_eq!(
+            symbol["span"]["start"]["line"],
+            truth - 1,
+            "{name}: canonical span unchanged"
+        );
+    }
+
+    // A3: every literal occurrence at its editor line (before: config.rs:18/40/133...).
+    let text = mcp_call(
+        &mcp,
+        &fixture,
+        "find",
+        json!({"mode": "text", "pattern": "CONFIG_FORMAT_VERSION", "search_budget_profile": "wide"}),
+    )
+    .await;
+    let mut matches = Vec::new();
+    objects_with(&text, "preview", &mut matches);
+    let got: Vec<usize> = matches
+        .iter()
+        .filter(|m| m["path_rel"] == "crates/engine/src/config.rs")
+        .map(|m| human_lines(&m["span"]).0)
+        .collect();
+    assert_eq!(got, editor_lines(CONFIG_RS, "CONFIG_FORMAT_VERSION"));
 }
