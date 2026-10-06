@@ -1,0 +1,156 @@
+{
+ "issue": 75,
+ "locked_before_results": true,
+ "base": "6775dac",
+ "product": "0e3f182 (protocol 14)",
+ "client": "Claude Code 2.1.291",
+ "model": "claude-opus-5-5",
+ "effort": "medium",
+ "arms": {
+  "N": {
+   "surface": "native only: no Brainprint daemon/MCP/hooks/SKILL.md; Working State as WORKING_STATE.md (#32/#35/#74 N)",
+   "route": null
+  },
+  "B": {
+   "surface": "shipped: brainprint-mcp 4 tools + shipped Claude hooks (prefer) + SKILL.md + Brainprint Working State (#35 A)",
+   "route": {
+    "A1": "BRAINPRINT",
+    "A2": "BRAINPRINT",
+    "A3": "BRAINPRINT",
+    "A4": "BRAINPRINT",
+    "T5": "BRAINPRINT",
+    "T6": "BRAINPRINT",
+    "T1": "BRAINPRINT",
+    "T7": "BRAINPRINT",
+    "W6": "BRAINPRINT",
+    "W1": "BRAINPRINT"
+   }
+  },
+  "R": {
+   "surface": "identical to B (MCP registered for every request, also NATIVE ones)",
+   "route": {
+    "A1": "NATIVE",
+    "A2": "NATIVE",
+    "A3": "NATIVE",
+    "A4": "NATIVE",
+    "T5": "BRAINPRINT",
+    "T6": "BRAINPRINT",
+    "T1": "BRAINPRINT",
+    "T7": "BRAINPRINT",
+    "W6": "REUSE",
+    "W1": "REUSE"
+   }
+  }
+ },
+ "violations": {
+  "NATIVE": "any Brainprint MCP call or ToolSearch for Brainprint in the turn",
+  "BRAINPRINT": "a native exploration call (Read/Grep/Glob/Bash) before the turn's first Brainprint call",
+  "REUSE": "any exploration call in the turn (Brainprint or native) = REUSE -> FALLBACK"
+ },
+ "fallback": "observed transition, never instructed: BRAINPRINT -> FALLBACK(NATIVE) = native exploration after a Brainprint call in the turn; REUSE -> FALLBACK(...) = exploration in a REUSE turn",
+ "directive_placement": "directive + blank line prepended to the task prompt; its tokens are part of the arm's cost",
+ "directives": {
+  "REUSE": "Route: REUSE\n- 이미 이 session/context에 있는 current fact만 사용.\n- project exploration tool을 새로 호출하지 않는다.\n- 필요한 fact가 실제로 없으면 route failure로 기록하고, 사전에 정의한 fallback rule을 따른다.\n- fallback rule: 답에 `REUSE MISS: <없는 fact>`를 밝히고 그 fact에 대해서만 Route: BRAINPRINT 규칙으로 진행한다.",
+  "NATIVE": "Route: NATIVE\n- Brainprint project-understanding/query tool을 호출하지 않는다.\n- 필요한 project exploration은 native tool만 사용한다.",
+  "BRAINPRINT": "Route: BRAINPRINT\n- Brainprint를 project-understanding/exploration의 첫 경로로 사용한다.\n- Brainprint 결과가 stale / partial / unsupported / ambiguous / insufficient인 경우에만 native fallback을 허용한다.\n- fallback 이유를 기록한다."
+ },
+ "tasks": {
+  "A1": {
+   "class": "A",
+   "prompt": "Task (read-only: do not modify any files). List the files in the directory crates/agent/src/clients of this repository. Answer with the file names only."
+  },
+  "A2": {
+   "class": "A",
+   "prompt": "Task (read-only: do not modify any files). Read lines 58-62 of crates/agent/src/util.rs and report the exact signature of the function defined there and its body expression. Answer concisely."
+  },
+  "A3": {
+   "class": "A",
+   "prompt": "Task (read-only: do not modify any files). List every occurrence of the literal text `CONFIG_FORMAT_VERSION` in this repository as file:line. Answer concisely."
+  },
+  "A4": {
+   "class": "A",
+   "prompt": "Task (read-only: do not modify any files). Where is the struct `TelemetryEvent` defined in this repository? Give file:line only."
+  },
+  "T5": {
+   "class": "B",
+   "prompt": "Task (read-only: do not modify any files). Explain how the configuration format version is validated in crates/engine/src/config.rs: (1) the constant that holds the supported version, its value and file:line; (2) the function that performs the check and the error it returns on a mismatch, with file:line; (3) the complete list of `ConfigError` variants; (4) which public functions in that file reach the check. Cite file:line. Answer concisely."
+  },
+  "T6": {
+   "class": "B",
+   "prompt": "Task (read-only: do not modify any files). I plan to change the hash used by the Rust function `fingerprint` in crates/agent/src/util.rs. Before editing, give me: (1) its exact current signature and file:line; (2) what it computes and its output format; (3) every direct call site of that exact function in the workspace -- file:line and the enclosing function -- separating production code from tests. Calls of other functions or methods that merely share the name do not count. Answer concisely."
+  },
+  "T1": {
+   "class": "B",
+   "prompt": "Task (read-only: do not modify any files). I plan to change the public signature of the Rust function `load_workspace_config` in this repository. Before editing, give me the change context: (1) its exact current signature and file:line; (2) every direct call site in the workspace -- file:line and the enclosing function -- separating production code from tests; (3) which tests would exercise the change; (4) any project rules or policies that apply. Answer concisely."
+  },
+  "T7": {
+   "class": "C",
+   "prompt": "Task (read-only: do not modify any files). Resume the in-progress work item titled `now_unix_ms u128` that a previous session recorded in this repository's Working State. Report: (1) its goal and the last handoff summary; (2) the exact current signature and file:line of the target function; (3) every direct call site that still needs updating -- file:line and the enclosing function, separating production code from tests. Answer concisely."
+  },
+  "W6": {
+   "class": "C",
+   "repeat_of": "T6",
+   "prompt": "Task (read-only: do not modify any files). I plan to change the hash used by the Rust function `fingerprint` in crates/agent/src/util.rs. Before editing, give me: (1) its exact current signature and file:line; (2) what it computes and its output format; (3) every direct call site of that exact function in the workspace -- file:line and the enclosing function -- separating production code from tests. Calls of other functions or methods that merely share the name do not count. Answer concisely."
+  },
+  "W1": {
+   "class": "C",
+   "repeat_of": "T1",
+   "prompt": "Task (read-only: do not modify any files). I plan to change the public signature of the Rust function `load_workspace_config` in this repository. Before editing, give me the change context: (1) its exact current signature and file:line; (2) every direct call site in the workspace -- file:line and the enclosing function -- separating production code from tests; (3) which tests would exercise the change; (4) any project rules or policies that apply. Answer concisely."
+  }
+ },
+ "sessions": {
+  "S1": {
+   "condition": "Agent 1: cold first task (turn 1) + warm repeated tasks + long session",
+   "tasks": [
+    "A1",
+    "T5",
+    "A2",
+    "T6",
+    "A3",
+    "T1",
+    "A4",
+    "T7",
+    "W6",
+    "W1"
+   ]
+  },
+  "S2": {
+   "condition": "new session same Workspace = second Agent (new client process, same daemon/index/Working State, sequential)",
+   "tasks": [
+    "T7",
+    "T6",
+    "A1"
+   ]
+  },
+  "S3": {
+   "condition": "third Agent (as S2)",
+   "tasks": [
+    "T7",
+    "T6",
+    "A1"
+   ]
+  }
+ },
+ "rounds": 2,
+ "run_order": {
+  "r1": [
+   "N",
+   "B",
+   "R"
+  ],
+  "r2": [
+   "R",
+   "B",
+   "N"
+  ]
+ },
+ "graders": {
+  "T1/T5/T6/T7": "#32 final_analyze.grade (base 6775dac ground truth), unchanged",
+  "W6": "T6 grader",
+  "W1": "T1 grader",
+  "A1": "all of claude.rs codex.rs gemini.rs mod.rs",
+  "A2": "`fn now_unix_ms() -> u64` and `now_unix_nanos() / 1_000_000`",
+  "A3": "config.rs:19,41,134,323,327,447",
+  "A4": "telemetry.rs:25"
+ }
+}
