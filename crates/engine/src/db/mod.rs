@@ -296,11 +296,19 @@ fn validate_migration_order(migrations: &[Migration]) -> Result<(), DbOpenError>
     Ok(())
 }
 
+/// #80: the WAL size SQLite truncates back to when a writer restarts a
+/// fully checkpointed log -- about one `wal_autocheckpoint` (1000 pages)
+/// worth, so ordinary refresh cycles never shrink and regrow the file. Without
+/// a limit (SQLite's default, -1) the WAL keeps the high-water mark of the
+/// largest transaction ever written: the whole initial publication.
+pub const WAL_SIZE_LIMIT_BYTES: i64 = 4 * 1024 * 1024;
+
 fn configure_connection(connection: &Connection) -> Result<(), rusqlite::Error> {
     connection.busy_timeout(DEFAULT_BUSY_TIMEOUT)?;
     // #13 task 8 §2-3: foreign keys always enforced; NORMAL is the stated
     // default candidate pending benchmark-driven tuning.
-    connection.execute_batch("PRAGMA foreign_keys = ON; PRAGMA synchronous = NORMAL;")
+    connection.execute_batch("PRAGMA foreign_keys = ON; PRAGMA synchronous = NORMAL;")?;
+    connection.pragma_update(None, "journal_size_limit", WAL_SIZE_LIMIT_BYTES)
 }
 
 fn apply_journal_mode(connection: &Connection) -> Result<String, rusqlite::Error> {
@@ -569,6 +577,51 @@ mod tests {
             .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
             .expect("pragma should be queryable");
         assert_eq!(enabled, 1);
+    }
+
+    /// #80: one transaction larger than the limit (the initial publication's shape) leaves a
+    /// WAL of that size only until the next commit after the log is checkpointed and restarted;
+    /// a reader on another connection still sees every committed row.
+    #[test]
+    fn a_large_transaction_does_not_leave_a_large_wal_behind() {
+        let dir = TestDir::create("wal-size-limit");
+        let path = dir.db_path();
+        let mut writer = open(&path, DbKind::Index, &[CREATE_WIDGETS])
+            .expect("index DB should bootstrap")
+            .connection;
+        let reader = open(&path, DbKind::Index, &[CREATE_WIDGETS])
+            .expect("second connection")
+            .connection;
+        let wal = path.with_extension("db-wal");
+
+        let tx = writer.transaction().expect("transaction");
+        let row = "x".repeat(4000);
+        for id in 0..3000 {
+            tx.execute(
+                "INSERT INTO widgets (id, name) VALUES (?1, ?2)",
+                params![id, row],
+            )
+            .expect("insert");
+        }
+        tx.commit().expect("commit");
+        let high_water = fs::metadata(&wal).expect("wal").len();
+        assert!(high_water > 2 * WAL_SIZE_LIMIT_BYTES as u64, "{high_water}");
+
+        // The commit's auto-checkpoint backfilled the log; the next write restarts it.
+        writer
+            .execute("UPDATE widgets SET name = 'y' WHERE id = 0", [])
+            .expect("small write");
+        let after = fs::metadata(&wal).expect("wal").len();
+        assert!(after <= WAL_SIZE_LIMIT_BYTES as u64, "{after}");
+
+        let count: u32 = reader
+            .query_row("SELECT COUNT(*) FROM widgets", [], |row| row.get(0))
+            .expect("reader");
+        assert_eq!(count, 3000);
+        let journal_mode: String = writer
+            .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+            .expect("journal mode");
+        assert_eq!(journal_mode, "wal");
     }
 
     #[test]
