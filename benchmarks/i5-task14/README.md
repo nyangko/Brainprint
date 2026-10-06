@@ -200,3 +200,63 @@ Per task A/B: T1 0.166/0.303, T5 0.107/0.203, T6 0.134/0.259, T7 0.105/0.233. B 
   (an A agent used it); fixed with `env -i` + an allowlist and a rustup-only `toolbin`. (2) B `init` refused
   reused clone paths (stale registry, defect 3 above); fixed with a per-B registry reset. `A-O1-r1` (valid,
   complete before the defect hit) is kept; the interrupted `A-O2-r1` and both failed B inits were discarded and run again.
+
+## Final rerun after #73 (product `0e3f182`, protocol 14, 2026-10-06) — Economy FAIL
+
+The `6775dac` results above are unchanged. One rerun, same tasks/prompts/order/repetitions and the same harness
+(`run_final.sh` unchanged; measured clone at `6775dac` so `gt.md` stays the ground truth), product built from
+`0e3f182` (#73: per-site path / `line_1based` / owner name on every delivered relation; incoming evidence spans no
+longer repeated as `CurrentSource`). Claude Code **2.1.290**, `claude-opus-5-5`, `--effort medium`.
+
+- `harness/preflight.sh` (run before every session, `analysis/final_0e3f182_preflight.txt`): A `PATH` has no
+  `brainprint*`; the measured env has no `ANTHROPIC_BASE_URL`/proxy variable; B binaries are the clean `0e3f182`
+  build; B MCP points at that build; protocol 14; isolated `HOME` with a fresh registry. 8/8 sessions passed (the
+  first session's protocol check asked the running daemon; from the second on it reads the build source, because an
+  A session stops the daemon). Every B answer carries `protocol_version: 14`; A made 0 Brainprint calls; every
+  clone was clean afterwards. No run discarded.
+- `harness/run_gate.sh` -> `analysis/final_0e3f182_gate.json`: `gate.py` unchanged. **26/26 PASS** (T1 10/10 callers,
+  no false call; source change + continuation mismatch; revert; daemon restart; offline edit; Working State; MCP;
+  agent bridge; degraded backend 4/10 sites with `unconfirmed_owners: 4`, no false complete; restored 10/10).
+- `harness/run_final_after73_all.sh` (ABBA, 2 rounds x {A,B} x {O1,O2}) -> `analysis/final_0e3f182.json`,
+  `final_0e3f182_calls.jsonl`, `final_0e3f182_hook_telemetry.jsonl` (`final_analyze.py`; one fix: an error payload
+  whose body is a string no longer crashes `bp_meta`). `analysis/final_0e3f182_enclosing_review.json`: B Bash calls
+  that look backwards from a line for an enclosing fn/impl.
+
+### Result (4 sessions per arm, USD per 4-task session)
+
+| | A | B | B-A |
+|---|---|---|---|
+| session cost mean [min-max] | 0.579 [0.514-0.623] | 0.974 [0.838-1.155] | +0.395 (+68%) |
+| pairs O1-r1 / O1-r2 / O2-r1 / O2-r2 | | | +0.215 / +0.390 / +0.332 / +0.641 |
+| BASE / SETUP (ToolSearch) | 0.112 / 0 | 0.133 / 0.118 | +0.022 / +0.118 |
+| Brainprint results | 0 | 0.351 | +0.351 |
+| native results | 0.236 | 0.143 | -0.093 |
+| other / output | 0.039 / 0.192 | 0.038 / 0.191 | -0.001 / -0.001 |
+| tokens input / cache-write / cache-read / output | 39 / 34.2k / 566k / 9.6k | 48 / 69.6k / 1.13M / 9.5k | |
+| API requests per session | 19.25 | 23.75 | |
+| correct answers | 16/16 | 16/16 | |
+| native calls per session (Bash/Grep/Read/Glob total) | 17.75 (34/27/9/1) | 10.5 (13/18/10/1) | -41% |
+| native result bytes per session | 39.6 KB | 22.4 KB | -44% |
+| Brainprint calls / bytes per session | 0 | 12.0 / 62.8 KB | |
+| wall per session | 130 s | 113 s | |
+
+Per task A/B: T1 0.184/0.262, T5 0.116/0.204, T6 0.174/0.278, T7 0.104/0.230. B is above A in every pair.
+
+- B native calls (42): 0 before the turn's first Brainprint call; 0 redundant candidates. Auto-class: 16 bounded
+  (`more_available` page / answer the agent did not continue), 17 partial (`UnconfirmedCallerOwners`,
+  `UnattributedGaps`, `TraversalTruncated` -- all still reported, 21 / 83 / 42 occurrences in B output), 9 not
+  delivered (orientation reads, rule/policy file search, `now_unix_ms` text search).
+- #73 effect, B turns `6775dac` -> `0e3f182`: T6 Brainprint bytes/turn 22.0K -> 19.9K, BP_RESULT/turn 0.123 -> 0.111;
+  T1 22.5K -> 19.8K, 0.129 -> 0.105. Enclosing-function lookups: 19 in the `6775dac` run, 7 now (two T6 turns),
+  all for production callers of `fingerprint` that the answer did not confirm (`UnconfirmedCallerOwners`), none for a
+  site already delivered with its owner name (one command also re-listed `util.rs:80`, which had its owner).
+- Brainprint cost per session falls 0.374 -> 0.351 and native rises in A (0.182 -> 0.236), but B's fixed SETUP
+  (ToolSearch, 0.118) and BP_RESULT stay larger than the native saving (-0.093). Brainprint latency p50 0.11 s, max
+  5.4 s (first semantic query).
+- Economy block (26 of 48 answers carry it): `delivered` `NotMeasured` in all 26; raw_available items 272 (bytes
+  Unknown in 14), prepared items 347 (bytes Unknown in 1), omitted 26. `more_available` 7, continuation requested 3.
+- Runtime (B): peak RSS brainprintd 31-40 MiB, brainprint-mcp 6-7 MiB, rust-analyzer 1.43-1.65 GiB. Daemon CPU:
+  NOT_MEASURED.
+
+Decision: correctness/currentness and standalone PASS; end-to-end economy FAIL (B > A in all four pairs). I5 Task 14
+not complete. No further optimization started from this result.

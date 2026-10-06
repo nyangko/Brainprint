@@ -1,0 +1,60 @@
+{
+ "note": "B Bash calls whose command looks backwards from a line for an enclosing fn/impl (awk NR<=N, ^impl, $1<=N); refs_already_owned = referenced sites the session had already received with an owner name. Reviewed by hand in the README.",
+ "calls": [
+  {
+   "session": "B-O1-r1",
+   "task": "T6",
+   "seq": 13,
+   "refs": [
+    [
+     "?",
+     692
+    ]
+   ],
+   "refs_already_owned": [],
+   "cmd": "for f in telemetry:60 delivery:204 state:222 probe:71; do n=${f%%:*}; l=${f##*:}; echo \"== $n\"; grep -nE \"use .*util|mod util|cfg\\(test\\)\" crates/agent/src/$n.rs; awk -v L=$l 'NR<=L && /fn [a-z_]+/ {last=NR\": \"$0} END{print last}' crates/agent/src/$n.rs; done; echo \"== test\"; awk 'NR<=692 && /fn [a-"
+  },
+  {
+   "session": "B-O1-r1",
+   "task": "T6",
+   "seq": 15,
+   "refs": [],
+   "refs_already_owned": [],
+   "cmd": "grep -nE \"^impl|^pub struct\" crates/agent/src/state.rs crates/agent/src/probe.rs | awk -F: '($1~/state/ && $2<222) || ($1~/probe/ && $2<71)'"
+  },
+  {
+   "session": "B-O1-r2",
+   "task": "T6",
+   "seq": 9,
+   "refs": [
+    [
+     "delivery.rs",
+     204
+    ],
+    [
+     "i5_task13_adoption_acceptance.rs",
+     692
+    ],
+    [
+     "state.rs",
+     222
+    ],
+    [
+     "telemetry.rs",
+     60
+    ],
+    [
+     "util.rs",
+     80
+    ]
+   ],
+   "refs_already_owned": [
+    [
+     "util.rs",
+     80
+    ]
+   ],
+   "cmd": "cd .; for f in crates/agent/src/state.rs:222 crates/agent/src/delivery.rs:204 crates/agent/src/telemetry.rs:60 crates/agent/tests/i5_task13_adoption_acceptance.rs:692 crates/agent/src/util.rs:80; do p=${f%:*}; l=${f#*:}; awk -v L=$l 'NR<=L && /^\\s*(pub(\\([a-z]+\\))? )?(async )?fn |^\\s*(impl|mod) /{la"
+  }
+ ]
+}

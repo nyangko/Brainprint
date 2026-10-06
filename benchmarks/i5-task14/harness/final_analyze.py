@@ -139,6 +139,8 @@ def bp_meta(text):
     if isinstance(inner, dict) and len(inner) == 1 and isinstance(next(iter(inner.values())), dict):
         inner = next(iter(inner.values()))
     s = json.dumps(pl)
+    if not isinstance(inner, dict):  # an error payload such as {"code": "..."}
+        inner = {}
     m["currentness"] = inner.get("currentness") or inner.get("structural_currentness") or ("Current" if '"Current"' in s else None)
     m["more_available"] = inner.get("more_available")
     m["economy"] = inner.get("economy")

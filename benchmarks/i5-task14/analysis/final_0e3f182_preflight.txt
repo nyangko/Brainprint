@@ -1,0 +1,7 @@
+   8 PASS A PATH has no brainprint
+   8 PASS B binaries are the 0e3f182 build
+   7 PASS B build is the protocol-14 source
+   1 PASS B daemon/CLI protocol 14
+   8 PASS B MCP points at the current build
+   8 PASS isolated HOME holds only the global config
+   8 PASS measured env has no ANTHROPIC_BASE_URL/proxy
