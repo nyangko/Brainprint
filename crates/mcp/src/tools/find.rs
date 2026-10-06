@@ -47,7 +47,7 @@ pub struct FindParams {
     pub role: Option<ResourceRoleParam>,
     pub language: Option<ResourceLanguageParam>,
     pub kind: Option<ResourceKindParam>,
-    /// `files`: defaults to 100. Ignored for other modes.
+    /// `files`: defaults to 50. Ignored for other modes.
     pub limit: Option<usize>,
 
     // `mode: text` fields.
@@ -104,7 +104,10 @@ impl FindParams {
                 }
             }
             FindMode::Files => {
-                let operation = std::num::NonZeroUsize::new(self.limit.unwrap_or(100))
+                // #81: 100 full Resource rows (~51 K chars) were replaced by a
+                // "saved to file" notice in Claude Code; 50 stays inside the
+                // compact inspect page's size and `truncated` still says more exist.
+                let operation = std::num::NonZeroUsize::new(self.limit.unwrap_or(50))
                     .ok_or_else(|| ParamError("limit must be greater than zero".to_owned()))
                     .map(|limit| {
                         QueryOperationWire::Find(FindQueryWire::Files {
@@ -153,5 +156,29 @@ impl FindParams {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use brainprint_core::protocol::query::{FindQueryWire, QueryOperationWire};
+
+    use super::FindParams;
+
+    /// #81: a default `files` call stays a size Claude Code delivers inline.
+    #[test]
+    fn files_defaults_to_fifty_and_an_explicit_limit_wins() {
+        let limit = |args: serde_json::Value| {
+            let params: FindParams = serde_json::from_value(args).expect("params");
+            match params.split().operation.expect("operation") {
+                QueryOperationWire::Find(FindQueryWire::Files { limit, .. }) => limit.get(),
+                other => panic!("{other:?}"),
+            }
+        };
+        assert_eq!(limit(serde_json::json!({"mode": "files"})), 50);
+        assert_eq!(
+            limit(serde_json::json!({"mode": "files", "limit": 200})),
+            200
+        );
     }
 }
