@@ -1,0 +1,22 @@
+N-O1-r1 N O1 exit=0 wall_s=112.4
+A-O1-r1 A O1 exit=0 wall_s=167.1
+B-O1-r1 B O1 exit=0 wall_s=97.2
+C-O1-r1 C O1 exit=0 wall_s=115.0
+D-O1-r1 D O1 exit=0 wall_s=130.7
+E-O1-r1 E O1 exit=0 wall_s=107.4
+E-O2-r1 E O2 exit=0 wall_s=85.1
+D-O2-r1 D O2 exit=0 wall_s=115.6
+C-O2-r1 C O2 exit=0 wall_s=101.1
+B-O2-r1 B O2 exit=0 wall_s=99.8
+A-O2-r1 A O2 exit=0 wall_s=97.3
+N-O2-r1 N O2 exit=0 wall_s=102.2
+ALL_DONE
+N-O2-r1 DISCARDED (mcp-A.json overwritten by arm A: Brainprint connected in the native arm)
+N-O2-r1 N O2 exit=0 wall_s=101.0
+A-O1-r2 A O1 exit=0 wall_s=103.3
+B-O1-r2 B O1 exit=0 wall_s=114.6
+N-O1-r2 N O1 exit=0 wall_s=114.7
+N-O2-r2 N O2 exit=0 wall_s=100.5
+B-O2-r2 B O2 exit=0 wall_s=97.1
+A-O2-r2 A O2 exit=0 wall_s=123.0
+ALL_DONE_R2

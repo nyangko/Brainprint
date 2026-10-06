@@ -1,0 +1,3293 @@
+{
+ "candidates": {
+  "A": {
+   "tools": [
+    {
+     "name": "brainprint.context",
+     "description_bytes": 382,
+     "schema_bytes": 8619,
+     "contract_bytes": 9062
+    },
+    {
+     "name": "brainprint.find",
+     "description_bytes": 190,
+     "schema_bytes": 5484,
+     "contract_bytes": 5732
+    },
+    {
+     "name": "brainprint.inspect",
+     "description_bytes": 138,
+     "schema_bytes": 3956,
+     "contract_bytes": 4155
+    },
+    {
+     "name": "brainprint.relations",
+     "description_bytes": 187,
+     "schema_bytes": 6010,
+     "contract_bytes": 6260
+    }
+   ],
+   "workloads": {
+    "W1 inspect": [
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 39,
+      "result_bytes": 13245,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 597,
+      "result_bytes": 2024,
+      "is_error": false
+     }
+    ],
+    "W2 find>inspect": [
+     {
+      "op": "find_target",
+      "tool": "brainprint.find",
+      "kind": "call",
+      "args_bytes": 45,
+      "result_bytes": 9737,
+      "is_error": false
+     },
+     {
+      "op": "find_target",
+      "tool": "brainprint.find",
+      "kind": "call",
+      "args_bytes": 603,
+      "result_bytes": 7259,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 52,
+      "result_bytes": 14835,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 610,
+      "result_bytes": 1214,
+      "is_error": false
+     }
+    ],
+    "W3 find>relations>inspect": [
+     {
+      "op": "find_target",
+      "tool": "brainprint.find",
+      "kind": "call",
+      "args_bytes": 45,
+      "result_bytes": 9737,
+      "is_error": false
+     },
+     {
+      "op": "find_target",
+      "tool": "brainprint.find",
+      "kind": "call",
+      "args_bytes": 603,
+      "result_bytes": 7259,
+      "is_error": false
+     },
+     {
+      "op": "relations_direct",
+      "tool": "brainprint.relations",
+      "kind": "call",
+      "args_bytes": 109,
+      "result_bytes": 7015,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 52,
+      "result_bytes": 14835,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 610,
+      "result_bytes": 1214,
+      "is_error": false
+     }
+    ],
+    "W4 change": [
+     {
+      "op": "find_target",
+      "tool": "brainprint.find",
+      "kind": "call",
+      "args_bytes": 55,
+      "result_bytes": 2925,
+      "is_error": false
+     },
+     {
+      "op": "relations_impact",
+      "tool": "brainprint.relations",
+      "kind": "call",
+      "args_bytes": 121,
+      "result_bytes": 12809,
+      "is_error": false
+     },
+     {
+      "op": "relations_impact",
+      "tool": "brainprint.relations",
+      "kind": "call",
+      "args_bytes": 679,
+      "result_bytes": 1432,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 39,
+      "result_bytes": 13245,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 597,
+      "result_bytes": 2024,
+      "is_error": false
+     },
+     {
+      "op": "context_change",
+      "tool": "brainprint.context",
+      "kind": "call",
+      "args_bytes": 121,
+      "result_bytes": 12707,
+      "is_error": false
+     },
+     {
+      "op": "context_change",
+      "tool": "brainprint.context",
+      "kind": "call",
+      "args_bytes": 679,
+      "result_bytes": 2181,
+      "is_error": false
+     }
+    ],
+    "W5 resume": [
+     {
+      "op": "context_resume",
+      "tool": "brainprint.context",
+      "kind": "call",
+      "args_bytes": 68,
+      "result_bytes": 2339,
+      "is_error": false
+     },
+     {
+      "op": "context_rules",
+      "tool": "brainprint.context",
+      "kind": "call",
+      "args_bytes": 16,
+      "result_bytes": 160,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 29,
+      "result_bytes": 7869,
+      "is_error": false
+     }
+    ],
+    "W6 low-frequency": [
+     {
+      "op": "context_structure",
+      "tool": "brainprint.context",
+      "kind": "call",
+      "args_bytes": 82,
+      "result_bytes": 30049,
+      "is_error": false
+     },
+     {
+      "op": "context_lineage",
+      "tool": "brainprint.context",
+      "kind": "call",
+      "args_bytes": 86,
+      "result_bytes": 176,
+      "is_error": false
+     }
+    ],
+    "W7 inspect x10": [
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 39,
+      "result_bytes": 13245,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 597,
+      "result_bytes": 2024,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 39,
+      "result_bytes": 13245,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 597,
+      "result_bytes": 2024,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 39,
+      "result_bytes": 13245,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 597,
+      "result_bytes": 2024,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 39,
+      "result_bytes": 13245,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 597,
+      "result_bytes": 2024,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 39,
+      "result_bytes": 13245,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 597,
+      "result_bytes": 2024,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 39,
+      "result_bytes": 13245,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 597,
+      "result_bytes": 2024,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 39,
+      "result_bytes": 13245,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 597,
+      "result_bytes": 2024,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 39,
+      "result_bytes": 13245,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 597,
+      "result_bytes": 2024,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 39,
+      "result_bytes": 13245,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 597,
+      "result_bytes": 2024,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 39,
+      "result_bytes": 13245,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 597,
+      "result_bytes": 2024,
+      "is_error": false
+     }
+    ],
+    "W8 mixed": [
+     {
+      "op": "find_target",
+      "tool": "brainprint.find",
+      "kind": "call",
+      "args_bytes": 45,
+      "result_bytes": 9737,
+      "is_error": false
+     },
+     {
+      "op": "find_target",
+      "tool": "brainprint.find",
+      "kind": "call",
+      "args_bytes": 603,
+      "result_bytes": 7259,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 52,
+      "result_bytes": 14835,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 610,
+      "result_bytes": 1214,
+      "is_error": false
+     },
+     {
+      "op": "relations_direct",
+      "tool": "brainprint.relations",
+      "kind": "call",
+      "args_bytes": 109,
+      "result_bytes": 7015,
+      "is_error": false
+     },
+     {
+      "op": "relations_impact",
+      "tool": "brainprint.relations",
+      "kind": "call",
+      "args_bytes": 121,
+      "result_bytes": 12809,
+      "is_error": false
+     },
+     {
+      "op": "relations_impact",
+      "tool": "brainprint.relations",
+      "kind": "call",
+      "args_bytes": 679,
+      "result_bytes": 1432,
+      "is_error": false
+     },
+     {
+      "op": "context_change",
+      "tool": "brainprint.context",
+      "kind": "call",
+      "args_bytes": 121,
+      "result_bytes": 12707,
+      "is_error": false
+     },
+     {
+      "op": "context_change",
+      "tool": "brainprint.context",
+      "kind": "call",
+      "args_bytes": 679,
+      "result_bytes": 2181,
+      "is_error": false
+     },
+     {
+      "op": "context_resume",
+      "tool": "brainprint.context",
+      "kind": "call",
+      "args_bytes": 68,
+      "result_bytes": 2339,
+      "is_error": false
+     },
+     {
+      "op": "context_rules",
+      "tool": "brainprint.context",
+      "kind": "call",
+      "args_bytes": 16,
+      "result_bytes": 160,
+      "is_error": false
+     },
+     {
+      "op": "find_text",
+      "tool": "brainprint.find",
+      "kind": "call",
+      "args_bytes": 49,
+      "result_bytes": 2096,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 39,
+      "result_bytes": 13245,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 597,
+      "result_bytes": 2024,
+      "is_error": false
+     }
+    ]
+   }
+  },
+  "B": {
+   "tools": [
+    {
+     "name": "brainprint.context",
+     "description_bytes": 382,
+     "schema_bytes": 6258,
+     "contract_bytes": 6701
+    },
+    {
+     "name": "brainprint.find",
+     "description_bytes": 190,
+     "schema_bytes": 3123,
+     "contract_bytes": 3371
+    },
+    {
+     "name": "brainprint.inspect",
+     "description_bytes": 138,
+     "schema_bytes": 1595,
+     "contract_bytes": 1794
+    },
+    {
+     "name": "brainprint.relations",
+     "description_bytes": 187,
+     "schema_bytes": 3649,
+     "contract_bytes": 3899
+    }
+   ],
+   "workloads": {
+    "W1 inspect": [
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 39,
+      "result_bytes": 13433,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 785,
+      "result_bytes": 2024,
+      "is_error": false
+     }
+    ],
+    "W2 find>inspect": [
+     {
+      "op": "find_target",
+      "tool": "brainprint.find",
+      "kind": "call",
+      "args_bytes": 45,
+      "result_bytes": 9925,
+      "is_error": false
+     },
+     {
+      "op": "find_target",
+      "tool": "brainprint.find",
+      "kind": "call",
+      "args_bytes": 791,
+      "result_bytes": 7259,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 52,
+      "result_bytes": 15023,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 798,
+      "result_bytes": 1214,
+      "is_error": false
+     }
+    ],
+    "W3 find>relations>inspect": [
+     {
+      "op": "find_target",
+      "tool": "brainprint.find",
+      "kind": "call",
+      "args_bytes": 45,
+      "result_bytes": 9925,
+      "is_error": false
+     },
+     {
+      "op": "find_target",
+      "tool": "brainprint.find",
+      "kind": "call",
+      "args_bytes": 791,
+      "result_bytes": 7259,
+      "is_error": false
+     },
+     {
+      "op": "relations_direct",
+      "tool": "brainprint.relations",
+      "kind": "call",
+      "args_bytes": 109,
+      "result_bytes": 7015,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 52,
+      "result_bytes": 15023,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 798,
+      "result_bytes": 1214,
+      "is_error": false
+     }
+    ],
+    "W4 change": [
+     {
+      "op": "find_target",
+      "tool": "brainprint.find",
+      "kind": "call",
+      "args_bytes": 55,
+      "result_bytes": 2925,
+      "is_error": false
+     },
+     {
+      "op": "relations_impact",
+      "tool": "brainprint.relations",
+      "kind": "call",
+      "args_bytes": 121,
+      "result_bytes": 12997,
+      "is_error": false
+     },
+     {
+      "op": "relations_impact",
+      "tool": "brainprint.relations",
+      "kind": "call",
+      "args_bytes": 867,
+      "result_bytes": 1432,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 39,
+      "result_bytes": 13433,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 785,
+      "result_bytes": 2024,
+      "is_error": false
+     },
+     {
+      "op": "context_change",
+      "tool": "brainprint.context",
+      "kind": "call",
+      "args_bytes": 121,
+      "result_bytes": 12895,
+      "is_error": false
+     },
+     {
+      "op": "context_change",
+      "tool": "brainprint.context",
+      "kind": "call",
+      "args_bytes": 867,
+      "result_bytes": 2181,
+      "is_error": false
+     }
+    ],
+    "W5 resume": [
+     {
+      "op": "context_resume",
+      "tool": "brainprint.context",
+      "kind": "call",
+      "args_bytes": 68,
+      "result_bytes": 2339,
+      "is_error": false
+     },
+     {
+      "op": "context_rules",
+      "tool": "brainprint.context",
+      "kind": "call",
+      "args_bytes": 16,
+      "result_bytes": 160,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 29,
+      "result_bytes": 7869,
+      "is_error": false
+     }
+    ],
+    "W6 low-frequency": [
+     {
+      "op": "context_structure",
+      "tool": "brainprint.context",
+      "kind": "call",
+      "args_bytes": 82,
+      "result_bytes": 30049,
+      "is_error": false
+     },
+     {
+      "op": "context_lineage",
+      "tool": "brainprint.context",
+      "kind": "call",
+      "args_bytes": 86,
+      "result_bytes": 176,
+      "is_error": false
+     }
+    ],
+    "W7 inspect x10": [
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 39,
+      "result_bytes": 13433,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 785,
+      "result_bytes": 2024,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 39,
+      "result_bytes": 13433,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 785,
+      "result_bytes": 2024,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 39,
+      "result_bytes": 13433,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 785,
+      "result_bytes": 2024,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 39,
+      "result_bytes": 13433,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 785,
+      "result_bytes": 2024,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 39,
+      "result_bytes": 13433,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 785,
+      "result_bytes": 2024,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 39,
+      "result_bytes": 13433,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 785,
+      "result_bytes": 2024,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 39,
+      "result_bytes": 13433,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 785,
+      "result_bytes": 2024,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 39,
+      "result_bytes": 13433,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 785,
+      "result_bytes": 2024,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 39,
+      "result_bytes": 13433,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 785,
+      "result_bytes": 2024,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 39,
+      "result_bytes": 13433,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 785,
+      "result_bytes": 2024,
+      "is_error": false
+     }
+    ],
+    "W8 mixed": [
+     {
+      "op": "find_target",
+      "tool": "brainprint.find",
+      "kind": "call",
+      "args_bytes": 45,
+      "result_bytes": 9925,
+      "is_error": false
+     },
+     {
+      "op": "find_target",
+      "tool": "brainprint.find",
+      "kind": "call",
+      "args_bytes": 791,
+      "result_bytes": 7259,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 52,
+      "result_bytes": 15023,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 798,
+      "result_bytes": 1214,
+      "is_error": false
+     },
+     {
+      "op": "relations_direct",
+      "tool": "brainprint.relations",
+      "kind": "call",
+      "args_bytes": 109,
+      "result_bytes": 7015,
+      "is_error": false
+     },
+     {
+      "op": "relations_impact",
+      "tool": "brainprint.relations",
+      "kind": "call",
+      "args_bytes": 121,
+      "result_bytes": 12997,
+      "is_error": false
+     },
+     {
+      "op": "relations_impact",
+      "tool": "brainprint.relations",
+      "kind": "call",
+      "args_bytes": 867,
+      "result_bytes": 1432,
+      "is_error": false
+     },
+     {
+      "op": "context_change",
+      "tool": "brainprint.context",
+      "kind": "call",
+      "args_bytes": 121,
+      "result_bytes": 12895,
+      "is_error": false
+     },
+     {
+      "op": "context_change",
+      "tool": "brainprint.context",
+      "kind": "call",
+      "args_bytes": 867,
+      "result_bytes": 2181,
+      "is_error": false
+     },
+     {
+      "op": "context_resume",
+      "tool": "brainprint.context",
+      "kind": "call",
+      "args_bytes": 68,
+      "result_bytes": 2339,
+      "is_error": false
+     },
+     {
+      "op": "context_rules",
+      "tool": "brainprint.context",
+      "kind": "call",
+      "args_bytes": 16,
+      "result_bytes": 160,
+      "is_error": false
+     },
+     {
+      "op": "find_text",
+      "tool": "brainprint.find",
+      "kind": "call",
+      "args_bytes": 49,
+      "result_bytes": 2096,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 39,
+      "result_bytes": 13433,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 785,
+      "result_bytes": 2024,
+      "is_error": false
+     }
+    ]
+   },
+   "parity": {
+    "W1 inspect": {
+     "a_calls": 2,
+     "candidate_calls": 2,
+     "equal": 2,
+     "compared": 2
+    },
+    "W2 find>inspect": {
+     "a_calls": 4,
+     "candidate_calls": 4,
+     "equal": 4,
+     "compared": 4
+    },
+    "W3 find>relations>inspect": {
+     "a_calls": 5,
+     "candidate_calls": 5,
+     "equal": 5,
+     "compared": 5
+    },
+    "W4 change": {
+     "a_calls": 7,
+     "candidate_calls": 7,
+     "equal": 7,
+     "compared": 7
+    },
+    "W5 resume": {
+     "a_calls": 3,
+     "candidate_calls": 3,
+     "equal": 3,
+     "compared": 3
+    },
+    "W6 low-frequency": {
+     "a_calls": 2,
+     "candidate_calls": 2,
+     "equal": 2,
+     "compared": 2
+    },
+    "W7 inspect x10": {
+     "a_calls": 20,
+     "candidate_calls": 20,
+     "equal": 20,
+     "compared": 20
+    },
+    "W8 mixed": {
+     "a_calls": 14,
+     "candidate_calls": 14,
+     "equal": 14,
+     "compared": 14
+    }
+   }
+  },
+  "C": {
+   "tools": [
+    {
+     "name": "brainprint.find_target",
+     "description_bytes": 51,
+     "schema_bytes": 3956,
+     "contract_bytes": 4072
+    },
+    {
+     "name": "brainprint.find_files",
+     "description_bytes": 26,
+     "schema_bytes": 1565,
+     "contract_bytes": 1655
+    },
+    {
+     "name": "brainprint.find_text",
+     "description_bytes": 74,
+     "schema_bytes": 1426,
+     "contract_bytes": 1563
+    },
+    {
+     "name": "brainprint.inspect",
+     "description_bytes": 138,
+     "schema_bytes": 3956,
+     "contract_bytes": 4155
+    },
+    {
+     "name": "brainprint.relations_direct",
+     "description_bytes": 62,
+     "schema_bytes": 2240,
+     "contract_bytes": 2372
+    },
+    {
+     "name": "brainprint.relations_impact",
+     "description_bytes": 79,
+     "schema_bytes": 5495,
+     "contract_bytes": 5644
+    },
+    {
+     "name": "brainprint.context_change",
+     "description_bytes": 72,
+     "schema_bytes": 5680,
+     "contract_bytes": 5820
+    },
+    {
+     "name": "brainprint.context_resume",
+     "description_bytes": 76,
+     "schema_bytes": 4159,
+     "contract_bytes": 4303
+    },
+    {
+     "name": "brainprint.context_rules",
+     "description_bytes": 28,
+     "schema_bytes": 623,
+     "contract_bytes": 718
+    },
+    {
+     "name": "brainprint.context_work_items",
+     "description_bytes": 20,
+     "schema_bytes": 1046,
+     "contract_bytes": 1138
+    },
+    {
+     "name": "brainprint.context_lineage",
+     "description_bytes": 38,
+     "schema_bytes": 993,
+     "contract_bytes": 1100
+    },
+    {
+     "name": "brainprint.context_handoffs",
+     "description_bytes": 29,
+     "schema_bytes": 977,
+     "contract_bytes": 1076
+    },
+    {
+     "name": "brainprint.context_structure",
+     "description_bytes": 27,
+     "schema_bytes": 2785,
+     "contract_bytes": 2883
+    },
+    {
+     "name": "brainprint.context_status",
+     "description_bytes": 24,
+     "schema_bytes": 623,
+     "contract_bytes": 715
+    }
+   ],
+   "workloads": {
+    "W1 inspect": [
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 39,
+      "result_bytes": 13245,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 597,
+      "result_bytes": 2024,
+      "is_error": false
+     }
+    ],
+    "W2 find>inspect": [
+     {
+      "op": "find_target",
+      "tool": "brainprint.find_target",
+      "kind": "call",
+      "args_bytes": 29,
+      "result_bytes": 9737,
+      "is_error": false
+     },
+     {
+      "op": "find_target",
+      "tool": "brainprint.find_target",
+      "kind": "call",
+      "args_bytes": 587,
+      "result_bytes": 7259,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 52,
+      "result_bytes": 14835,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 610,
+      "result_bytes": 1214,
+      "is_error": false
+     }
+    ],
+    "W3 find>relations>inspect": [
+     {
+      "op": "find_target",
+      "tool": "brainprint.find_target",
+      "kind": "call",
+      "args_bytes": 29,
+      "result_bytes": 9737,
+      "is_error": false
+     },
+     {
+      "op": "find_target",
+      "tool": "brainprint.find_target",
+      "kind": "call",
+      "args_bytes": 587,
+      "result_bytes": 7259,
+      "is_error": false
+     },
+     {
+      "op": "relations_direct",
+      "tool": "brainprint.relations_direct",
+      "kind": "call",
+      "args_bytes": 93,
+      "result_bytes": 7015,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 52,
+      "result_bytes": 14835,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 610,
+      "result_bytes": 1214,
+      "is_error": false
+     }
+    ],
+    "W4 change": [
+     {
+      "op": "find_target",
+      "tool": "brainprint.find_target",
+      "kind": "call",
+      "args_bytes": 39,
+      "result_bytes": 2925,
+      "is_error": false
+     },
+     {
+      "op": "relations_impact",
+      "tool": "brainprint.relations_impact",
+      "kind": "call",
+      "args_bytes": 105,
+      "result_bytes": 12809,
+      "is_error": false
+     },
+     {
+      "op": "relations_impact",
+      "tool": "brainprint.relations_impact",
+      "kind": "call",
+      "args_bytes": 663,
+      "result_bytes": 1432,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 39,
+      "result_bytes": 13245,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 597,
+      "result_bytes": 2024,
+      "is_error": false
+     },
+     {
+      "op": "context_change",
+      "tool": "brainprint.context_change",
+      "kind": "call",
+      "args_bytes": 105,
+      "result_bytes": 12707,
+      "is_error": false
+     },
+     {
+      "op": "context_change",
+      "tool": "brainprint.context_change",
+      "kind": "call",
+      "args_bytes": 663,
+      "result_bytes": 2181,
+      "is_error": false
+     }
+    ],
+    "W5 resume": [
+     {
+      "op": "context_resume",
+      "tool": "brainprint.context_resume",
+      "kind": "call",
+      "args_bytes": 52,
+      "result_bytes": 2339,
+      "is_error": false
+     },
+     {
+      "op": "context_rules",
+      "tool": "brainprint.context_rules",
+      "kind": "call",
+      "args_bytes": 2,
+      "result_bytes": 160,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 29,
+      "result_bytes": 7869,
+      "is_error": false
+     }
+    ],
+    "W6 low-frequency": [
+     {
+      "op": "context_structure",
+      "tool": "brainprint.context_structure",
+      "kind": "call",
+      "args_bytes": 63,
+      "result_bytes": 30049,
+      "is_error": false
+     },
+     {
+      "op": "context_lineage",
+      "tool": "brainprint.context_lineage",
+      "kind": "call",
+      "args_bytes": 69,
+      "result_bytes": 176,
+      "is_error": false
+     }
+    ],
+    "W7 inspect x10": [
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 39,
+      "result_bytes": 13245,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 597,
+      "result_bytes": 2024,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 39,
+      "result_bytes": 13245,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 597,
+      "result_bytes": 2024,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 39,
+      "result_bytes": 13245,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 597,
+      "result_bytes": 2024,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 39,
+      "result_bytes": 13245,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 597,
+      "result_bytes": 2024,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 39,
+      "result_bytes": 13245,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 597,
+      "result_bytes": 2024,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 39,
+      "result_bytes": 13245,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 597,
+      "result_bytes": 2024,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 39,
+      "result_bytes": 13245,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 597,
+      "result_bytes": 2024,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 39,
+      "result_bytes": 13245,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 597,
+      "result_bytes": 2024,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 39,
+      "result_bytes": 13245,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 597,
+      "result_bytes": 2024,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 39,
+      "result_bytes": 13245,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 597,
+      "result_bytes": 2024,
+      "is_error": false
+     }
+    ],
+    "W8 mixed": [
+     {
+      "op": "find_target",
+      "tool": "brainprint.find_target",
+      "kind": "call",
+      "args_bytes": 29,
+      "result_bytes": 9737,
+      "is_error": false
+     },
+     {
+      "op": "find_target",
+      "tool": "brainprint.find_target",
+      "kind": "call",
+      "args_bytes": 587,
+      "result_bytes": 7259,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 52,
+      "result_bytes": 14835,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 610,
+      "result_bytes": 1214,
+      "is_error": false
+     },
+     {
+      "op": "relations_direct",
+      "tool": "brainprint.relations_direct",
+      "kind": "call",
+      "args_bytes": 93,
+      "result_bytes": 7015,
+      "is_error": false
+     },
+     {
+      "op": "relations_impact",
+      "tool": "brainprint.relations_impact",
+      "kind": "call",
+      "args_bytes": 105,
+      "result_bytes": 12809,
+      "is_error": false
+     },
+     {
+      "op": "relations_impact",
+      "tool": "brainprint.relations_impact",
+      "kind": "call",
+      "args_bytes": 663,
+      "result_bytes": 1432,
+      "is_error": false
+     },
+     {
+      "op": "context_change",
+      "tool": "brainprint.context_change",
+      "kind": "call",
+      "args_bytes": 105,
+      "result_bytes": 12707,
+      "is_error": false
+     },
+     {
+      "op": "context_change",
+      "tool": "brainprint.context_change",
+      "kind": "call",
+      "args_bytes": 663,
+      "result_bytes": 2181,
+      "is_error": false
+     },
+     {
+      "op": "context_resume",
+      "tool": "brainprint.context_resume",
+      "kind": "call",
+      "args_bytes": 52,
+      "result_bytes": 2339,
+      "is_error": false
+     },
+     {
+      "op": "context_rules",
+      "tool": "brainprint.context_rules",
+      "kind": "call",
+      "args_bytes": 2,
+      "result_bytes": 160,
+      "is_error": false
+     },
+     {
+      "op": "find_text",
+      "tool": "brainprint.find_text",
+      "kind": "call",
+      "args_bytes": 35,
+      "result_bytes": 2096,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 39,
+      "result_bytes": 13245,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 597,
+      "result_bytes": 2024,
+      "is_error": false
+     }
+    ]
+   },
+   "parity": {
+    "W1 inspect": {
+     "a_calls": 2,
+     "candidate_calls": 2,
+     "equal": 2,
+     "compared": 2
+    },
+    "W2 find>inspect": {
+     "a_calls": 4,
+     "candidate_calls": 4,
+     "equal": 4,
+     "compared": 4
+    },
+    "W3 find>relations>inspect": {
+     "a_calls": 5,
+     "candidate_calls": 5,
+     "equal": 5,
+     "compared": 5
+    },
+    "W4 change": {
+     "a_calls": 7,
+     "candidate_calls": 7,
+     "equal": 7,
+     "compared": 7
+    },
+    "W5 resume": {
+     "a_calls": 3,
+     "candidate_calls": 3,
+     "equal": 3,
+     "compared": 3
+    },
+    "W6 low-frequency": {
+     "a_calls": 2,
+     "candidate_calls": 2,
+     "equal": 2,
+     "compared": 2
+    },
+    "W7 inspect x10": {
+     "a_calls": 20,
+     "candidate_calls": 20,
+     "equal": 20,
+     "compared": 20
+    },
+    "W8 mixed": {
+     "a_calls": 14,
+     "candidate_calls": 14,
+     "equal": 14,
+     "compared": 14
+    }
+   }
+  },
+  "D": {
+   "tools": [
+    {
+     "name": "brainprint.call",
+     "description_bytes": 366,
+     "schema_bytes": 358,
+     "contract_bytes": 782
+    },
+    {
+     "name": "brainprint.contract",
+     "description_bytes": 75,
+     "schema_bytes": 328,
+     "contract_bytes": 465
+    }
+   ],
+   "workloads": {
+    "W1 inspect": [
+     {
+      "op": "inspect",
+      "tool": "brainprint.contract",
+      "kind": "lookup",
+      "args_bytes": 23,
+      "result_bytes": 4154,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.call",
+      "kind": "call",
+      "args_bytes": 75,
+      "result_bytes": 13245,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.call",
+      "kind": "call",
+      "args_bytes": 633,
+      "result_bytes": 2024,
+      "is_error": false
+     }
+    ],
+    "W2 find>inspect": [
+     {
+      "op": "find_target",
+      "tool": "brainprint.contract",
+      "kind": "lookup",
+      "args_bytes": 27,
+      "result_bytes": 4071,
+      "is_error": false
+     },
+     {
+      "op": "find_target",
+      "tool": "brainprint.call",
+      "kind": "call",
+      "args_bytes": 69,
+      "result_bytes": 9737,
+      "is_error": false
+     },
+     {
+      "op": "find_target",
+      "tool": "brainprint.call",
+      "kind": "call",
+      "args_bytes": 627,
+      "result_bytes": 7259,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.contract",
+      "kind": "lookup",
+      "args_bytes": 23,
+      "result_bytes": 4154,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.call",
+      "kind": "call",
+      "args_bytes": 88,
+      "result_bytes": 14835,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.call",
+      "kind": "call",
+      "args_bytes": 646,
+      "result_bytes": 1214,
+      "is_error": false
+     }
+    ],
+    "W3 find>relations>inspect": [
+     {
+      "op": "find_target",
+      "tool": "brainprint.contract",
+      "kind": "lookup",
+      "args_bytes": 27,
+      "result_bytes": 4071,
+      "is_error": false
+     },
+     {
+      "op": "find_target",
+      "tool": "brainprint.call",
+      "kind": "call",
+      "args_bytes": 69,
+      "result_bytes": 9737,
+      "is_error": false
+     },
+     {
+      "op": "find_target",
+      "tool": "brainprint.call",
+      "kind": "call",
+      "args_bytes": 627,
+      "result_bytes": 7259,
+      "is_error": false
+     },
+     {
+      "op": "relations_direct",
+      "tool": "brainprint.contract",
+      "kind": "lookup",
+      "args_bytes": 32,
+      "result_bytes": 2371,
+      "is_error": false
+     },
+     {
+      "op": "relations_direct",
+      "tool": "brainprint.call",
+      "kind": "call",
+      "args_bytes": 138,
+      "result_bytes": 7015,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.contract",
+      "kind": "lookup",
+      "args_bytes": 23,
+      "result_bytes": 4154,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.call",
+      "kind": "call",
+      "args_bytes": 88,
+      "result_bytes": 14835,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.call",
+      "kind": "call",
+      "args_bytes": 646,
+      "result_bytes": 1214,
+      "is_error": false
+     }
+    ],
+    "W4 change": [
+     {
+      "op": "find_target",
+      "tool": "brainprint.contract",
+      "kind": "lookup",
+      "args_bytes": 27,
+      "result_bytes": 4071,
+      "is_error": false
+     },
+     {
+      "op": "find_target",
+      "tool": "brainprint.call",
+      "kind": "call",
+      "args_bytes": 79,
+      "result_bytes": 2925,
+      "is_error": false
+     },
+     {
+      "op": "relations_impact",
+      "tool": "brainprint.contract",
+      "kind": "lookup",
+      "args_bytes": 32,
+      "result_bytes": 5643,
+      "is_error": false
+     },
+     {
+      "op": "relations_impact",
+      "tool": "brainprint.call",
+      "kind": "call",
+      "args_bytes": 150,
+      "result_bytes": 12809,
+      "is_error": false
+     },
+     {
+      "op": "relations_impact",
+      "tool": "brainprint.call",
+      "kind": "call",
+      "args_bytes": 708,
+      "result_bytes": 1432,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.contract",
+      "kind": "lookup",
+      "args_bytes": 23,
+      "result_bytes": 4154,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.call",
+      "kind": "call",
+      "args_bytes": 75,
+      "result_bytes": 13245,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.call",
+      "kind": "call",
+      "args_bytes": 633,
+      "result_bytes": 2024,
+      "is_error": false
+     },
+     {
+      "op": "context_change",
+      "tool": "brainprint.contract",
+      "kind": "lookup",
+      "args_bytes": 30,
+      "result_bytes": 5819,
+      "is_error": false
+     },
+     {
+      "op": "context_change",
+      "tool": "brainprint.call",
+      "kind": "call",
+      "args_bytes": 148,
+      "result_bytes": 12707,
+      "is_error": false
+     },
+     {
+      "op": "context_change",
+      "tool": "brainprint.call",
+      "kind": "call",
+      "args_bytes": 706,
+      "result_bytes": 2181,
+      "is_error": false
+     }
+    ],
+    "W5 resume": [
+     {
+      "op": "context_resume",
+      "tool": "brainprint.contract",
+      "kind": "lookup",
+      "args_bytes": 30,
+      "result_bytes": 4302,
+      "is_error": false
+     },
+     {
+      "op": "context_resume",
+      "tool": "brainprint.call",
+      "kind": "call",
+      "args_bytes": 95,
+      "result_bytes": 2339,
+      "is_error": false
+     },
+     {
+      "op": "context_rules",
+      "tool": "brainprint.contract",
+      "kind": "lookup",
+      "args_bytes": 29,
+      "result_bytes": 717,
+      "is_error": false
+     },
+     {
+      "op": "context_rules",
+      "tool": "brainprint.call",
+      "kind": "call",
+      "args_bytes": 44,
+      "result_bytes": 160,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.contract",
+      "kind": "lookup",
+      "args_bytes": 23,
+      "result_bytes": 4154,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.call",
+      "kind": "call",
+      "args_bytes": 65,
+      "result_bytes": 7869,
+      "is_error": false
+     }
+    ],
+    "W6 low-frequency": [
+     {
+      "op": "context_structure",
+      "tool": "brainprint.contract",
+      "kind": "lookup",
+      "args_bytes": 33,
+      "result_bytes": 2882,
+      "is_error": false
+     },
+     {
+      "op": "context_structure",
+      "tool": "brainprint.call",
+      "kind": "call",
+      "args_bytes": 109,
+      "result_bytes": 30049,
+      "is_error": false
+     },
+     {
+      "op": "context_lineage",
+      "tool": "brainprint.contract",
+      "kind": "lookup",
+      "args_bytes": 31,
+      "result_bytes": 1099,
+      "is_error": false
+     },
+     {
+      "op": "context_lineage",
+      "tool": "brainprint.call",
+      "kind": "call",
+      "args_bytes": 113,
+      "result_bytes": 176,
+      "is_error": false
+     }
+    ],
+    "W7 inspect x10": [
+     {
+      "op": "inspect",
+      "tool": "brainprint.contract",
+      "kind": "lookup",
+      "args_bytes": 23,
+      "result_bytes": 4154,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.call",
+      "kind": "call",
+      "args_bytes": 75,
+      "result_bytes": 13245,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.call",
+      "kind": "call",
+      "args_bytes": 633,
+      "result_bytes": 2024,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.call",
+      "kind": "call",
+      "args_bytes": 75,
+      "result_bytes": 13245,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.call",
+      "kind": "call",
+      "args_bytes": 633,
+      "result_bytes": 2024,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.call",
+      "kind": "call",
+      "args_bytes": 75,
+      "result_bytes": 13245,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.call",
+      "kind": "call",
+      "args_bytes": 633,
+      "result_bytes": 2024,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.call",
+      "kind": "call",
+      "args_bytes": 75,
+      "result_bytes": 13245,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.call",
+      "kind": "call",
+      "args_bytes": 633,
+      "result_bytes": 2024,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.call",
+      "kind": "call",
+      "args_bytes": 75,
+      "result_bytes": 13245,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.call",
+      "kind": "call",
+      "args_bytes": 633,
+      "result_bytes": 2024,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.call",
+      "kind": "call",
+      "args_bytes": 75,
+      "result_bytes": 13245,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.call",
+      "kind": "call",
+      "args_bytes": 633,
+      "result_bytes": 2024,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.call",
+      "kind": "call",
+      "args_bytes": 75,
+      "result_bytes": 13245,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.call",
+      "kind": "call",
+      "args_bytes": 633,
+      "result_bytes": 2024,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.call",
+      "kind": "call",
+      "args_bytes": 75,
+      "result_bytes": 13245,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.call",
+      "kind": "call",
+      "args_bytes": 633,
+      "result_bytes": 2024,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.call",
+      "kind": "call",
+      "args_bytes": 75,
+      "result_bytes": 13245,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.call",
+      "kind": "call",
+      "args_bytes": 633,
+      "result_bytes": 2024,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.call",
+      "kind": "call",
+      "args_bytes": 75,
+      "result_bytes": 13245,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.call",
+      "kind": "call",
+      "args_bytes": 633,
+      "result_bytes": 2024,
+      "is_error": false
+     }
+    ],
+    "W8 mixed": [
+     {
+      "op": "find_target",
+      "tool": "brainprint.contract",
+      "kind": "lookup",
+      "args_bytes": 27,
+      "result_bytes": 4071,
+      "is_error": false
+     },
+     {
+      "op": "find_target",
+      "tool": "brainprint.call",
+      "kind": "call",
+      "args_bytes": 69,
+      "result_bytes": 9737,
+      "is_error": false
+     },
+     {
+      "op": "find_target",
+      "tool": "brainprint.call",
+      "kind": "call",
+      "args_bytes": 627,
+      "result_bytes": 7259,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.contract",
+      "kind": "lookup",
+      "args_bytes": 23,
+      "result_bytes": 4154,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.call",
+      "kind": "call",
+      "args_bytes": 88,
+      "result_bytes": 14835,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.call",
+      "kind": "call",
+      "args_bytes": 646,
+      "result_bytes": 1214,
+      "is_error": false
+     },
+     {
+      "op": "relations_direct",
+      "tool": "brainprint.contract",
+      "kind": "lookup",
+      "args_bytes": 32,
+      "result_bytes": 2371,
+      "is_error": false
+     },
+     {
+      "op": "relations_direct",
+      "tool": "brainprint.call",
+      "kind": "call",
+      "args_bytes": 138,
+      "result_bytes": 7015,
+      "is_error": false
+     },
+     {
+      "op": "relations_impact",
+      "tool": "brainprint.contract",
+      "kind": "lookup",
+      "args_bytes": 32,
+      "result_bytes": 5643,
+      "is_error": false
+     },
+     {
+      "op": "relations_impact",
+      "tool": "brainprint.call",
+      "kind": "call",
+      "args_bytes": 150,
+      "result_bytes": 12809,
+      "is_error": false
+     },
+     {
+      "op": "relations_impact",
+      "tool": "brainprint.call",
+      "kind": "call",
+      "args_bytes": 708,
+      "result_bytes": 1432,
+      "is_error": false
+     },
+     {
+      "op": "context_change",
+      "tool": "brainprint.contract",
+      "kind": "lookup",
+      "args_bytes": 30,
+      "result_bytes": 5819,
+      "is_error": false
+     },
+     {
+      "op": "context_change",
+      "tool": "brainprint.call",
+      "kind": "call",
+      "args_bytes": 148,
+      "result_bytes": 12707,
+      "is_error": false
+     },
+     {
+      "op": "context_change",
+      "tool": "brainprint.call",
+      "kind": "call",
+      "args_bytes": 706,
+      "result_bytes": 2181,
+      "is_error": false
+     },
+     {
+      "op": "context_resume",
+      "tool": "brainprint.contract",
+      "kind": "lookup",
+      "args_bytes": 30,
+      "result_bytes": 4302,
+      "is_error": false
+     },
+     {
+      "op": "context_resume",
+      "tool": "brainprint.call",
+      "kind": "call",
+      "args_bytes": 95,
+      "result_bytes": 2339,
+      "is_error": false
+     },
+     {
+      "op": "context_rules",
+      "tool": "brainprint.contract",
+      "kind": "lookup",
+      "args_bytes": 29,
+      "result_bytes": 717,
+      "is_error": false
+     },
+     {
+      "op": "context_rules",
+      "tool": "brainprint.call",
+      "kind": "call",
+      "args_bytes": 44,
+      "result_bytes": 160,
+      "is_error": false
+     },
+     {
+      "op": "find_text",
+      "tool": "brainprint.contract",
+      "kind": "lookup",
+      "args_bytes": 25,
+      "result_bytes": 1562,
+      "is_error": false
+     },
+     {
+      "op": "find_text",
+      "tool": "brainprint.call",
+      "kind": "call",
+      "args_bytes": 73,
+      "result_bytes": 2096,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.call",
+      "kind": "call",
+      "args_bytes": 75,
+      "result_bytes": 13245,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.call",
+      "kind": "call",
+      "args_bytes": 633,
+      "result_bytes": 2024,
+      "is_error": false
+     }
+    ]
+   },
+   "parity": {
+    "W1 inspect": {
+     "a_calls": 2,
+     "candidate_calls": 2,
+     "equal": 2,
+     "compared": 2
+    },
+    "W2 find>inspect": {
+     "a_calls": 4,
+     "candidate_calls": 4,
+     "equal": 4,
+     "compared": 4
+    },
+    "W3 find>relations>inspect": {
+     "a_calls": 5,
+     "candidate_calls": 5,
+     "equal": 5,
+     "compared": 5
+    },
+    "W4 change": {
+     "a_calls": 7,
+     "candidate_calls": 7,
+     "equal": 7,
+     "compared": 7
+    },
+    "W5 resume": {
+     "a_calls": 3,
+     "candidate_calls": 3,
+     "equal": 3,
+     "compared": 3
+    },
+    "W6 low-frequency": {
+     "a_calls": 2,
+     "candidate_calls": 2,
+     "equal": 2,
+     "compared": 2
+    },
+    "W7 inspect x10": {
+     "a_calls": 20,
+     "candidate_calls": 20,
+     "equal": 20,
+     "compared": 20
+    },
+    "W8 mixed": {
+     "a_calls": 14,
+     "candidate_calls": 14,
+     "equal": 14,
+     "compared": 14
+    }
+   }
+  },
+  "E": {
+   "tools": [
+    {
+     "name": "brainprint.context",
+     "description_bytes": 382,
+     "schema_bytes": 8619,
+     "contract_bytes": 9062
+    },
+    {
+     "name": "brainprint.find",
+     "description_bytes": 190,
+     "schema_bytes": 5484,
+     "contract_bytes": 5732
+    },
+    {
+     "name": "brainprint.inspect",
+     "description_bytes": 138,
+     "schema_bytes": 3956,
+     "contract_bytes": 4155
+    },
+    {
+     "name": "brainprint.relations",
+     "description_bytes": 187,
+     "schema_bytes": 6010,
+     "contract_bytes": 6260
+    },
+    {
+     "name": "brainprint.expand",
+     "description_bytes": 157,
+     "schema_bytes": 81,
+     "contract_bytes": 298
+    }
+   ],
+   "workloads": {
+    "W1 inspect": [
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 39,
+      "result_bytes": 7991,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.expand",
+      "kind": "expand",
+      "args_bytes": 164,
+      "result_bytes": 13273,
+      "is_error": false,
+      "handle_status": "unchanged"
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 597,
+      "result_bytes": 2173,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.expand",
+      "kind": "expand",
+      "args_bytes": 908,
+      "result_bytes": 2052,
+      "is_error": false,
+      "handle_status": "unchanged"
+     }
+    ],
+    "W2 find>inspect": [
+     {
+      "op": "find_target",
+      "tool": "brainprint.find",
+      "kind": "call",
+      "args_bytes": 45,
+      "result_bytes": 9712,
+      "is_error": false
+     },
+     {
+      "op": "find_target",
+      "tool": "brainprint.find",
+      "kind": "call",
+      "args_bytes": 603,
+      "result_bytes": 6905,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 52,
+      "result_bytes": 8552,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.expand",
+      "kind": "expand",
+      "args_bytes": 181,
+      "result_bytes": 14863,
+      "is_error": false,
+      "handle_status": "unchanged"
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 610,
+      "result_bytes": 1958,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.expand",
+      "kind": "expand",
+      "args_bytes": 925,
+      "result_bytes": 1242,
+      "is_error": false,
+      "handle_status": "unchanged"
+     }
+    ],
+    "W3 find>relations>inspect": [
+     {
+      "op": "find_target",
+      "tool": "brainprint.find",
+      "kind": "call",
+      "args_bytes": 45,
+      "result_bytes": 9712,
+      "is_error": false
+     },
+     {
+      "op": "find_target",
+      "tool": "brainprint.find",
+      "kind": "call",
+      "args_bytes": 603,
+      "result_bytes": 6905,
+      "is_error": false
+     },
+     {
+      "op": "relations_direct",
+      "tool": "brainprint.relations",
+      "kind": "call",
+      "args_bytes": 109,
+      "result_bytes": 7015,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 52,
+      "result_bytes": 8552,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.expand",
+      "kind": "expand",
+      "args_bytes": 181,
+      "result_bytes": 14863,
+      "is_error": false,
+      "handle_status": "unchanged"
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 610,
+      "result_bytes": 1958,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.expand",
+      "kind": "expand",
+      "args_bytes": 925,
+      "result_bytes": 1242,
+      "is_error": false,
+      "handle_status": "unchanged"
+     }
+    ],
+    "W4 change": [
+     {
+      "op": "find_target",
+      "tool": "brainprint.find",
+      "kind": "call",
+      "args_bytes": 55,
+      "result_bytes": 1843,
+      "is_error": false
+     },
+     {
+      "op": "relations_impact",
+      "tool": "brainprint.relations",
+      "kind": "call",
+      "args_bytes": 121,
+      "result_bytes": 7925,
+      "is_error": false
+     },
+     {
+      "op": "relations_impact",
+      "tool": "brainprint.relations",
+      "kind": "call",
+      "args_bytes": 679,
+      "result_bytes": 1945,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 39,
+      "result_bytes": 7991,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.expand",
+      "kind": "expand",
+      "args_bytes": 164,
+      "result_bytes": 13273,
+      "is_error": false,
+      "handle_status": "unchanged"
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 597,
+      "result_bytes": 2173,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.expand",
+      "kind": "expand",
+      "args_bytes": 908,
+      "result_bytes": 2052,
+      "is_error": false,
+      "handle_status": "unchanged"
+     },
+     {
+      "op": "context_change",
+      "tool": "brainprint.context",
+      "kind": "call",
+      "args_bytes": 121,
+      "result_bytes": 7849,
+      "is_error": false
+     },
+     {
+      "op": "context_change",
+      "tool": "brainprint.expand",
+      "kind": "expand",
+      "args_bytes": 273,
+      "result_bytes": 12735,
+      "is_error": false,
+      "handle_status": "unchanged"
+     },
+     {
+      "op": "context_change",
+      "tool": "brainprint.context",
+      "kind": "call",
+      "args_bytes": 679,
+      "result_bytes": 2371,
+      "is_error": false
+     },
+     {
+      "op": "context_change",
+      "tool": "brainprint.expand",
+      "kind": "expand",
+      "args_bytes": 1017,
+      "result_bytes": 2209,
+      "is_error": false,
+      "handle_status": "unchanged"
+     }
+    ],
+    "W5 resume": [
+     {
+      "op": "context_resume",
+      "tool": "brainprint.context",
+      "kind": "call",
+      "args_bytes": 68,
+      "result_bytes": 2359,
+      "is_error": false
+     },
+     {
+      "op": "context_rules",
+      "tool": "brainprint.context",
+      "kind": "call",
+      "args_bytes": 16,
+      "result_bytes": 160,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 29,
+      "result_bytes": 4884,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.expand",
+      "kind": "expand",
+      "args_bytes": 150,
+      "result_bytes": 7897,
+      "is_error": false,
+      "handle_status": "unchanged"
+     }
+    ],
+    "W6 low-frequency": [
+     {
+      "op": "context_structure",
+      "tool": "brainprint.context",
+      "kind": "call",
+      "args_bytes": 82,
+      "result_bytes": 30049,
+      "is_error": false
+     },
+     {
+      "op": "context_lineage",
+      "tool": "brainprint.context",
+      "kind": "call",
+      "args_bytes": 86,
+      "result_bytes": 176,
+      "is_error": false
+     }
+    ],
+    "W7 inspect x10": [
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 39,
+      "result_bytes": 7991,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.expand",
+      "kind": "expand",
+      "args_bytes": 164,
+      "result_bytes": 13273,
+      "is_error": false,
+      "handle_status": "unchanged"
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 597,
+      "result_bytes": 2173,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.expand",
+      "kind": "expand",
+      "args_bytes": 908,
+      "result_bytes": 2052,
+      "is_error": false,
+      "handle_status": "unchanged"
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 39,
+      "result_bytes": 7991,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.expand",
+      "kind": "expand",
+      "args_bytes": 164,
+      "result_bytes": 13273,
+      "is_error": false,
+      "handle_status": "unchanged"
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 597,
+      "result_bytes": 2173,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.expand",
+      "kind": "expand",
+      "args_bytes": 908,
+      "result_bytes": 2052,
+      "is_error": false,
+      "handle_status": "unchanged"
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 39,
+      "result_bytes": 7991,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.expand",
+      "kind": "expand",
+      "args_bytes": 164,
+      "result_bytes": 13273,
+      "is_error": false,
+      "handle_status": "unchanged"
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 597,
+      "result_bytes": 2173,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.expand",
+      "kind": "expand",
+      "args_bytes": 908,
+      "result_bytes": 2052,
+      "is_error": false,
+      "handle_status": "unchanged"
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 39,
+      "result_bytes": 7991,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.expand",
+      "kind": "expand",
+      "args_bytes": 164,
+      "result_bytes": 13273,
+      "is_error": false,
+      "handle_status": "unchanged"
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 597,
+      "result_bytes": 2173,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.expand",
+      "kind": "expand",
+      "args_bytes": 908,
+      "result_bytes": 2052,
+      "is_error": false,
+      "handle_status": "unchanged"
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 39,
+      "result_bytes": 7991,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.expand",
+      "kind": "expand",
+      "args_bytes": 164,
+      "result_bytes": 13273,
+      "is_error": false,
+      "handle_status": "unchanged"
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 597,
+      "result_bytes": 2173,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.expand",
+      "kind": "expand",
+      "args_bytes": 908,
+      "result_bytes": 2052,
+      "is_error": false,
+      "handle_status": "unchanged"
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 39,
+      "result_bytes": 7991,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.expand",
+      "kind": "expand",
+      "args_bytes": 164,
+      "result_bytes": 13273,
+      "is_error": false,
+      "handle_status": "unchanged"
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 597,
+      "result_bytes": 2173,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.expand",
+      "kind": "expand",
+      "args_bytes": 908,
+      "result_bytes": 2052,
+      "is_error": false,
+      "handle_status": "unchanged"
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 39,
+      "result_bytes": 7991,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.expand",
+      "kind": "expand",
+      "args_bytes": 164,
+      "result_bytes": 13273,
+      "is_error": false,
+      "handle_status": "unchanged"
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 597,
+      "result_bytes": 2173,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.expand",
+      "kind": "expand",
+      "args_bytes": 908,
+      "result_bytes": 2052,
+      "is_error": false,
+      "handle_status": "unchanged"
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 39,
+      "result_bytes": 7991,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.expand",
+      "kind": "expand",
+      "args_bytes": 164,
+      "result_bytes": 13273,
+      "is_error": false,
+      "handle_status": "unchanged"
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 597,
+      "result_bytes": 2173,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.expand",
+      "kind": "expand",
+      "args_bytes": 908,
+      "result_bytes": 2052,
+      "is_error": false,
+      "handle_status": "unchanged"
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 39,
+      "result_bytes": 7991,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.expand",
+      "kind": "expand",
+      "args_bytes": 164,
+      "result_bytes": 13273,
+      "is_error": false,
+      "handle_status": "unchanged"
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 597,
+      "result_bytes": 2173,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.expand",
+      "kind": "expand",
+      "args_bytes": 908,
+      "result_bytes": 2052,
+      "is_error": false,
+      "handle_status": "unchanged"
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 39,
+      "result_bytes": 7991,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.expand",
+      "kind": "expand",
+      "args_bytes": 164,
+      "result_bytes": 13273,
+      "is_error": false,
+      "handle_status": "unchanged"
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 597,
+      "result_bytes": 2173,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.expand",
+      "kind": "expand",
+      "args_bytes": 908,
+      "result_bytes": 2052,
+      "is_error": false,
+      "handle_status": "unchanged"
+     }
+    ],
+    "W8 mixed": [
+     {
+      "op": "find_target",
+      "tool": "brainprint.find",
+      "kind": "call",
+      "args_bytes": 45,
+      "result_bytes": 9712,
+      "is_error": false
+     },
+     {
+      "op": "find_target",
+      "tool": "brainprint.find",
+      "kind": "call",
+      "args_bytes": 603,
+      "result_bytes": 6905,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 52,
+      "result_bytes": 8552,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.expand",
+      "kind": "expand",
+      "args_bytes": 181,
+      "result_bytes": 14863,
+      "is_error": false,
+      "handle_status": "unchanged"
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 610,
+      "result_bytes": 1958,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.expand",
+      "kind": "expand",
+      "args_bytes": 925,
+      "result_bytes": 1242,
+      "is_error": false,
+      "handle_status": "unchanged"
+     },
+     {
+      "op": "relations_direct",
+      "tool": "brainprint.relations",
+      "kind": "call",
+      "args_bytes": 109,
+      "result_bytes": 7015,
+      "is_error": false
+     },
+     {
+      "op": "relations_impact",
+      "tool": "brainprint.relations",
+      "kind": "call",
+      "args_bytes": 121,
+      "result_bytes": 7925,
+      "is_error": false
+     },
+     {
+      "op": "relations_impact",
+      "tool": "brainprint.relations",
+      "kind": "call",
+      "args_bytes": 679,
+      "result_bytes": 1945,
+      "is_error": false
+     },
+     {
+      "op": "context_change",
+      "tool": "brainprint.context",
+      "kind": "call",
+      "args_bytes": 121,
+      "result_bytes": 7849,
+      "is_error": false
+     },
+     {
+      "op": "context_change",
+      "tool": "brainprint.expand",
+      "kind": "expand",
+      "args_bytes": 273,
+      "result_bytes": 12735,
+      "is_error": false,
+      "handle_status": "unchanged"
+     },
+     {
+      "op": "context_change",
+      "tool": "brainprint.context",
+      "kind": "call",
+      "args_bytes": 679,
+      "result_bytes": 2371,
+      "is_error": false
+     },
+     {
+      "op": "context_change",
+      "tool": "brainprint.expand",
+      "kind": "expand",
+      "args_bytes": 1017,
+      "result_bytes": 2209,
+      "is_error": false,
+      "handle_status": "unchanged"
+     },
+     {
+      "op": "context_resume",
+      "tool": "brainprint.context",
+      "kind": "call",
+      "args_bytes": 68,
+      "result_bytes": 2359,
+      "is_error": false
+     },
+     {
+      "op": "context_rules",
+      "tool": "brainprint.context",
+      "kind": "call",
+      "args_bytes": 16,
+      "result_bytes": 160,
+      "is_error": false
+     },
+     {
+      "op": "find_text",
+      "tool": "brainprint.find",
+      "kind": "call",
+      "args_bytes": 49,
+      "result_bytes": 2096,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 39,
+      "result_bytes": 7991,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.expand",
+      "kind": "expand",
+      "args_bytes": 164,
+      "result_bytes": 13273,
+      "is_error": false,
+      "handle_status": "unchanged"
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.inspect",
+      "kind": "call",
+      "args_bytes": 597,
+      "result_bytes": 2173,
+      "is_error": false
+     },
+     {
+      "op": "inspect",
+      "tool": "brainprint.expand",
+      "kind": "expand",
+      "args_bytes": 908,
+      "result_bytes": 2052,
+      "is_error": false,
+      "handle_status": "unchanged"
+     }
+    ]
+   },
+   "parity": {
+    "W1 inspect": {
+     "a_calls": 2,
+     "candidate_calls": 2,
+     "equal": 2,
+     "compared": 2
+    },
+    "W2 find>inspect": {
+     "a_calls": 4,
+     "candidate_calls": 4,
+     "equal": 4,
+     "compared": 4
+    },
+    "W3 find>relations>inspect": {
+     "a_calls": 5,
+     "candidate_calls": 5,
+     "equal": 5,
+     "compared": 5
+    },
+    "W4 change": {
+     "a_calls": 7,
+     "candidate_calls": 7,
+     "equal": 7,
+     "compared": 7
+    },
+    "W5 resume": {
+     "a_calls": 3,
+     "candidate_calls": 3,
+     "equal": 3,
+     "compared": 3
+    },
+    "W6 low-frequency": {
+     "a_calls": 2,
+     "candidate_calls": 2,
+     "equal": 2,
+     "compared": 2
+    },
+    "W7 inspect x10": {
+     "a_calls": 20,
+     "candidate_calls": 20,
+     "equal": 20,
+     "compared": 20
+    },
+    "W8 mixed": {
+     "a_calls": 14,
+     "candidate_calls": 14,
+     "equal": 14,
+     "compared": 14
+    }
+   }
+  }
+ }
+}
