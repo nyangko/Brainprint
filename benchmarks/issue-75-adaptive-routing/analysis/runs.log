@@ -1,0 +1,19 @@
+N-r1-S1 exit=0 wall_s=138.7
+N-r1-S2 exit=0 wall_s=60.2
+N-r1-S3 exit=0 wall_s=50.5
+B-r1-S1 exit=0 wall_s=241.8
+B-r1-S2 exit=0 wall_s=83.9
+B-r1-S3 exit=0 wall_s=73.9
+R-r1-S1 exit=0 wall_s=151.1
+R-r1-S2 exit=0 wall_s=70.5
+R-r1-S3 exit=0 wall_s=67.3
+R-r2-S1 exit=0 wall_s=191.9
+R-r2-S2 exit=0 wall_s=71.4
+R-r2-S3 exit=0 wall_s=72.0
+B-r2-S1 exit=0 wall_s=204.3
+B-r2-S2 exit=0 wall_s=77.3
+B-r2-S3 exit=0 wall_s=67.7
+N-r2-S1 exit=0 wall_s=126.4
+N-r2-S2 exit=0 wall_s=59.8
+N-r2-S3 exit=0 wall_s=56.6
+ALL_DONE

@@ -1,0 +1,6 @@
+B-r1 bytes=0
+B-r2 bytes=0
+N-r1 bytes=0
+N-r2 bytes=0
+R-r1 bytes=0
+R-r2 bytes=0
