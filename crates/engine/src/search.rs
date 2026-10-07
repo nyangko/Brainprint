@@ -43,7 +43,8 @@
 
 use std::{
     error::Error,
-    fmt, fs, io,
+    fmt, fs,
+    io::{self, Read},
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
@@ -324,7 +325,8 @@ pub struct ScopeReport {
     /// Files skipped because they are not text. Not an incompleteness: a
     /// text search over a PNG has no answer to miss.
     pub binary_skipped: Vec<String>,
-    /// Files skipped because they are larger than `max_file_bytes`.
+    /// Files skipped because they are larger than `max_file_bytes` and
+    /// not proven binary by a bounded prefix.
     pub oversized_skipped: Vec<String>,
     /// Files that could not be read. These *are* an incompleteness.
     pub unreadable: Vec<String>,
@@ -524,7 +526,15 @@ impl<'a> TextSearcher<'a> {
             return Ok(());
         };
         if before.len() > request.max_file_bytes {
-            scope.oversized_skipped.push(path_rel.to_owned());
+            // A NUL in a bounded prefix is a NUL in the file, which the
+            // full-read rule below already calls binary: there is no text
+            // answer in it to miss. Anything short of that proof stays an
+            // incompleteness.
+            if nul_in_prefix(&path) && !moved_since(&path, &before) {
+                scope.binary_skipped.push(path_rel.to_owned());
+            } else {
+                scope.oversized_skipped.push(path_rel.to_owned());
+            }
             return Ok(());
         }
         let Ok(bytes) = fs::read(&path) else {
@@ -536,10 +546,7 @@ impl<'a> TextSearcher<'a> {
         // Whatever is matched comes out of this one buffer, and the file
         // is re-stat'ed afterwards: bytes that moved underneath the read
         // are not reported as the file's current content.
-        let moved = fs::metadata(&path).is_ok_and(|after| {
-            after.len() != before.len() || after.modified().ok() != before.modified().ok()
-        });
-        if moved {
+        if moved_since(&path, &before) {
             scope.changed_during_scan.push(path_rel.to_owned());
             return Ok(());
         }
@@ -635,6 +642,25 @@ impl<'a> TextSearcher<'a> {
         }
         None
     }
+}
+
+/// How much of an oversized file is read to look for a NUL byte.
+const BINARY_SNIFF_BYTES: u64 = 8 * 1024;
+
+/// Whether the file's first [`BINARY_SNIFF_BYTES`] contain a NUL. A file
+/// that cannot be opened or read is not proven binary.
+fn nul_in_prefix(path: &Path) -> bool {
+    let mut prefix = Vec::new();
+    fs::File::open(path)
+        .and_then(|file| file.take(BINARY_SNIFF_BYTES).read_to_end(&mut prefix))
+        .is_ok_and(|_| prefix.contains(&0))
+}
+
+/// Whether the file's size or mtime differs from `before`.
+fn moved_since(path: &Path, before: &fs::Metadata) -> bool {
+    fs::metadata(path).is_ok_and(|after| {
+        after.len() != before.len() || after.modified().ok() != before.modified().ok()
+    })
 }
 
 /// The status a finished text search may claim.
@@ -1302,6 +1328,54 @@ the retry budget is deliberate, see App.run
                 ..TextSearch::explicit(TextPattern::Literal("retry budget"))
             })
             .expect("an explicit text search runs regardless");
+    }
+
+    #[test]
+    fn an_oversized_file_with_a_nul_prefix_is_binary_not_an_incompleteness() {
+        let fixture = Fixture::create("oversized-binary");
+        fixture.index();
+        let index = fixture.query();
+
+        let result = fixture.search(
+            &index,
+            &TextSearch {
+                path_prefix: Some("docs/blob.bin"),
+                max_file_bytes: 4,
+                ..TextSearch::explicit(TextPattern::Literal("no such text anywhere"))
+            },
+        );
+
+        assert_eq!(result.status, QueryStatus::NotFound);
+        assert_eq!(
+            result.scope.binary_skipped,
+            vec!["docs/blob.bin".to_owned()]
+        );
+        assert!(result.scope.oversized_skipped.is_empty());
+        assert!(result.scope.is_complete());
+    }
+
+    #[test]
+    fn an_oversized_text_file_keeps_a_fruitless_search_truncated() {
+        let fixture = Fixture::create("oversized-text");
+        fixture.index();
+        let index = fixture.query();
+
+        let result = fixture.search(
+            &index,
+            &TextSearch {
+                path_prefix: Some("docs/readme.md"),
+                max_file_bytes: 4,
+                ..TextSearch::explicit(TextPattern::Literal("no such text anywhere"))
+            },
+        );
+
+        assert_eq!(result.status, QueryStatus::Truncated);
+        assert_eq!(
+            result.scope.oversized_skipped,
+            vec!["docs/readme.md".to_owned()]
+        );
+        assert!(!result.scope.is_complete());
+        assert!(!result.status.is_negative_answer());
     }
 
     #[test]
