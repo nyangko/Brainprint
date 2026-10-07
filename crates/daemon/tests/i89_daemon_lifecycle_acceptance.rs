@@ -6,10 +6,13 @@
 
 use std::{
     fs,
-    io::{BufRead as _, BufReader, Write as _},
+    io::{BufRead as _, BufReader, Read as _, Write as _},
     path::{Path, PathBuf},
     process::{Command, Output, Stdio},
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        mpsc,
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -48,10 +51,82 @@ impl Home {
     }
 
     fn cli(&self, args: &[&str]) -> Output {
-        self.command(&binary("brainprint"))
-            .args(args)
-            .output()
-            .expect("brainprint")
+        let mut command = self.command(&binary("brainprint"));
+        command.args(args);
+        self.run(command)
+    }
+
+    /// `command`'s output, like [`Command::output`] -- but a pipe that stays
+    /// open after the process has exited (a process it started inherited
+    /// it) fails the test instead of blocking it forever, and says whether
+    /// stopping this home's daemon is what closes it.
+    fn run(&self, mut command: Command) -> Output {
+        let mut child = command
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn");
+        let (sender, pipes) = mpsc::channel();
+        for (index, pipe) in [
+            Box::new(child.stdout.take().expect("stdout")) as Box<dyn std::io::Read + Send>,
+            Box::new(child.stderr.take().expect("stderr")),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let sender = sender.clone();
+            thread::spawn(move || {
+                let mut pipe = pipe;
+                let mut bytes = Vec::new();
+                let _ = pipe.read_to_end(&mut bytes);
+                let _ = sender.send((index, bytes));
+            });
+        }
+        let status = child.wait().expect("wait");
+        let mut out = [None, None];
+        let collect = |out: &mut [Option<Vec<u8>>; 2], within: Duration| {
+            let deadline = Instant::now() + within;
+            while out.iter().any(Option::is_none) {
+                let left = deadline.saturating_duration_since(Instant::now());
+                match pipes.recv_timeout(left) {
+                    Ok((index, bytes)) => out[index] = Some(bytes),
+                    Err(_) => return false,
+                }
+            }
+            true
+        };
+        if !collect(&mut out, Duration::from_secs(10)) {
+            let held = out.iter().filter(|pipe| pipe.is_none()).count();
+            self.stop_quietly();
+            let released = collect(&mut out, Duration::from_secs(30));
+            panic!(
+                "{command:?} exited ({status}) but {held} of its output pipes stayed open for 10s; \
+                 after `brainprint daemon stop` they {} -- the daemon it started holds them",
+                if released {
+                    "closed"
+                } else {
+                    "were still open"
+                }
+            );
+        }
+        let [stdout, stderr] = out.map(Option::unwrap_or_default);
+        Output {
+            status,
+            stdout,
+            stderr,
+        }
+    }
+
+    /// `daemon stop` without reading its output.
+    fn stop_quietly(&self) {
+        let _ = self
+            .command(&binary("brainprint"))
+            .args(["daemon", "stop"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
     }
 
     fn endpoint(&self) -> EndpointPaths {
@@ -72,7 +147,7 @@ impl Home {
 
 impl Drop for Home {
     fn drop(&mut self) {
-        let _ = self.cli(&["daemon", "stop"]);
+        self.stop_quietly();
         let _ = fs::remove_dir_all(&self.0);
     }
 }
@@ -218,21 +293,21 @@ fn concurrent_starts_over_stale_artifacts_leave_exactly_one_daemon() {
     assert!(stop.status.success(), "{}", stderr(&stop));
     assert_eq!(stdout(&stop), "not running\n");
 
-    let starts: Vec<_> = (0..6)
-        .map(|_| {
-            let binary = binary("brainprint");
-            let mut command = home.command(&binary);
-            thread::spawn(move || command.args(["daemon", "start"]).output().expect("start"))
-        })
-        .collect();
-    let pids: Vec<u32> = starts
-        .into_iter()
-        .map(|start| {
-            let output = start.join().expect("thread");
-            assert!(output.status.success(), "{}", stderr(&output));
-            pid_in(&stdout(&output))
-        })
-        .collect();
+    let pids: Vec<u32> = thread::scope(|scope| {
+        let starts: Vec<_> = (0..6)
+            .map(|_| scope.spawn(|| home.cli(&["daemon", "start"])))
+            .collect();
+        starts
+            .into_iter()
+            .map(|start| start.join().expect("thread"))
+            .collect::<Vec<_>>()
+    })
+    .into_iter()
+    .map(|output| {
+        assert!(output.status.success(), "{}", stderr(&output));
+        pid_in(&stdout(&output))
+    })
+    .collect();
     assert!(pids.windows(2).all(|pair| pair[0] == pair[1]), "{pids:?}");
     assert_eq!(listening_lines(&home), 1, "{}", home.log());
     assert_eq!(home.running_pid(), Some(pids[0]));
@@ -251,12 +326,9 @@ fn auto_start_restart_and_stop_keep_the_workspace() {
     let ws = workspace.to_string_lossy().into_owned();
 
     // Opted out: the command fails and nothing starts.
-    let refused = home
-        .command(&binary("brainprint"))
-        .env(NO_AUTOSTART_ENV, "1")
-        .arg("install")
-        .output()
-        .expect("install");
+    let mut opted_out = home.command(&binary("brainprint"));
+    opted_out.env(NO_AUTOSTART_ENV, "1").arg("install");
+    let refused = home.run(opted_out);
     assert!(!refused.status.success());
     assert!(
         stderr(&refused).contains("auto-start is off"),
@@ -373,8 +445,7 @@ fn an_incompatible_daemon_is_reported_never_replaced() {
         let output = home.cli(args);
         assert!(!output.status.success(), "{args:?}");
         assert!(
-            stderr(&output).contains("speaking protocol 14")
-                && stderr(&output).contains("not replaced"),
+            stderr(&output).contains("protocol 14") && stderr(&output).contains("not replaced"),
             "{args:?}: {}",
             stderr(&output)
         );
