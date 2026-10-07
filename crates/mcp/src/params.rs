@@ -151,10 +151,11 @@ impl BudgetProfileParam {
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct DeliveryParams {
+    /// Response size per page; not the `mode: text` scan budget.
     pub budget_profile: BudgetProfileParam,
-    /// Overrides the profile's `max_items` axis.
+    /// Overrides `budget_profile`'s `max_items`.
     pub max_items: Option<usize>,
-    /// Overrides the profile's `max_bytes` axis.
+    /// Overrides `budget_profile`'s `max_bytes`; not the text scan budget.
     pub max_bytes: Option<usize>,
     /// The exact `DeliveryContinuationWire` a previous call returned
     /// under `more_available: true`. Opaque -- echo it back verbatim,
@@ -250,8 +251,9 @@ impl DeliveryContinuationParam {
     }
 }
 
-/// #25 "Text SearchBudget"'s exact locked profiles -- the same numeric
-/// values `brainprint-cli`'s `--search-budget` already locks (Task 11).
+/// Source bytes `mode: text` scans: compact 8 MiB, standard 64, wide 256.
+// #25 "Text SearchBudget"'s exact locked profiles -- the same numeric
+// values `brainprint-cli`'s `--search-budget` already locks (Task 11).
 #[derive(Debug, Clone, Copy, Default, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SearchBudgetProfileParam {

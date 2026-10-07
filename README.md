@@ -28,7 +28,7 @@ Principles the implementation follows:
 
 ## Status
 
-**Pre-release. Brainprint 0.1.0 is implemented but not yet accepted or released.** Interfaces, storage and protocol (currently protocol 14) may still change.
+**Pre-release.** Brainprint 0.1.0 was accepted in [#77](https://github.com/nyangko/Brainprint/issues/77); the 0.1.1 efficiency and stabilization pass is tracked in [#79](https://github.com/nyangko/Brainprint/issues/79). No packaged release exists, and the binaries still report version `0.1.0`. Interfaces, storage and protocol (currently protocol 14, MCP envelope schema 2) may still change.
 
 | Workstream ([#12](https://github.com/nyangko/Brainprint/issues/12)) | Status |
 | --- | --- |
@@ -39,7 +39,7 @@ Principles the implementation follows:
 | I4 — Semantic Backends | Complete |
 | I5 — Project Intelligence + Projection + MCP/Skill | Complete |
 | I6 — Command Intelligence | Complete |
-| I7 — UX / Recovery / Acceptance | In progress — final acceptance gate [#77](https://github.com/nyangko/Brainprint/issues/77), not yet accepted |
+| I7 — UX / Recovery / Acceptance | Complete — 0.1.0 accepted in [#77](https://github.com/nyangko/Brainprint/issues/77) |
 
 ## What 0.1.0 guarantees — and what it does not
 
@@ -167,6 +167,10 @@ Delivery options on `find target`, `inspect`, `impact`, `context change|resume`:
 
 It never ranks, resolves ambiguity or picks a Working State on its own; typed outcomes such as `NOT_INITIALIZED` or partial coverage are returned as-is. Each call may pass `workspace_path` or `workspace_id`; without either, the server's startup working directory is used. The daemon must already be running.
 
+Each result is one JSON envelope `{tool, mode, protocol_version, schema_version, outcome, payload}` (envelope `schema_version` 2), with `payload` the daemon's answer. One declared exception: a `find` `mode: text` result that skipped more than 10 binary files lists only the first 10 in `scope.binary_skipped`, and a `bounded_lists` entry gives the field and its true `total` ([#84](https://github.com/nyangko/Brainprint/issues/84)). Status, matches and the other scope lists are never shortened; `brainprint find text --json` returns the full list.
+
+Two budgets: `budget_profile` / `max_items` / `max_bytes` size the **response** (delivery paging); `search_budget_profile` (compact 8 MiB / standard 64 MiB / wide 256 MiB) is how much source `mode: text` **scans**. `max_bytes` never widens a text scan; narrow it with `path_prefix` or pick a larger `search_budget_profile`.
+
 Register it with any MCP client as a stdio server, for example a project `.mcp.json`:
 
 ```json
@@ -197,6 +201,7 @@ brainprint-agent probe  --client claude-code                 # reports the insta
 
 - `brainprint tui` — keyboard-first terminal view: status, inspect, relations, impact, Working State, and doctor/sync/rebuild/uninit, over the same daemon queries as the CLI. Quitting never stops the daemon.
 - `brainprint web` — local Web UI (Overview; Explorer: inspect / relations / impact; Context: Working State, rules, decisions). Binds **127.0.0.1 only**, default port **7470** (`--port 0` picks a free port), read-only; stopping it never stops the daemon.
+- Both show answer bodies with the CLI's compact renderer, so status and coverage read the same everywhere. Explicit text search is a CLI (`find text`) and MCP (`mode: text`) feature; the TUI and Web UI do not issue it.
 - Locale: `--locale en|ko`; an unsupported tag falls back to English. Default comes from the global config:
 
 ```toml
@@ -289,11 +294,11 @@ Discovery always skips `.git`, `.brainprint`, `node_modules`, `venv`, `.venv`, `
 extra_excluded_directory_names = ["vendor", "third_party"]
 ```
 
-Changing the list and running `brainprint sync` removes the matching Resources (as deleted); taking a name back out re-adds them with new Resource ids.
+The list is read when the Workspace is attached: after changing it, run `brainprint uninit` then `brainprint init` (or restart `brainprintd`); `sync` alone does not reload it. The matching Resources are then removed (as deleted); taking a name back out re-adds them with new Resource ids. Excluding a directory by name is also how to stop an unreadable directory (for example a container-owned data directory) from keeping the index `NOT_CURRENT` — see [Known limitations](#known-limitations).
 
 ### Measured footprint (one example, not a guarantee)
 
-On this repository (579 files, macOS, release build, no semantic backend configured): daemon idle RSS ~6 MiB; ~16 MiB steady with one Workspace after the initial index; `init` + initial index ~7.7 s; `.brainprint/` ~60 MB (`index.db` ~30 MB + WAL ~30 MB). Your numbers will differ with repository size and configured backends.
+On this repository (579 files, macOS, release build, no semantic backend configured): daemon idle RSS ~6–8 MiB; ~16–20 MiB steady with one Workspace after the initial index, ~21 MiB peak with 5 concurrent clients; `init` + initial index ~4–5 s; `.brainprint/` ~34 MiB (`index.db` ~30 MiB + WAL capped at 4 MiB, [#80](https://github.com/nyangko/Brainprint/issues/80)). Your numbers will differ with repository size and configured backends.
 
 ## Local-first and privacy
 
@@ -319,11 +324,12 @@ So **Brainprint 0.1.0 does not deliver lower provider cost than native-only expl
 
 1. **Compact rows are terse, not prose.** Relation rows name endpoints by id, a relation gap is located as `<resource id>:<line>`, and evidence without a source span (target selection, coverage reports) prints in Rust `Debug` form. Coverage is always stated (`Incoming: 4 confirmed, coverage Partial (…)`, `boundary edges: None found -- coverage incomplete`), and every line number shown is the 1-based editor line ([#78](https://github.com/nyangko/Brainprint/issues/78)).
 2. **Columns are bytes.** The human column is byte offset + 1, not a visual column on non-ASCII lines.
-3. **`wide` budget can be too large for some MCP clients.** Its output may exceed a client's tool-output limit; use `compact`/`standard` and continuation.
+3. **`standard`/`wide` can be too large for some MCP clients.** A result can exceed the client's tool-output limit (Claude Code 2.1.292 replaced results above roughly 46–51 K characters with a saved-to-file notice). For delivery-paged answers use `compact` and continuation. Text search has no continuation: at `compact` (the MCP default, at most 50 matches) results stay inline; for more matches narrow `path_prefix` (roughly 130 matches fit) rather than raising `search_budget_profile`.
 4. **Whole-Workspace text search can truncate.** A broad `find text` stops at its search budget (8 MiB at `compact`) and returns `TRUNCATED` when a rare or absent pattern needs more bytes than that — on this repository even with only tracked files (10.7 MB). Large untracked vendor/cache trees make it more frequent ([#82](https://github.com/nyangko/Brainprint/issues/82)). Use `--path-prefix`, a larger `--search-budget`, or `extra_excluded_directory_names`.
-5. **Semantic backends are separate installs.** Without them, results are structural with explicit gaps; C#/Rust additionally need `project_execution_trust = "Trusted"`.
-6. **No cost-saving guarantee.** See [Benchmarks](#benchmark-and-economy-results).
-7. **Manual setup.** No packages, no auto-start of the daemon, no service unit, no client auto-configuration; `find files` listings are capped (default 200).
+5. **One unreadable file or directory keeps the index `NOT_CURRENT`.** Every answer is still returned, labelled `NOT_CURRENT`, and every current-dependent query re-runs a reconcile that fails on that path (on this repository about +50 ms per query; more on larger trees). Other Workspaces are unaffected, and restoring read permission recovers automatically on the next query. To leave such a directory out, exclude its name (see [Storage](#storage-and-data-locations)).
+6. **Semantic backends are separate installs.** Without them, results are structural with explicit gaps; C#/Rust additionally need `project_execution_trust = "Trusted"`.
+7. **No cost-saving guarantee.** See [Benchmarks](#benchmark-and-economy-results).
+8. **Manual setup.** No packages, no auto-start of the daemon, no service unit, no client auto-configuration; `find files` listings are capped (default 200 in the CLI, 50 over MCP).
 
 ## Roadmap
 
@@ -341,7 +347,7 @@ So **Brainprint 0.1.0 does not deliver lower provider cost than native-only expl
 
 ## Documentation
 
-This README is the 0.1.0 documentation baseline; the GitHub Wiki is not set up. Command details: `brainprint <command> --help`. Agent instructions: `integrations/brainprint/SKILL.md`. Benchmark reports: `benchmarks/`.
+This README documents current `master` (0.1.0 plus the 0.1.1 stabilization changes); the GitHub Wiki is not set up. Command details: `brainprint <command> --help`. Agent instructions: `integrations/brainprint/SKILL.md`. Benchmark reports: `benchmarks/`.
 
 ## License
 
