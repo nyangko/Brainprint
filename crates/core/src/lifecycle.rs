@@ -97,6 +97,11 @@ pub enum LifecycleError {
     Incompatible {
         server_protocol_version: u32,
     },
+    /// A daemon from before protocol 15 refused `Shutdown`: it can only be
+    /// stopped where it runs.
+    StopUnsupported {
+        server_protocol_version: u32,
+    },
     /// The daemon was started but never answered the handshake.
     NotReady {
         log_path: PathBuf,
@@ -138,13 +143,21 @@ impl fmt::Display for LifecycleError {
                 )?;
                 if *server_protocol_version < PROTOCOL_VERSION {
                     formatter.write_str(
-                        "stop it (`brainprint daemon stop`, or Ctrl+C where it runs in the \
-                         foreground), then retry",
+                        "stop it with `brainprint daemon stop` (one older than protocol 15: \
+                         Ctrl+C where it runs, or end its brainprintd process), then retry",
                     )
                 } else {
                     formatter.write_str("this installation is older -- use the matching brainprint")
                 }
             }
+            Self::StopUnsupported {
+                server_protocol_version,
+            } => write!(
+                formatter,
+                "the running brainprintd speaks protocol {server_protocol_version}, older than \
+                 `brainprint daemon stop`; it is not replaced automatically: stop it with Ctrl+C \
+                 where it runs, or end its brainprintd process, then retry"
+            ),
             Self::NotReady { log_path, detail } => write!(
                 formatter,
                 "brainprintd was started but did not become ready ({detail}); see {}",
@@ -307,7 +320,7 @@ pub async fn stop(endpoint: &EndpointPaths) -> Result<Stopped, LifecycleError> {
         Ok(_) => return Err(LifecycleError::UnexpectedResponse),
         Err(source) => {
             return Err(match mismatch {
-                Some(server_protocol_version) => LifecycleError::Incompatible {
+                Some(server_protocol_version) => LifecycleError::StopUnsupported {
                     server_protocol_version,
                 },
                 None => source.into(),
@@ -366,7 +379,9 @@ fn spawn_detached(command: &mut Command) -> io::Result<Child> {
 
 /// Windows: no console and its own process group, so closing the caller's
 /// console window or Ctrl+C there does not reach it; out of the caller's
-/// job object where the job allows that, so it outlives the caller.
+/// job object where the job allows that, so it outlives the caller. And it
+/// inherits none of the caller's own stdio handles -- see
+/// [`stop_inheriting_stdio`].
 #[cfg(windows)]
 fn spawn_detached(command: &mut Command) -> io::Result<Child> {
     use std::os::windows::process::CommandExt as _;
@@ -375,6 +390,7 @@ fn spawn_detached(command: &mut Command) -> io::Result<Child> {
     const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
     const ERROR_ACCESS_DENIED: i32 = 5;
 
+    stop_inheriting_stdio();
     command.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB);
     match command.spawn() {
         // The caller's job forbids breakaway: still detached from the console.
@@ -382,6 +398,44 @@ fn spawn_detached(command: &mut Command) -> io::Result<Child> {
             .creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP)
             .spawn(),
         result => result,
+    }
+}
+
+/// std spawns every Windows child with `bInheritHandles = TRUE` (the
+/// opt-out, `CommandExt::inherit_handles`, is unstable), so the daemon would
+/// inherit this process's own stdin/stdout/stderr when they are inheritable
+/// -- as they are when this process was itself started with pipes: an MCP
+/// client's stdio, a script capturing `brainprint`'s output. The daemon
+/// would then hold those pipes open for its whole lifetime, and whoever
+/// waits for this process's output to end would wait for the daemon (#89).
+/// Marking them not inheritable keeps them out; the daemon still gets the
+/// log and NUL handles std duplicates for it. Nothing else in this process
+/// passes them on implicitly: std duplicates an inherited stdio for each
+/// child it starts.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn stop_inheriting_stdio() {
+    use std::os::windows::io::{AsRawHandle as _, RawHandle};
+
+    const HANDLE_FLAG_INHERIT: u32 = 0x0000_0001;
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn SetHandleInformation(handle: RawHandle, mask: u32, flags: u32) -> i32;
+    }
+
+    for handle in [
+        std::io::stdin().as_raw_handle(),
+        std::io::stdout().as_raw_handle(),
+        std::io::stderr().as_raw_handle(),
+    ] {
+        if handle.is_null() {
+            continue;
+        }
+        // SAFETY: `handle` is this process's own standard handle, valid for
+        // the process's lifetime; only its inherit flag changes. A handle
+        // that does not support it (a console, an invalid one) just fails,
+        // and the result is not needed.
+        let _ = unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0) };
     }
 }
 
