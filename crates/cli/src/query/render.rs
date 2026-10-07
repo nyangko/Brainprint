@@ -252,9 +252,9 @@ fn print_find_result(out: &mut impl Write, result: &FindResultWire) -> std::io::
                 QueryStatusWire::Ambiguous => marker(out, "AMBIGUOUS")?,
                 QueryStatusWire::Unsupported => marker(out, "UNSUPPORTED")?,
                 QueryStatusWire::Truncated => marker(out, "TRUNCATED")?,
-                QueryStatusWire::Refreshing
-                | QueryStatusWire::Unavailable
-                | QueryStatusWire::Found => {}
+                QueryStatusWire::Refreshing => marker(out, "REFRESHING")?,
+                QueryStatusWire::Unavailable => marker(out, "UNAVAILABLE")?,
+                QueryStatusWire::Found => {}
             }
             for text_match in &result.matches {
                 writeln!(
@@ -263,6 +263,32 @@ fn print_find_result(out: &mut impl Write, result: &FindResultWire) -> std::io::
                     text_match.path_rel,
                     text_match.span.start.line_1based(),
                     text_match.preview.as_deref().unwrap_or_default(),
+                )?;
+            }
+            // #85: matches are not a full scan, and an unfinished scan is
+            // never silent -- say what stopped it. Skipped binaries have
+            // no text to miss, so they are not a limit.
+            let scope = &result.scope;
+            let mut limits = Vec::new();
+            if let Some(axis) = scope.budget_exhausted {
+                limits.push(format!("budget {axis:?}"));
+            }
+            nonzero(
+                &mut limits,
+                &[
+                    ("oversized", scope.oversized_skipped.len()),
+                    ("unreadable", scope.unreadable.len()),
+                    ("changed during scan", scope.changed_during_scan.len()),
+                ],
+            );
+            if !limits.is_empty() {
+                writeln!(
+                    out,
+                    "coverage {}: {} files, {} bytes scanned{}",
+                    say(Msg::CoveragePartial),
+                    scope.files_scanned,
+                    scope.bytes_scanned,
+                    parenthesized(&limits)
                 )?;
             }
             Ok(())
@@ -580,6 +606,122 @@ mod tests {
         print_current_source(&mut out, &range).expect("render");
         let header = String::from_utf8(out).expect("utf-8");
         assert!(header.contains("[19:1-21:2]"), "{header}");
+    }
+
+    fn text_search(
+        status: QueryStatusWire,
+        hits: usize,
+        scope: ScopeReportWire,
+    ) -> QueryResultWire {
+        QueryResultWire::Find(FindResultWire::Text(TextSearchResultWire {
+            status,
+            matches: (0..hits)
+                .map(|line| TextMatchWire {
+                    path_rel: "src/a.rs".to_owned(),
+                    resource_id: None,
+                    span: span(line, line),
+                    preview: Some("needle".to_owned()),
+                    source: MatchSourceWire::TextFallback,
+                })
+                .collect(),
+            scope,
+            structural_currentness: CurrentnessWire::Current,
+            reason: FallbackReasonWire::ExplicitTextSearch,
+        }))
+    }
+
+    fn scanned(files: usize, bytes: u64) -> ScopeReportWire {
+        ScopeReportWire {
+            files_scanned: files,
+            bytes_scanned: bytes,
+            ..ScopeReportWire::default()
+        }
+    }
+
+    fn paths(count: usize) -> Vec<String> {
+        (0..count).map(|index| format!("f{index}")).collect()
+    }
+
+    /// #85: every text-search status reads as itself, an unfinished scan
+    /// names what stopped it, and only `NotFound` says "no matches".
+    #[test]
+    fn text_search_status_and_coverage_are_never_silent() {
+        use QueryStatusWire::*;
+
+        let binaries = ScopeReportWire {
+            binary_skipped: paths(467),
+            ..scanned(685, 23_785_086)
+        };
+        let cases = [
+            (NotFound, 0, binaries.clone(), "no matches\n"),
+            (Found, 1, binaries, "src/a.rs:1: needle\n"),
+            (
+                Unavailable,
+                0,
+                ScopeReportWire {
+                    unreadable: paths(1),
+                    ..scanned(685, 23_785_086)
+                },
+                "UNAVAILABLE\ncoverage Partial: 685 files, 23785086 bytes scanned (unreadable 1)\n",
+            ),
+            (
+                Unavailable,
+                0,
+                ScopeReportWire {
+                    changed_during_scan: paths(1),
+                    ..scanned(0, 0)
+                },
+                "UNAVAILABLE\ncoverage Partial: 0 files, 0 bytes scanned (changed during scan 1)\n",
+            ),
+            (Refreshing, 0, scanned(3, 30), "REFRESHING\n"),
+            (
+                Truncated,
+                0,
+                ScopeReportWire {
+                    budget_exhausted: Some(BudgetAxisWire::Bytes),
+                    oversized_skipped: paths(1),
+                    ..scanned(382, 8_475_540)
+                },
+                "TRUNCATED\ncoverage Partial: 382 files, 8475540 bytes scanned (budget Bytes, oversized 1)\n",
+            ),
+            (
+                Truncated,
+                2,
+                ScopeReportWire {
+                    budget_exhausted: Some(BudgetAxisWire::Results),
+                    ..scanned(205, 3_008_458)
+                },
+                "TRUNCATED\nsrc/a.rs:1: needle\nsrc/a.rs:2: needle\n\
+                 coverage Partial: 205 files, 3008458 bytes scanned (budget Results)\n",
+            ),
+            (
+                Truncated,
+                0,
+                ScopeReportWire {
+                    oversized_skipped: paths(1),
+                    ..scanned(685, 23_785_086)
+                },
+                "TRUNCATED\ncoverage Partial: 685 files, 23785086 bytes scanned (oversized 1)\n",
+            ),
+            (
+                Found,
+                1,
+                ScopeReportWire {
+                    unreadable: paths(1),
+                    oversized_skipped: paths(2),
+                    ..scanned(685, 23_785_086)
+                },
+                "src/a.rs:1: needle\n\
+                 coverage Partial: 685 files, 23785086 bytes scanned (oversized 2, unreadable 1)\n",
+            ),
+        ];
+        for (status, hits, scope, expected) in cases {
+            let rendered = compact(&text_search(status, hits, scope));
+            assert_eq!(rendered, expected, "{status:?}");
+            if status != NotFound {
+                assert!(!rendered.contains("no matches"), "{status:?}: {rendered}");
+            }
+        }
     }
 
     fn coverage(unattributed: usize, unconfirmed_owners: usize) -> CoverageWire {

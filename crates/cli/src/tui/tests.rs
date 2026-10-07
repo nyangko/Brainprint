@@ -543,3 +543,101 @@ async fn a_protocol_mismatch_is_incompatible_and_names_the_stale_side() {
     assert!(app.overview.is_none());
     assert!(shows(&app, text(Locale::En, Msg::ConnectionIncompatible)));
 }
+
+/// #85 on the public surfaces: a real text search through the daemon,
+/// read as the TUI/Web body (`surface::compact`) -- the same lines the
+/// CLI prints -- names its status and what limited the scan.
+#[tokio::test]
+async fn text_search_bodies_name_their_status_and_coverage() {
+    let home = TestDir::create("home-text");
+    let root = workspace();
+    let (_running, endpoint) = start(&home.0).await;
+    let mut connection = client::connect(&endpoint).await.expect("connect");
+    client::init(&mut connection, root.0.to_string_lossy().into_owned())
+        .await
+        .expect("init");
+    drop(connection);
+    let daemon = Daemon {
+        endpoint,
+        workspace: root.0.to_string_lossy().into_owned(),
+        config: None,
+    };
+
+    let search = |literal: &str, max_results: usize, max_bytes: u64, max_file_bytes: u64| {
+        QueryOperationWire::Find(FindQueryWire::Text {
+            pattern: TextPatternWire::Literal(literal.to_owned()),
+            case_insensitive: false,
+            path_prefix: None,
+            search_budget: SearchBudgetWire {
+                max_results,
+                max_files: 500,
+                max_bytes,
+                deadline_ms: None,
+            },
+            max_file_bytes,
+            with_preview: true,
+        })
+    };
+    let wide = 1024 * 1024;
+    let cases = [
+        // Complete: matches only / "no matches", no invented warning.
+        (search("helper", 50, wide, wide), "Found", None),
+        (search("no such needle", 50, wide, wide), "NotFound", None),
+        // Each budget axis and an oversized text file, with and without hits.
+        (
+            search("no such needle", 50, 1, wide),
+            "Truncated",
+            Some("budget Bytes"),
+        ),
+        (
+            search("helper", 1, wide, wide),
+            "Truncated",
+            Some("budget Results"),
+        ),
+        (
+            search("no such needle", 50, wide, 10),
+            "Truncated",
+            Some("oversized 3"),
+        ),
+        (search("helper", 50, wide, 60), "Found", Some("oversized 1")),
+    ];
+    for (operation, status, limit) in cases {
+        let result = daemon
+            .query(operation)
+            .await
+            .unwrap_or_else(|_| panic!("text search"));
+        let QueryResultWire::Find(FindResultWire::Text(text)) = &result else {
+            panic!("a text result")
+        };
+        assert_eq!(format!("{:?}", text.status), status);
+        let body = crate::surface::compact(&result);
+        let mut cli = Vec::new();
+        crate::query::render::write_compact(&mut cli, &result).expect("render");
+        assert_eq!(
+            body.join("\n") + "\n",
+            String::from_utf8(cli).expect("utf-8"),
+            "TUI/Web body == CLI compact output"
+        );
+        let coverage: Vec<&String> = body
+            .iter()
+            .filter(|line| line.starts_with("coverage Partial:"))
+            .collect();
+        match limit {
+            None => assert!(coverage.is_empty(), "{status}: {body:?}"),
+            Some(limit) => {
+                assert_eq!(coverage.len(), 1, "{body:?}");
+                assert!(coverage[0].contains(limit), "{body:?}");
+                assert!(!body.iter().any(|line| line == "no matches"), "{body:?}");
+            }
+        }
+        match status {
+            "Truncated" => assert_eq!(body[0], "TRUNCATED"),
+            "NotFound" => assert_eq!(body, ["no matches"]),
+            _ => assert!(
+                body.iter()
+                    .any(|line| line.starts_with("src/shared.ts:1: ")),
+                "1-based hit line: {body:?}"
+            ),
+        }
+    }
+}
