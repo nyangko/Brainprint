@@ -28,7 +28,9 @@ Principles the implementation follows:
 
 ## Status
 
-**Pre-release.** Brainprint 0.1.0 was accepted in [#77](https://github.com/nyangko/Brainprint/issues/77); the 0.1.1 efficiency and stabilization pass is tracked in [#79](https://github.com/nyangko/Brainprint/issues/79). No packaged release exists, and the binaries still report version `0.1.0`. Interfaces, storage and protocol (currently protocol 14, MCP envelope schema 2) may still change.
+**Pre-release, source only.** The source version is **0.1.1** (tag `v0.1.1`): the 0.1.1 efficiency and stabilization pass ([#79](https://github.com/nyangko/Brainprint/issues/79)) was accepted in [#86](https://github.com/nyangko/Brainprint/issues/86), on top of 0.1.0 accepted in [#77](https://github.com/nyangko/Brainprint/issues/77). Build it from source (below); no prebuilt binaries or packages are published. Interfaces, storage and protocol (currently protocol 14, MCP envelope schema 2) may still change.
+
+0.1.1, measured against 0.1.0 under the same conditions ([#86](https://github.com/nyangko/Brainprint/issues/86)): `.brainprint/` 59.8 → 34.1 MiB (WAL 29.7 → 4.0 MiB); for the measured Claude Code workloads, whole-Workspace text-search and default file-listing results now arrive inline instead of being replaced by a saved-to-file notice; correctness and coverage semantics unchanged. Token/USD savings are **not proven** — native-only exploration stayed cheaper in [#32](https://github.com/nyangko/Brainprint/issues/32), [#35](https://github.com/nyangko/Brainprint/issues/35), [#74](https://github.com/nyangko/Brainprint/issues/74) and [#75](https://github.com/nyangko/Brainprint/issues/75).
 
 | Workstream ([#12](https://github.com/nyangko/Brainprint/issues/12)) | Status |
 | --- | --- |
@@ -347,7 +349,7 @@ So **Brainprint 0.1.0 does not deliver lower provider cost than native-only expl
 
 ## Documentation
 
-This README documents current `master` (0.1.0 plus the 0.1.1 stabilization changes); the GitHub Wiki is not set up. Command details: `brainprint <command> --help`. Agent instructions: `integrations/brainprint/SKILL.md`. Benchmark reports: `benchmarks/`.
+This README documents version 0.1.1 (current `master`); the GitHub Wiki is not set up. Command details: `brainprint <command> --help`. Agent instructions: `integrations/brainprint/SKILL.md`. Benchmark reports: `benchmarks/`.
 
 ## License
 

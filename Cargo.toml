@@ -10,7 +10,7 @@ members = [
 resolver = "3"
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 # #25 Task 12 amendment: raised from 1.85 -> 1.88, the minimum the
 # official `rmcp` MCP SDK's 3.x line requires (rmcp 1.x cannot compile

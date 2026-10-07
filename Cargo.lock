@@ -114,7 +114,7 @@ dependencies = [
 
 [[package]]
 name = "brainprint-agent"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "brainprint-core",
  "clap",
@@ -125,7 +125,7 @@ dependencies = [
 
 [[package]]
 name = "brainprint-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "base64",
  "brainprint-core",
@@ -141,7 +141,7 @@ dependencies = [
 
 [[package]]
 name = "brainprint-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -151,7 +151,7 @@ dependencies = [
 
 [[package]]
 name = "brainprint-daemon"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "base64",
  "brainprint-agent",
@@ -168,7 +168,7 @@ dependencies = [
 
 [[package]]
 name = "brainprint-engine"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "brainprint-core",
  "command-group",
@@ -190,7 +190,7 @@ dependencies = [
 
 [[package]]
 name = "brainprint-mcp"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "brainprint-core",
  "rmcp",
