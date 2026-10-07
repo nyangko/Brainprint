@@ -1803,6 +1803,7 @@ fn cli(home: &Path, args: &[&str]) -> Output {
     });
     assert!(binary.is_file(), "build the workspace first");
     Command::new(binary)
+        .env(brainprint_core::lifecycle::NO_AUTOSTART_ENV, "1")
         .args(args)
         .env("HOME", home)
         .env("USERPROFILE", home)

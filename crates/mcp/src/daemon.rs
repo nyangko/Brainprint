@@ -9,7 +9,7 @@
 use std::{fmt, io};
 
 use brainprint_core::{
-    PROTOCOL_VERSION, WorkspaceId,
+    PROTOCOL_VERSION, WorkspaceId, lifecycle,
     protocol::{
         self, ClientConnection, EndpointPaths, EndpointResolutionError, ErrorResponse,
         HandshakeRequest, HandshakeResponse, Request, Response, StatusRequest, StatusResponse,
@@ -39,15 +39,16 @@ pub enum DaemonError {
     Rejected {
         message: String,
     },
+    /// #89: no daemon was running, and starting one failed or is off.
+    AutoStart(lifecycle::LifecycleError),
 }
 
 impl fmt::Display for DaemonError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::EndpointUnavailable(source) => write!(formatter, "{source}"),
-            Self::DaemonNotRunning => formatter.write_str(
-                "brainprintd is not running -- start it, then retry (e.g. `brainprintd &`)",
-            ),
+            Self::DaemonNotRunning => formatter
+                .write_str("brainprintd is not running -- start it with `brainprint daemon start`"),
             Self::Io(source) => {
                 write!(formatter, "communication with brainprintd failed: {source}")
             }
@@ -77,6 +78,7 @@ impl fmt::Display for DaemonError {
                 formatter.write_str("brainprintd sent an unexpected response for this request")
             }
             Self::Rejected { message } => formatter.write_str(message),
+            Self::AutoStart(error) => write!(formatter, "{error}"),
         }
     }
 }
@@ -100,15 +102,24 @@ impl std::error::Error for DaemonError {}
 pub async fn connect_and_handshake(
     endpoint_override: Option<&EndpointPaths>,
 ) -> Result<ClientConnection, DaemonError> {
-    let resolved;
-    let endpoint = match endpoint_override {
-        Some(endpoint) => endpoint,
-        None => {
-            resolved = EndpointPaths::resolve().map_err(DaemonError::EndpointUnavailable)?;
-            &resolved
-        }
+    let Some(endpoint) = endpoint_override else {
+        // #89: the production path starts the daemon in the background
+        // when none runs. A test's own endpoint is never auto-started.
+        let endpoint = EndpointPaths::resolve().map_err(DaemonError::EndpointUnavailable)?;
+        return match connect(&endpoint).await {
+            Err(DaemonError::DaemonNotRunning) => {
+                lifecycle::ensure_started(&endpoint)
+                    .await
+                    .map_err(DaemonError::AutoStart)?;
+                connect(&endpoint).await
+            }
+            result => result,
+        };
     };
+    connect(endpoint).await
+}
 
+async fn connect(endpoint: &EndpointPaths) -> Result<ClientConnection, DaemonError> {
     #[cfg(unix)]
     let connect_result = ClientConnection::connect(&endpoint.socket_path).await;
     #[cfg(windows)]

@@ -39,8 +39,10 @@ pub const PACKAGE_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// path-scoped `StatusRequest` and the Workspace status it answers with.
 /// Bumped to 14 by #73: `EvidenceWire::Relation` carries
 /// `ProjectedRelationWire` (each evidence site's path, 1-based line and
-/// containing Symbol name).
-pub const PROTOCOL_VERSION: u32 = 14;
+/// containing Symbol name). Bumped to 15 by #89: the `Shutdown` request
+/// and response, which a daemon also honours after a protocol mismatch so
+/// a newer client can stop it.
+pub const PROTOCOL_VERSION: u32 = 15;
 
 /// Minimal build identity that benchmark and runtime boundaries can record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

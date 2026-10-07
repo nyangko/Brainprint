@@ -51,6 +51,12 @@ impl CommonArgs {
 #[command(name = "brainprint", version, disable_help_subcommand = true)]
 pub enum Cli {
     Install,
+    /// #89: the background daemon. Commands that need it start it on
+    /// their own; this starts, stops or reports it explicitly.
+    Daemon {
+        #[command(subcommand)]
+        command: DaemonCommand,
+    },
     /// The daemon's status; with a path, also that Workspace's compact
     /// status: identity, stored revision/generation, currentness as an
     /// active runtime holds it, runtime/watcher, semantic backends.
@@ -162,6 +168,18 @@ pub enum Cli {
         #[command(subcommand)]
         mode: super::VerificationCommand,
     },
+}
+
+#[derive(Debug, Clone, Copy, Subcommand)]
+pub enum DaemonCommand {
+    /// Start brainprintd in the background; nothing to do if it runs.
+    Start,
+    /// Stop the running brainprintd cleanly.
+    Stop,
+    /// Stop, then start. Workspaces, config and knowledge are kept.
+    Restart,
+    /// Whether brainprintd runs, and which. Never starts it.
+    Status,
 }
 
 #[derive(Debug, Subcommand)]

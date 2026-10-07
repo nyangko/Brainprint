@@ -28,7 +28,7 @@ Principles the implementation follows:
 
 ## Status
 
-**Pre-release, source only.** The source version is **0.1.1** (tag `v0.1.1`): the 0.1.1 efficiency and stabilization pass ([#79](https://github.com/nyangko/Brainprint/issues/79)) was accepted in [#86](https://github.com/nyangko/Brainprint/issues/86), on top of 0.1.0 accepted in [#77](https://github.com/nyangko/Brainprint/issues/77). Build it from source (below); no prebuilt binaries or packages are published. Interfaces, storage and protocol (currently protocol 14, MCP envelope schema 2) may still change.
+**Pre-release, source only.** The source version is **0.1.1** (tag `v0.1.1`): the 0.1.1 efficiency and stabilization pass ([#79](https://github.com/nyangko/Brainprint/issues/79)) was accepted in [#86](https://github.com/nyangko/Brainprint/issues/86), on top of 0.1.0 accepted in [#77](https://github.com/nyangko/Brainprint/issues/77). Build it from source (below); no prebuilt binaries or packages are published. Interfaces, storage and protocol (on `master`: protocol 15, MCP envelope schema 2; `v0.1.1` speaks protocol 14) may still change.
 
 0.1.1, measured against 0.1.0 under the same conditions ([#86](https://github.com/nyangko/Brainprint/issues/86)): `.brainprint/` 59.8 → 34.1 MiB (WAL 29.7 → 4.0 MiB); for the measured Claude Code workloads, whole-Workspace text-search and default file-listing results now arrive inline instead of being replaced by a saved-to-file notice; correctness and coverage semantics unchanged. Token/USD savings are **not proven** — native-only exploration stayed cheaper in [#32](https://github.com/nyangko/Brainprint/issues/32), [#35](https://github.com/nyangko/Brainprint/issues/35), [#74](https://github.com/nyangko/Brainprint/issues/74) and [#75](https://github.com/nyangko/Brainprint/issues/75).
 
@@ -71,7 +71,7 @@ cd Brainprint
 cargo build --release
 ```
 
-- Toolchain: `rust-toolchain.toml` pins the `stable` channel (with `clippy`, `rustfmt`); the minimum supported Rust is **1.88** (`rust-version` in `Cargo.toml`).
+- Toolchain: `rust-toolchain.toml` pins the `stable` channel (with `clippy`, `rustfmt`); the minimum supported Rust is **1.89** (`rust-version` in `Cargo.toml`).
 - The Web UI page is committed prebuilt (`web/build/index.html`) and embedded into the `brainprint` binary, so Node is **not** needed to build. Only rebuild it (`cd web && npm ci && npm run build`) if you change `web/src`.
 - CI (`.github/workflows/acceptance.yml`) runs fmt, clippy, build and the full test suite on Linux, macOS and Windows.
 
@@ -79,7 +79,7 @@ The build produces four binaries in `target/release/`; put them on your `PATH`:
 
 | Binary | Role |
 | --- | --- |
-| `brainprintd` | The global daemon, one per user. Runs in the foreground until Ctrl+C. |
+| `brainprintd` | The global daemon, one per user. Started in the background on demand (see below); `brainprintd` alone runs it in the foreground until Ctrl+C. |
 | `brainprint` | The CLI (also hosts the TUI and the Web UI). |
 | `brainprint-mcp` | MCP server over stdio; a thin adapter to the daemon exposing four tools. |
 | `brainprint-agent` | Optional client hook bridge for Claude Code, Codex CLI and Gemini CLI. |
@@ -87,13 +87,23 @@ The build produces four binaries in `target/release/`; put them on your `PATH`:
 ## Quick start
 
 ```sh
-brainprintd &                 # 1. start the daemon (the CLI never auto-starts it)
-brainprint install            # 2. create ~/.brainprint/config.toml and ~/.brainprint/data/global.db
-brainprint init ~/src/myrepo  # 3. attach a Workspace: creates <repo>/.brainprint/ and runs the initial index
+brainprint install            # 1. create ~/.brainprint/config.toml and ~/.brainprint/data/global.db
+brainprint init ~/src/myrepo  # 2. attach a Workspace: creates <repo>/.brainprint/ and runs the initial index
 brainprint status ~/src/myrepo
 ```
 
-If the daemon is not running, commands fail with `brainprintd is not running -- start it, then retry`. The CLI and daemon must speak the same protocol version (use binaries from the same build); a mismatch is reported, not tolerated.
+**The daemon starts itself.** Any command that needs `brainprintd` (and `brainprint-mcp`, the TUI and the Web UI) starts it in the background when it is not running: the `brainprintd` installed next to the running binary — never one found elsewhere on `PATH` — detached from the terminal, so closing the terminal or the MCP client leaves it running. Its output goes to `~/.brainprint/logs/brainprintd.log`. Explicit control:
+
+```sh
+brainprint daemon start     # start in the background; nothing to do if it already runs
+brainprint daemon status    # running or not, version, protocol, pid -- never starts it
+brainprint daemon restart   # stop, then start; Workspaces, config and knowledge are kept
+brainprint daemon stop      # clean shutdown, asked over the daemon's own endpoint (no PID signals)
+```
+
+Set `BRAINPRINT_NO_AUTOSTART=1` (CI, benchmarks, development) to turn the implicit start off; commands then fail with `brainprintd is not running and auto-start is off`, and `brainprint daemon start` still works. There is no login/OS service registration: after a reboot the first command starts the daemon again.
+
+The CLI and daemon must speak the same protocol version (use binaries from the same build). A running daemon of another protocol is reported, never replaced or downgraded: stop it (`brainprint daemon stop`; a 0.1.1 daemon predates that request, so Ctrl+C or end it where it runs) and retry.
 
 After `init`, the daemon watches the Workspace and keeps the index current; ordinary edits need no further command. `status <path>` shows identity, revision/generation, `index: current`, `runtime: active`, `watcher: attached`, and each semantic backend's availability.
 
@@ -267,7 +277,7 @@ Every answer states how far it can be trusted:
 | Branch switch / rebase / edits while the daemon was down | `brainprint sync [PATH]` |
 | Index suspected corrupt or inconsistent | `brainprint rebuild [PATH]` |
 | Stop managing a Workspace for now | `brainprint uninit [PATH]`, later `brainprint init [PATH]` |
-| Daemon not running | start `brainprintd` |
+| Daemon not running | any command starts it; or `brainprint daemon start` |
 
 None of these modify source files. There is no `uninstall` command; to remove Brainprint completely, stop the daemon and delete `~/.brainprint/` and each Workspace's `.brainprint/`.
 
@@ -296,7 +306,7 @@ Discovery always skips `.git`, `.brainprint`, `node_modules`, `venv`, `.venv`, `
 extra_excluded_directory_names = ["vendor", "third_party"]
 ```
 
-The list is read when the Workspace is attached: after changing it, run `brainprint uninit` then `brainprint init` (or restart `brainprintd`); `sync` alone does not reload it. The matching Resources are then removed (as deleted); taking a name back out re-adds them with new Resource ids. Excluding a directory by name is also how to stop an unreadable directory (for example a container-owned data directory) from keeping the index `NOT_CURRENT` — see [Known limitations](#known-limitations).
+The list is read when the Workspace is attached: after changing it, run `brainprint uninit` then `brainprint init` (or `brainprint daemon restart`); `sync` alone does not reload it. The matching Resources are then removed (as deleted); taking a name back out re-adds them with new Resource ids. Excluding a directory by name is also how to stop an unreadable directory (for example a container-owned data directory) from keeping the index `NOT_CURRENT` — see [Known limitations](#known-limitations).
 
 ### Measured footprint (one example, not a guarantee)
 
@@ -331,7 +341,7 @@ So **Brainprint 0.1.0 does not deliver lower provider cost than native-only expl
 5. **One unreadable file or directory keeps the index `NOT_CURRENT`.** Every answer is still returned, labelled `NOT_CURRENT`, and every current-dependent query re-runs a reconcile that fails on that path (on this repository about +50 ms per query; more on larger trees). Other Workspaces are unaffected, and restoring read permission recovers automatically on the next query. To leave such a directory out, exclude its name (see [Storage](#storage-and-data-locations)).
 6. **Semantic backends are separate installs.** Without them, results are structural with explicit gaps; C#/Rust additionally need `project_execution_trust = "Trusted"`.
 7. **No cost-saving guarantee.** See [Benchmarks](#benchmark-and-economy-results).
-8. **Manual setup.** No packages, no auto-start of the daemon, no service unit, no client auto-configuration; `find files` listings are capped (default 200 in the CLI, 50 over MCP).
+8. **Manual setup.** No packages, no OS service or login item for the daemon (it starts on first use), no client auto-configuration; `find files` listings are capped (default 200 in the CLI, 50 over MCP).
 
 ## Roadmap
 

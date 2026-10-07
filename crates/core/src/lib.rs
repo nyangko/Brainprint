@@ -2,6 +2,7 @@
 
 pub mod build;
 pub mod id;
+pub mod lifecycle;
 pub mod present;
 pub mod protocol;
 

@@ -396,7 +396,7 @@ async fn an_unregistered_workspace_fails_before_git_runs() {
 #[tokio::test]
 async fn protocol_version_is_pinned() {
     // #51 bumped it to 5, #52 to 6.
-    assert_eq!(PROTOCOL_VERSION, 14);
+    assert_eq!(PROTOCOL_VERSION, 15);
 }
 
 /// v4 client → v5 daemon: refused at handshake; an Observe request sent
@@ -528,6 +528,7 @@ impl Drop for DaemonGuard {
 
 fn run_cli(home: &Path, args: &[&str], stdin: Option<&str>) -> Output {
     let mut child = Command::new(cli_bin())
+        .env(brainprint_core::lifecycle::NO_AUTOSTART_ENV, "1")
         .args(args)
         .env("HOME", home)
         .env("USERPROFILE", home)

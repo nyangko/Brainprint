@@ -15,7 +15,9 @@ edition = "2024"
 # #25 Task 12 amendment: raised from 1.85 -> 1.88, the minimum the
 # official `rmcp` MCP SDK's 3.x line requires (rmcp 1.x cannot compile
 # on stable Rust at all -- verified). Not an unrelated modernization.
-rust-version = "1.88"
+# #89: raised to 1.89 for `std::fs::File::try_lock`, the daemon's
+# race-free singleton lock under concurrent auto-start.
+rust-version = "1.89"
 repository = "https://github.com/nyangko/Brainprint"
 license = "GPL-3.0-only"
 

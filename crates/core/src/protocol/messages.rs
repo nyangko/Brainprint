@@ -101,6 +101,19 @@ pub struct InitResponse {
     pub freshly_created: bool,
 }
 
+/// Stop the daemon cleanly (#89): the same shutdown as Ctrl+C. Answered
+/// even after a protocol mismatch, so a client of another protocol can
+/// still stop it -- the only request a mismatched connection may send.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShutdownRequest;
+
+/// Sent before the daemon starts shutting down; `pid` is the process that
+/// is stopping.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShutdownResponse {
+    pub pid: u32,
+}
+
 /// An envelope for every request a client may send after a successful
 /// handshake.
 // `Query` is large relative to the other variants (a full Task 10
@@ -136,6 +149,8 @@ pub enum Request {
     Sync(super::maintenance::SyncRequest),
     /// #57: release the Workspace from active management.
     Uninit(super::maintenance::UninitRequest),
+    /// #89: stop the daemon.
+    Shutdown(ShutdownRequest),
 }
 
 /// An envelope for every response the daemon may send.
@@ -163,6 +178,7 @@ pub enum Response {
     Rebuild(super::maintenance::RebuildResponse),
     Sync(super::maintenance::SyncResponse),
     Uninit(super::maintenance::UninitResponse),
+    Shutdown(ShutdownResponse),
 }
 
 /// A coarse, stable classification a client can act on without parsing

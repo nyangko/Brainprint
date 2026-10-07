@@ -9,7 +9,7 @@
 use std::{fmt, io};
 
 use brainprint_core::{
-    PROTOCOL_VERSION,
+    PROTOCOL_VERSION, lifecycle,
     protocol::{
         self, ClientConnection, EndpointPaths, EndpointResolutionError, ErrorKind, ErrorResponse,
         HandshakeRequest, HandshakeResponse, InitRequest, InitResponse, InstallRequest,
@@ -38,15 +38,16 @@ pub enum CliError {
         kind: ErrorKind,
         message: String,
     },
+    /// #89: no daemon was running, and starting one failed or is off.
+    AutoStart(lifecycle::LifecycleError),
 }
 
 impl fmt::Display for CliError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::EndpointUnavailable(source) => write!(formatter, "{source}"),
-            Self::DaemonNotRunning => formatter.write_str(
-                "brainprintd is not running -- start it, then retry (e.g. `brainprintd &`)",
-            ),
+            Self::DaemonNotRunning => formatter
+                .write_str("brainprintd is not running -- start it with `brainprint daemon start`"),
             Self::Io(source) => {
                 write!(formatter, "communication with brainprintd failed: {source}")
             }
@@ -72,17 +73,45 @@ impl fmt::Display for CliError {
                 formatter.write_str("brainprintd sent an unexpected response for this request")
             }
             Self::Rejected { message, .. } => formatter.write_str(message),
+            Self::AutoStart(error) => write!(formatter, "{error}"),
         }
     }
 }
 
 impl std::error::Error for CliError {}
 
-/// Resolve the daemon endpoint, connect, and handshake. Every command
-/// starts here.
+/// Resolve the daemon endpoint, connect, and handshake -- starting the
+/// daemon in the background first if none is running (#89). Every
+/// daemon-dependent command starts here.
 pub async fn connect_and_handshake() -> Result<ClientConnection, CliError> {
     let endpoint = EndpointPaths::resolve().map_err(CliError::EndpointUnavailable)?;
+    match connect(&endpoint).await {
+        Err(CliError::DaemonNotRunning) => {
+            lifecycle::ensure_started(&endpoint)
+                .await
+                .map_err(CliError::AutoStart)?;
+            connect(&endpoint).await
+        }
+        result => result,
+    }
+}
+
+/// [`connect_and_handshake`] without the auto-start: for `status`, which
+/// reports the daemon as it is and never starts anything.
+pub async fn connect_existing() -> Result<ClientConnection, CliError> {
+    let endpoint = EndpointPaths::resolve().map_err(CliError::EndpointUnavailable)?;
     connect(&endpoint).await
+}
+
+/// #89: start the daemon if none answers `endpoint` -- for the TUI/Web,
+/// which then open one connection per request through [`connect`].
+pub async fn ensure_daemon(endpoint: &EndpointPaths) -> Result<(), CliError> {
+    match connect(endpoint).await {
+        Err(CliError::DaemonNotRunning) => lifecycle::ensure_started(endpoint)
+            .await
+            .map_err(CliError::AutoStart),
+        result => result.map(drop),
+    }
 }
 
 /// Connect to `endpoint` and handshake. #70: the TUI holds one endpoint

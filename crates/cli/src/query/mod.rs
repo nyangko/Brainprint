@@ -16,7 +16,7 @@ mod vocab;
 mod work;
 
 pub use artifact::ArtifactCommand;
-pub use commands::Cli;
+pub use commands::{Cli, DaemonCommand};
 pub(crate) use delivery::{decode_continuation, encode_continuation};
 pub use exec::Exit;
 pub(crate) use exec::absolute_workspace;
@@ -43,8 +43,12 @@ pub async fn run_query_command(cli: Cli) -> Exit {
         Cli::Sync { path, json } => maintenance::run_sync(path, json).await,
         Cli::Uninit { path, json } => maintenance::run_uninit(path, json).await,
         Cli::Status { path, json } => maintenance::run_status(path, json).await,
-        Cli::Install | Cli::Init { .. } | Cli::Tui { .. } | Cli::Web { .. } => {
-            unreachable!("main.rs handles Install/Init/Tui/Web before dispatching here")
+        Cli::Install
+        | Cli::Daemon { .. }
+        | Cli::Init { .. }
+        | Cli::Tui { .. }
+        | Cli::Web { .. } => {
+            unreachable!("main.rs handles Install/Daemon/Init/Tui/Web before dispatching here")
         }
     }
 }

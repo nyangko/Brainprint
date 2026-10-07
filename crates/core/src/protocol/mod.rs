@@ -27,6 +27,7 @@ pub mod work;
 pub use endpoint::{EndpointPaths, EndpointResolutionError};
 pub use messages::{
     ErrorKind, ErrorResponse, HandshakeRequest, HandshakeResponse, InitRequest, InitResponse,
-    InstallRequest, InstallResponse, Request, Response, StatusRequest, StatusResponse,
+    InstallRequest, InstallResponse, Request, Response, ShutdownRequest, ShutdownResponse,
+    StatusRequest, StatusResponse,
 };
 pub use transport::{ClientConnection, Listener, ServerConnection};

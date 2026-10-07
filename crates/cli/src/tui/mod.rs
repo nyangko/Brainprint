@@ -30,6 +30,13 @@ pub async fn run(workspace: &str, locale: Option<String>) -> i32 {
             return 5;
         }
     };
+    // #89: start the daemon if it is not running; the screen itself
+    // reports a daemon that is down or incompatible.
+    if let Err(error @ crate::client::CliError::AutoStart(_)) =
+        crate::client::ensure_daemon(&endpoint).await
+    {
+        eprintln!("brainprint: {error}");
+    }
     let config = global_config_path();
     let locale = locale
         .or_else(|| config.as_deref().and_then(config::load))

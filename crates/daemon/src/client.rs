@@ -126,7 +126,8 @@ pub async fn handshake(
         | Response::Doctor(_)
         | Response::Rebuild(_)
         | Response::Sync(_)
-        | Response::Uninit(_) => Err(ClientError::UnexpectedResponse),
+        | Response::Uninit(_)
+        | Response::Shutdown(_) => Err(ClientError::UnexpectedResponse),
     }
 }
 
@@ -158,7 +159,8 @@ pub async fn status(connection: &mut ClientConnection) -> Result<StatusResponse,
         | Response::Doctor(_)
         | Response::Rebuild(_)
         | Response::Sync(_)
-        | Response::Uninit(_) => Err(ClientError::UnexpectedResponse),
+        | Response::Uninit(_)
+        | Response::Shutdown(_) => Err(ClientError::UnexpectedResponse),
     }
 }
 
@@ -170,7 +172,10 @@ pub(crate) async fn probe_live(endpoint: &RuntimeEndpoint) -> bool {
     let Ok(mut connection) = connect(endpoint).await else {
         return false;
     };
-    handshake(&mut connection, "brainprintd-self-probe")
-        .await
-        .is_ok()
+    // #89: a daemon of another protocol answers with a mismatch -- it is
+    // just as alive, and its endpoint must not be taken over.
+    matches!(
+        handshake(&mut connection, "brainprintd-self-probe").await,
+        Ok(_) | Err(ClientError::VersionMismatch { .. })
+    )
 }

@@ -1339,6 +1339,7 @@ impl Drop for DaemonGuard {
 
 fn run_cli(home: &Path, args: &[&str], stdin: Option<&str>) -> Output {
     let mut child = Command::new(cli_bin())
+        .env(brainprint_core::lifecycle::NO_AUTOSTART_ENV, "1")
         .args(args)
         .env("HOME", home)
         .env("USERPROFILE", home)

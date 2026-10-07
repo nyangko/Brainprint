@@ -79,6 +79,18 @@ pub fn global_config_path() -> Option<PathBuf> {
     user_home_dir().map(|home| home.join(".brainprint").join("config.toml"))
 }
 
+/// `~/.brainprint/logs/brainprintd.log`: where a daemon started in the
+/// background writes its output (#89). Same home rule as
+/// [`global_config_path`]; `None` without a usable home directory.
+#[must_use]
+pub fn daemon_log_path() -> Option<PathBuf> {
+    user_home_dir().map(|home| {
+        home.join(".brainprint")
+            .join("logs")
+            .join("brainprintd.log")
+    })
+}
+
 fn resolve_runtime_root() -> Option<PathBuf> {
     if let Some(xdg_runtime_dir) = non_empty_env("XDG_RUNTIME_DIR") {
         return Some(PathBuf::from(xdg_runtime_dir).join("brainprint"));

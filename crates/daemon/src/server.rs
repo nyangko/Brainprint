@@ -9,12 +9,12 @@
 //! It never kills a process or deletes another user's artifact based on a
 //! PID file alone -- liveness is always decided by a live handshake.
 
-use std::{error::Error, fmt, io, path::Path, sync::Arc, time::Duration};
+use std::{error::Error, fmt, fs::File, io, path::Path, sync::Arc, time::Duration};
 
 use brainprint_core::{
     BuildInfo,
     protocol::{
-        self, ErrorKind, ErrorResponse, HandshakeResponse, Request, Response,
+        self, ErrorKind, ErrorResponse, HandshakeResponse, Request, Response, ShutdownResponse,
         artifact::{
             ArtifactPartWire, ArtifactReadErrorWire, ArtifactReadRequestWire,
             ArtifactReadResponseWire, MAX_ARTIFACT_READ_BYTES,
@@ -24,7 +24,10 @@ use brainprint_core::{
     },
 };
 use brainprint_engine::paths::GlobalPaths;
-use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite};
+use tokio::{
+    io::{AsyncRead, AsyncReadExt as _, AsyncWrite},
+    sync::Notify,
+};
 
 use crate::{
     artifacts::{ArtifactError, ArtifactPart, ArtifactStore, ArtifactStream},
@@ -77,6 +80,11 @@ pub struct Server {
     /// them and know their endpoint handles are released.
     connections: tokio::task::JoinSet<()>,
     endpoint: RuntimeEndpoint,
+    /// #89: the singleton, held for this process's lifetime. The OS
+    /// releases it when the process ends, however it ends.
+    _lock: File,
+    /// #89: notified by a `Shutdown` request; see [`Self::stop_requested`].
+    stop: Arc<Notify>,
     state: DaemonState,
     global_paths: GlobalPaths,
     query_runtime: Arc<DaemonQueryRuntime>,
@@ -117,7 +125,7 @@ impl Server {
         let endpoint = runtime_paths::resolve(global_paths);
         ensure_runtime_dir(&endpoint.runtime_root)?;
 
-        acquire_lock_or_detect_stale(&endpoint).await?;
+        let lock = acquire_lock_or_detect_stale(&endpoint).await?;
 
         let listener = match bind_listener(&endpoint) {
             Ok(listener) => listener,
@@ -151,10 +159,20 @@ impl Server {
             listener,
             connections: tokio::task::JoinSet::new(),
             endpoint,
+            _lock: lock,
+            stop: Arc::new(Notify::new()),
             state: DaemonState::new(),
             query_runtime: Arc::new(query_runtime),
             global_paths: global_paths.clone(),
         })
+    }
+
+    /// Completes once a client has sent `Shutdown` (#89). The caller races
+    /// it against [`Self::serve`] like Ctrl+C, then calls
+    /// [`Self::shutdown`].
+    #[must_use]
+    pub fn stop_requested(&self) -> Arc<Notify> {
+        Arc::clone(&self.stop)
     }
 
     /// Accept connections until cancelled (e.g. by a `Ctrl+C` future
@@ -167,12 +185,14 @@ impl Server {
             let state = self.state;
             let global_paths = self.global_paths.clone();
             let query_runtime = Arc::clone(&self.query_runtime);
+            let stop = Arc::clone(&self.stop);
             // Finished connections are reaped as new ones arrive.
             while self.connections.try_join_next().is_some() {}
             self.connections.spawn(async move {
                 // A single client's connection failing must never take
                 // down the daemon or any other client's connection.
-                let _ = handle_connection(connection, state, global_paths, query_runtime).await;
+                let _ =
+                    handle_connection(connection, state, global_paths, query_runtime, stop).await;
             });
         }
     }
@@ -215,6 +235,7 @@ async fn handle_connection<S>(
     state: DaemonState,
     global_paths: GlobalPaths,
     query_runtime: Arc<DaemonQueryRuntime>,
+    stop: Arc<Notify>,
 ) -> io::Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -258,7 +279,11 @@ where
         .await?;
     if !handshake_ok {
         // A version-mismatched client never gets to send further requests
-        // on this connection.
+        // on this connection -- except `Shutdown` (#89), so a client of
+        // another protocol can still stop this daemon.
+        if let Ok(Request::Shutdown(_)) = protocol::framing::read_message(&mut connection).await {
+            acknowledge_shutdown(&mut connection, &stop).await?;
+        }
         return Ok(());
     }
 
@@ -352,9 +377,27 @@ where
             }
             Request::Sync(request) => crate::query::handle_sync(&query_runtime, request).await,
             Request::Uninit(request) => crate::query::handle_uninit(&query_runtime, request).await,
+            Request::Shutdown(_) => return acknowledge_shutdown(&mut connection, &stop).await,
         };
         protocol::framing::write_message(&mut connection, &response).await?;
     }
+}
+
+/// Answer `Shutdown` first, then signal [`Server::stop_requested`]: the
+/// client learns which process is stopping before it goes.
+async fn acknowledge_shutdown<S>(connection: &mut S, stop: &Notify) -> io::Result<()>
+where
+    S: AsyncWrite + Unpin,
+{
+    protocol::framing::write_message(
+        connection,
+        &Response::Shutdown(ShutdownResponse {
+            pid: std::process::id(),
+        }),
+    )
+    .await?;
+    stop.notify_one();
+    Ok(())
 }
 
 /// #53: a read-only lookup in the daemon's artifact store -- no
@@ -467,43 +510,50 @@ fn bind_listener(endpoint: &RuntimeEndpoint) -> io::Result<Listener> {
     Listener::bind(&endpoint.pipe_name)
 }
 
-/// #13 task 4 §6: lock → bind → (on conflict) real handshake → stale
-/// judgment → cleanup/rebind only when it is actually safe.
-async fn acquire_lock_or_detect_stale(endpoint: &RuntimeEndpoint) -> Result<(), StartError> {
-    match create_lock_file(&endpoint.lock_path) {
-        Ok(()) => Ok(()),
-        Err(source) if source.kind() == io::ErrorKind::AlreadyExists => {
-            let is_live =
-                tokio::time::timeout(LIVENESS_PROBE_TIMEOUT, client::probe_live(endpoint))
-                    .await
-                    .unwrap_or(false);
-            if is_live {
-                return Err(StartError::AlreadyRunning);
-            }
-
-            // Confirmed stale: nothing answered a real handshake. Safe to
-            // clean up and take over.
-            let _ = std::fs::remove_file(&endpoint.lock_path);
-            remove_stale_socket_artifact(endpoint);
-            create_lock_file(&endpoint.lock_path).map_err(StartError::Io)
-        }
-        Err(source) => Err(StartError::Io(source)),
+/// #13 task 4 §6, with #89's OS lock: only one process at a time can
+/// hold the lock, so two concurrent starts can never both clean up and
+/// bind. A daemon from before #89 held no OS lock, so whatever still
+/// answers the endpoint gets the same live-handshake check as before.
+async fn acquire_lock_or_detect_stale(endpoint: &RuntimeEndpoint) -> Result<File, StartError> {
+    let Some(lock) = lock_file(&endpoint.lock_path)? else {
+        return Err(StartError::AlreadyRunning);
+    };
+    let is_live = tokio::time::timeout(LIVENESS_PROBE_TIMEOUT, client::probe_live(endpoint))
+        .await
+        .unwrap_or(false);
+    if is_live {
+        return Err(StartError::AlreadyRunning);
     }
+    // Owning the lock with nothing answering: any socket left here is a
+    // crashed instance's.
+    remove_stale_socket_artifact(endpoint);
+    Ok(lock)
 }
 
-fn create_lock_file(path: &Path) -> io::Result<()> {
+/// The lock file, locked by this process -- or `None` if another process
+/// holds it.
+fn lock_file(path: &Path) -> io::Result<Option<File>> {
     use std::io::Write as _;
 
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
     let mut file = std::fs::OpenOptions::new()
+        .read(true)
         .write(true)
-        .create_new(true)
+        .create(true)
+        .truncate(false)
         .open(path)?;
-    // PID is diagnostic only (#13 task 4 §6): liveness is always decided
-    // by `client::probe_live`'s real handshake, never by reading this back.
-    write!(file, "{}", std::process::id())
+    match file.try_lock() {
+        Ok(()) => {}
+        Err(std::fs::TryLockError::WouldBlock) => return Ok(None),
+        Err(std::fs::TryLockError::Error(source)) => return Err(source),
+    }
+    // PID is diagnostic only (#13 task 4 §6): liveness is decided by the
+    // lock and a real handshake, never by reading this back.
+    file.set_len(0)?;
+    write!(file, "{}", std::process::id())?;
+    Ok(Some(file))
 }
 
 fn remove_stale_socket_artifact(endpoint: &RuntimeEndpoint) {

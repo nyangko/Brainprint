@@ -108,12 +108,12 @@ fn main() {
             attach_toctou_over_the_wire_is_stale,
         ),
         (
-            "protocol_14_handshakes_strictly",
-            protocol_14_handshakes_strictly,
+            "protocol_15_handshakes_strictly",
+            protocol_15_handshakes_strictly,
         ),
         (
-            "protocol_is_14_schema_7_payload_2",
-            protocol_is_14_schema_7_payload_2,
+            "protocol_is_15_schema_7_payload_2",
+            protocol_is_15_schema_7_payload_2,
         ),
     ];
     let handles: Vec<_> = tests
@@ -333,6 +333,7 @@ struct Cli {
 impl Cli {
     fn run(&self, args: &[&str], stdin: Option<&str>) -> Output {
         let mut child = Command::new(cli_bin())
+            .env(brainprint_core::lifecycle::NO_AUTOSTART_ENV, "1")
             .args(args)
             .env("HOME", &self.home)
             .env("USERPROFILE", &self.home)
@@ -1799,7 +1800,7 @@ fn attach_toctou_over_the_wire_is_stale() {
 
 /// 9 ↔ 9 is served; an 8 client is refused by this daemon before any
 /// request; the real CLI stops at an 8 daemon.
-fn protocol_14_handshakes_strictly() {
+fn protocol_15_handshakes_strictly() {
     block_on(async {
         let mut fixture = Fixture::new("handshake", &Watch::Silent).await;
         let work_item = fixture.started().await;
@@ -1808,14 +1809,14 @@ fn protocol_14_handshakes_strictly() {
             send(
                 &mut old,
                 &Request::Handshake(HandshakeRequest {
-                    protocol_version: 13,
-                    client_kind: "v13".to_owned(),
+                    protocol_version: 14,
+                    client_kind: "v14".to_owned(),
                 })
             )
             .await,
             Response::Handshake(HandshakeResponse::VersionMismatch {
-                server_protocol_version: 14,
-                client_protocol_version: 13,
+                server_protocol_version: 15,
+                client_protocol_version: 14,
             })
         );
         let request = Request::Work(WorkRequest {
@@ -1824,9 +1825,9 @@ fn protocol_14_handshakes_strictly() {
         });
         let _ = protocol::framing::write_message(&mut old, &request).await;
         let reply: std::io::Result<Response> = protocol::framing::read_message(&mut old).await;
-        assert!(reply.is_err(), "a v13 client is never served");
+        assert!(reply.is_err(), "a v14 client is never served");
         assert_eq!(result_rows(&fixture.ws.root), (0, 0));
-        let mut current = connect(&fixture.endpoint, 14).await;
+        let mut current = connect(&fixture.endpoint, 15).await;
         assert!(matches!(
             send(&mut current, &request).await,
             Response::Work(WorkResponse::Recorded(_))
@@ -1834,7 +1835,7 @@ fn protocol_14_handshakes_strictly() {
     });
 
     block_on(async {
-        let home = TestDir::create("v13-daemon");
+        let home = TestDir::create("v14-daemon");
         let endpoint = runtime_paths::resolve(&GlobalPaths::from_home(home.path()));
         #[cfg(unix)]
         let listener = {
@@ -1843,7 +1844,7 @@ fn protocol_14_handshakes_strictly() {
         };
         #[cfg(windows)]
         let listener = protocol::Listener::bind(&endpoint.pipe_name).expect("listener");
-        let fake_v13 = tokio::spawn(async move {
+        let fake_v14 = tokio::spawn(async move {
             let mut listener = listener;
             let mut connection = listener.accept().await.expect("accept");
             let Request::Handshake(handshake) = protocol::framing::read_message(&mut connection)
@@ -1855,7 +1856,7 @@ fn protocol_14_handshakes_strictly() {
             protocol::framing::write_message(
                 &mut connection,
                 &Response::Handshake(HandshakeResponse::VersionMismatch {
-                    server_protocol_version: 13,
+                    server_protocol_version: 14,
                     client_protocol_version: handshake.protocol_version,
                 }),
             )
@@ -1883,12 +1884,12 @@ fn protocol_14_handshakes_strictly() {
             "{}",
             text(&output.stderr)
         );
-        assert_eq!(fake_v13.await.expect("fake daemon"), 14);
+        assert_eq!(fake_v14.await.expect("fake daemon"), 15);
     });
 }
 
-fn protocol_is_14_schema_7_payload_2() {
-    assert_eq!(PROTOCOL_VERSION, 14);
+fn protocol_is_15_schema_7_payload_2() {
+    assert_eq!(PROTOCOL_VERSION, 15);
     assert_eq!(
         brainprint_engine::schema::workspace::WORKSPACE_MIGRATIONS.len(),
         7

@@ -82,7 +82,7 @@ pub async fn run_doctor(path: Option<String>, json: bool) -> Exit {
 /// as before; with one, the Workspace's compact status beside it.
 pub async fn run_status(path: Option<String>, json: bool) -> Exit {
     let path = path.map(|path| absolute_workspace(&path));
-    let mut connection = match client::connect_and_handshake().await {
+    let mut connection = match client::connect_existing().await {
         Ok(connection) => connection,
         Err(error) => {
             eprintln!("brainprint: {error}");
@@ -321,7 +321,9 @@ pub async fn run_uninit(path: Option<String>, json: bool) -> Exit {
 
 fn daemon_problem(error: &CliError) -> String {
     match error {
-        CliError::DaemonNotRunning => "not running (start it: `brainprintd &`)".to_owned(),
+        CliError::DaemonNotRunning => {
+            "not running (start it: `brainprint daemon start`)".to_owned()
+        }
         CliError::VersionMismatch {
             server_protocol_version,
             client_protocol_version,
