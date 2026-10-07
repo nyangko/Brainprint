@@ -282,12 +282,14 @@ On Windows the IPC endpoint is a named pipe and home is `%USERPROFILE%`.
 
 **Source ownership.** The source tree remains the source of truth. `.brainprint/` stores structured understanding (identities, symbols with signatures and spans, relations, fingerprints, knowledge, state), not a copy of file bodies — a schema test (`no_schema_stores_raw_source_body`) enforces this. Source text shown in answers is read from the current file at query time. Add `.brainprint/` to your `.gitignore`.
 
-Discovery always skips `.git`, `.brainprint`, `node_modules`, `venv`, `.venv`, `virtualenv`, and skips `target`, `bin`, `obj`, `build`, `dist` when project markers show they are build output. `.gitignore` is **not** parsed; add more directory names (names, not globs) with:
+Discovery always skips `.git`, `.brainprint`, `node_modules`, `venv`, `.venv`, `virtualenv`, and skips `target`, `bin`, `obj`, `build`, `dist` when project markers show they are build output. By design, `.gitignore` (and `.git/info/exclude`, global excludes, `.brainprintignore`) does **not** decide which files Brainprint indexes ([#82](https://github.com/nyangko/Brainprint/issues/82)): Git-ignored files are often generated source, local config or test fixtures that the code really uses, and dropping them would turn real symbols and imports into false "not found" or external answers. The index, the watcher and text search all use this one rule set, with or without Git. To exclude a large vendor/cache tree, add its directory name (names, not globs):
 
 ```toml
 # <workspace>/.brainprint/config.toml
 extra_excluded_directory_names = ["vendor", "third_party"]
 ```
+
+Changing the list and running `brainprint sync` removes the matching Resources (as deleted); taking a name back out re-adds them with new Resource ids.
 
 ### Measured footprint (one example, not a guarantee)
 
@@ -318,7 +320,7 @@ So **Brainprint 0.1.0 does not deliver lower provider cost than native-only expl
 1. **Compact rows are terse, not prose.** Relation rows name endpoints by id, a relation gap is located as `<resource id>:<line>`, and evidence without a source span (target selection, coverage reports) prints in Rust `Debug` form. Coverage is always stated (`Incoming: 4 confirmed, coverage Partial (…)`, `boundary edges: None found -- coverage incomplete`), and every line number shown is the 1-based editor line ([#78](https://github.com/nyangko/Brainprint/issues/78)).
 2. **Columns are bytes.** The human column is byte offset + 1, not a visual column on non-ASCII lines.
 3. **`wide` budget can be too large for some MCP clients.** Its output may exceed a client's tool-output limit; use `compact`/`standard` and continuation.
-4. **Text search can truncate on large ignored trees.** Whole-Workspace `find text` on repos with large git-ignored vendor directories can return `TRUNCATED` ([#63](https://github.com/nyangko/Brainprint/issues/63)), because `.gitignore` is not parsed. Workaround: `extra_excluded_directory_names`, or `--path-prefix`.
+4. **Whole-Workspace text search can truncate.** A broad `find text` stops at its search budget (8 MiB at `compact`) and returns `TRUNCATED` when a rare or absent pattern needs more bytes than that — on this repository even with only tracked files (10.7 MB). Large untracked vendor/cache trees make it more frequent ([#82](https://github.com/nyangko/Brainprint/issues/82)). Use `--path-prefix`, a larger `--search-budget`, or `extra_excluded_directory_names`.
 5. **Semantic backends are separate installs.** Without them, results are structural with explicit gaps; C#/Rust additionally need `project_execution_trust = "Trusted"`.
 6. **No cost-saving guarantee.** See [Benchmarks](#benchmark-and-economy-results).
 7. **Manual setup.** No packages, no auto-start of the daemon, no service unit, no client auto-configuration; `find files` listings are capped (default 200).
