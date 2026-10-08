@@ -84,6 +84,22 @@ The build produces four binaries in `target/release/`; put them on your `PATH`:
 | `brainprint-mcp` | MCP server over stdio; a thin adapter to the daemon exposing four tools. |
 | `brainprint-agent` | Optional client hook bridge for Claude Code, Codex CLI and Gemini CLI. |
 
+## Updating
+
+```sh
+brainprint update --check          # installed vs. latest release; changes nothing
+brainprint update                  # build the latest release from source and install it
+brainprint update --version 0.1.3  # that exact release instead (never an older one)
+```
+
+**Bootstrap: `brainprint update` first ships in 0.1.2.** A 0.1.1 installation has no `update` command, so 0.1.2 is installed once the manual way above (build the `v0.1.2` tag, copy the four binaries; the 0.1.1 daemon predates `daemon stop`, so end it with Ctrl+C where it runs or end its `brainprintd` process). Releases after 0.1.2 are installed with `brainprint update`.
+
+- **What it does.** Lists the release tags (`vMAJOR.MINOR.PATCH`) of `github.com/nyangko/Brainprint` with `git ls-remote`, fetches exactly the target tag into a temporary directory and checks that the checkout is the commit the tag names, checks it is a complete Brainprint tree of that version, runs `cargo build --release --locked` with the release's own toolchain file, and checks that all four built binaries report the target version. Until then the installation is untouched. It needs `git` and a Rust toolchain on `PATH`, and it is the only command that uses the network — nothing checks for updates on its own.
+- **Which installation.** The directory of the running `brainprint` (a symlink to it resolved) — never another one on `PATH`. All four binaries must be there as regular files and the directory writable; it refuses to run from a cargo `target/` directory.
+- **Activation.** The running daemon is stopped (`daemon stop`), then the four binaries are replaced together: each installed one renamed aside, the new one renamed into place — renames work on a running binary on Windows too. Any failure puts the previous four back. A daemon that was running is restarted by the *new* `brainprint` and must report the target version, or the previous set goes back and its daemon is started again; a daemon that was not running is left stopped. A daemon of another protocol (such as 0.1.1's) is reported and the update refuses before changing anything.
+- **Data.** Config, `global.db`, Workspaces (ProjectID, WorkspaceID, config), durable knowledge and Working State are not touched, and nothing is rebuilt; the new daemon applies its own schema migrations when it opens them. A rollback restores binaries only: a migration the new daemon already committed is not reverted, and the older binary then refuses that database with a typed "schema newer" error instead of using it.
+- **Clients.** A `brainprint-mcp` that is already running (Claude Code, Codex, Gemini) keeps the old version until its client restarts it — restart them after an update.
+
 ## Quick start
 
 ```sh
@@ -125,6 +141,7 @@ Every command has `--help`. Workspace-scoped commands default to the current dir
 | Command | What it does |
 | --- | --- |
 | `install` | Create the global config and `global.db`. |
+| `update [--check] [--version X.Y.Z]` | Build a Brainprint release from its exact source tag and replace all four binaries, restarting a running daemon (see [Updating](#updating)). `--check` only reports. |
 | `status [PATH] [--json]` | Daemon status; with a path, the Workspace's compact status. Read-only. |
 | `init [PATH]` | Create `.brainprint/` and attach the Workspace (initial index + watcher). On a detached Workspace it re-attaches. |
 | `doctor [PATH] [--json]` | Read-only diagnosis: databases and schemas, identity binding, index currentness, runtime/watcher, semantic backends. Never repairs. |
@@ -316,7 +333,7 @@ On this repository (579 files, macOS, release build, no semantic backend configu
 
 - Daemon IPC is a local Unix socket (Windows: named pipe). The only TCP listener is the optional Web UI, bound to `127.0.0.1`.
 - Brainprint contains no HTTP client and sends no telemetry anywhere. The only optional telemetry is the `brainprint-agent` JSONL file you enable with `BRAINPRINT_ADOPTION_TELEMETRY_PATH`, written locally.
-- External processes are only the semantic backends you configure and the verification commands you explicitly submit; what those programs do is up to them.
+- External processes are only the semantic backends you configure, the verification commands you explicitly submit, and the `git`/`cargo` that `brainprint update` runs when you run it (it reads the public repository; nothing is sent); what those programs do is up to them.
 - Nothing is uploaded; there is no account or cloud component.
 
 ## Benchmark and economy results

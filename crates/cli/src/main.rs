@@ -3,6 +3,7 @@ mod daemon;
 mod query;
 mod surface;
 mod tui;
+mod update;
 mod web;
 
 use clap::Parser as _;
@@ -13,6 +14,7 @@ async fn main() {
     let exit_code = match Cli::try_parse() {
         Ok(Cli::Install) => run(cmd_install()).await,
         Ok(Cli::Daemon { command }) => daemon::run(command).await,
+        Ok(Cli::Update { check, version }) => update::run(check, version).await,
         Ok(Cli::Init { path }) => run(cmd_init(path)).await,
         Ok(Cli::Tui { workspace, locale }) => tui::run(&workspace, locale).await,
         Ok(Cli::Web {

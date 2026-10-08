@@ -45,10 +45,13 @@ pub async fn run_query_command(cli: Cli) -> Exit {
         Cli::Status { path, json } => maintenance::run_status(path, json).await,
         Cli::Install
         | Cli::Daemon { .. }
+        | Cli::Update { .. }
         | Cli::Init { .. }
         | Cli::Tui { .. }
         | Cli::Web { .. } => {
-            unreachable!("main.rs handles Install/Daemon/Init/Tui/Web before dispatching here")
+            unreachable!(
+                "main.rs handles Install/Daemon/Update/Init/Tui/Web before dispatching here"
+            )
         }
     }
 }

@@ -190,21 +190,25 @@ impl From<io::Error> for LifecycleError {
 
 impl Launch {
     /// The `brainprintd` next to the running executable, logging to
-    /// `~/.brainprint/logs/brainprintd.log` (or the runtime root without a
-    /// home directory).
+    /// [`log_path`].
     pub fn current_install(endpoint: &EndpointPaths) -> Result<Self, LifecycleError> {
         let exe = std::env::current_exe().map_err(LifecycleError::CurrentExe)?;
         let daemon_exe = sibling_daemon(&exe);
         if !daemon_exe.is_file() {
             return Err(LifecycleError::DaemonBinaryNotFound(daemon_exe));
         }
-        let log_path = endpoint::daemon_log_path()
-            .unwrap_or_else(|| endpoint.runtime_root.join("brainprintd.log"));
         Ok(Self {
             daemon_exe,
-            log_path,
+            log_path: log_path(endpoint),
         })
     }
+}
+
+/// Where a background daemon writes its output: `~/.brainprint/logs/
+/// brainprintd.log`, or the runtime root without a home directory.
+#[must_use]
+pub fn log_path(endpoint: &EndpointPaths) -> PathBuf {
+    endpoint::daemon_log_path().unwrap_or_else(|| endpoint.runtime_root.join("brainprintd.log"))
 }
 
 /// `<dir of exe>/brainprintd[.exe]`.

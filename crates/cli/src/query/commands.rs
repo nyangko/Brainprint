@@ -57,6 +57,20 @@ pub enum Cli {
         #[command(subcommand)]
         command: DaemonCommand,
     },
+    /// #90: update this installation's four binaries to a Brainprint
+    /// release, built from its exact source tag (needs git and cargo),
+    /// and restart a running daemon. The only command that uses the
+    /// network; nothing checks for updates on its own.
+    Update {
+        /// Only report the installed and the latest (or `--version`)
+        /// release; changes nothing.
+        #[arg(long)]
+        check: bool,
+        /// That exact release (`MAJOR.MINOR.PATCH`) instead of the latest;
+        /// never an older one.
+        #[arg(long, value_name = "SEMVER")]
+        version: Option<crate::update::Version>,
+    },
     /// The daemon's status; with a path, also that Workspace's compact
     /// status: identity, stored revision/generation, currentness as an
     /// active runtime holds it, runtime/watcher, semantic backends.
