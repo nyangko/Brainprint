@@ -231,12 +231,35 @@ fn run(mut command: Command, timeout: Duration) -> Output {
         thread::sleep(Duration::from_millis(50));
     };
     let mut out = [None, None];
-    let deadline = Instant::now() + Duration::from_secs(30);
-    while out.iter().any(Option::is_none) {
-        let (index, bytes) = pipes
-            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-            .unwrap_or_else(|_| panic!("{command:?} exited but its output pipes stayed open"));
-        out[index] = Some(bytes);
+    let collect = |out: &mut [Option<Vec<u8>>; 2], within: Duration| {
+        let deadline = Instant::now() + within;
+        while out.iter().any(Option::is_none) {
+            match pipes.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+                Ok((index, bytes)) => out[index] = Some(bytes),
+                Err(_) => return false,
+            }
+        }
+        true
+    };
+    if !collect(&mut out, Duration::from_secs(30)) {
+        let processes = processes();
+        let mut stop = command_like(&command);
+        stop.args(["daemon", "stop"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let _ = stop.status();
+        let released = collect(&mut out, Duration::from_secs(30));
+        panic!(
+            "{command:?} exited ({status}) but its output pipes stayed open for 30s; after \
+             `brainprint daemon stop` they {}.\nstdout so far: {:?}\nprocesses:\n{processes}",
+            if released {
+                "closed"
+            } else {
+                "were still open"
+            },
+            out[0].as_deref().map(String::from_utf8_lossy),
+        );
     }
     let [stdout, stderr] = out.map(Option::unwrap_or_default);
     Output {
@@ -244,6 +267,41 @@ fn run(mut command: Command, timeout: Duration) -> Output {
         stdout,
         stderr,
     }
+}
+
+/// The same program in the same home, for a diagnostic follow-up.
+fn command_like(command: &Command) -> Command {
+    let mut like = Command::new(command.get_program());
+    for (key, value) in command.get_envs() {
+        match value {
+            Some(value) => like.env(key, value),
+            None => like.env_remove(key),
+        };
+    }
+    like
+}
+
+/// Diagnostic: the processes that could hold an inherited pipe.
+fn processes() -> String {
+    let mut list = if cfg!(windows) {
+        let mut list = Command::new("powershell");
+        list.args([
+            "-NoProfile",
+            "-Command",
+            "Get-CimInstance Win32_Process | Format-Table ProcessId,ParentProcessId,Name,\
+             CommandLine -AutoSize | Out-String -Width 400",
+        ]);
+        list
+    } else {
+        let mut list = Command::new("ps");
+        list.args(["-eo", "pid,ppid,command"]);
+        list
+    };
+    list.stdin(Stdio::null()).stderr(Stdio::null());
+    list.output().map_or_else(
+        |error| error.to_string(),
+        |output| String::from_utf8_lossy(&output.stdout).into_owned(),
+    )
 }
 
 fn stdout(output: &Output) -> String {
