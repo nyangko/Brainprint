@@ -1010,16 +1010,25 @@ pub(crate) fn replace_in_transaction(
 
     // Only now the declarations that are actually gone. Written after
     // the upserts, so an inconsistent incoming set is refused before
-    // anything is deleted -- and children first, because a parent still
-    // has rows pointing at it.
+    // anything is deleted. A row id says nothing about the hierarchy (a
+    // surviving child keeps its old, lower row while its parent is
+    // re-inserted higher), so no delete order is assumed: every vanished
+    // row first lets go of its parent, and then none of them is anyone's
+    // parent among the rows still to be deleted. Surviving rows were
+    // already re-pointed by the upserts above.
     let incoming: Vec<SymbolId> = symbols.iter().map(|symbol| symbol.id).collect();
-    let mut vanished: Vec<i64> = existing
+    let vanished: Vec<i64> = existing
         .iter()
         .filter(|(id, _)| !incoming.contains(id))
         .map(|(_, local)| *local)
         .collect();
-    vanished.sort_unstable_by(|left, right| right.cmp(left));
-    for local in vanished {
+    for local in &vanished {
+        connection.execute(
+            "UPDATE symbol SET parent_symbol_id = NULL WHERE id = ?1",
+            params![local],
+        )?;
+    }
+    for local in &vanished {
         connection.execute("DELETE FROM symbol WHERE id = ?1", params![local])?;
     }
 
@@ -1676,6 +1685,129 @@ export function top(): number { return 1 }
             published,
             "a half-applied replacement must not survive"
         );
+    }
+
+    const ENV_OBJECT: &str = "declare const env: { A: string; B: string }\n";
+    const ENV_INTERFACE: &str = "interface env { A: string; B: string }\n";
+    const ENV_NARROWED: &str = "declare const env: { A: string }\n";
+
+    fn assert_no_dangling_parent(store: &SymbolStore) {
+        let violations: i64 = store
+            .connection()
+            .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+                row.get(0)
+            })
+            .expect("foreign_key_check");
+        assert_eq!(violations, 0, "no row may point at a missing row");
+    }
+
+    fn id_of(symbols: &[Symbol], name: &str) -> SymbolId {
+        symbols
+            .iter()
+            .find(|symbol| symbol.qualified_name == name)
+            .unwrap_or_else(|| panic!("{name} is published"))
+            .id
+    }
+
+    /// The Web-OrchStack `ResourceIndexDirty` (#91): a parent whose kind
+    /// changes gets a new, higher row while a surviving child keeps its
+    /// old, lower one. When the new parent and a lower-id child then
+    /// vanish together, deleting by descending row id removes the parent
+    /// first.
+    #[test]
+    fn a_parent_changing_kind_does_not_make_a_later_replacement_fail() {
+        let fixture = Fixture::create("parent-kind-change");
+        fixture.write("env.d.ts", ENV_OBJECT);
+        let (store, resource, generation) = fixture.baseline_with_generation("env.d.ts");
+
+        let (first, _) =
+            publish_structure(&store, &resource, generation, ENV_OBJECT).expect("first");
+        let (second, _) =
+            publish_structure(&store, &resource, generation, ENV_INTERFACE).expect("kind change");
+        assert_eq!(
+            id_of(&first, "env.A"),
+            id_of(&second, "env.A"),
+            "the surviving child keeps its SymbolId across the parent's kind change"
+        );
+        assert_ne!(id_of(&first, "env"), id_of(&second, "env"));
+
+        let (third, occurrences) = publish_structure(&store, &resource, generation, ENV_NARROWED)
+            .expect("the vanished parent and child are removed in any order");
+
+        assert_eq!(store.list_for_resource(resource.id).expect("list"), third);
+        assert_eq!(
+            id_of(&second, "env.A"),
+            id_of(&third, "env.A"),
+            "the child that survived keeps its SymbolId"
+        );
+        assert_eq!(
+            third
+                .iter()
+                .find(|symbol| symbol.qualified_name == "env.A")
+                .and_then(|symbol| symbol.parent_id),
+            Some(id_of(&third, "env")),
+            "and its parent reference points at the new parent"
+        );
+        assert_eq!(
+            store
+                .list_occurrences_for_resource(resource.id)
+                .expect("list"),
+            occurrences
+        );
+        assert_no_dangling_parent(&store);
+    }
+
+    #[test]
+    fn a_parent_and_all_its_children_can_vanish_together() {
+        let fixture = Fixture::create("parent-and-children-vanish");
+        fixture.write("env.d.ts", ENV_OBJECT);
+        let (store, resource) = fixture.baseline("env.d.ts");
+        publish(&store, &resource, ENV_OBJECT).expect("first");
+        publish(&store, &resource, ENV_INTERFACE).expect("kind change");
+
+        let unrelated = "declare const other: number\n";
+        let replaced = publish(&store, &resource, unrelated).expect("everything old is gone");
+
+        assert_eq!(
+            store.list_for_resource(resource.id).expect("list"),
+            replaced
+        );
+        assert!(
+            replaced
+                .iter()
+                .all(|symbol| symbol.qualified_name == "other")
+        );
+        assert_no_dangling_parent(&store);
+    }
+
+    #[test]
+    fn a_failed_replacement_after_a_kind_change_keeps_the_previous_set_whole() {
+        let fixture = Fixture::create("kind-change-rollback");
+        fixture.write("env.d.ts", ENV_OBJECT);
+        let (store, resource) = fixture.baseline("env.d.ts");
+        publish(&store, &resource, ENV_OBJECT).expect("first");
+        let published = publish(&store, &resource, ENV_INTERFACE).expect("kind change");
+
+        // Children whose parent is not in the replacement: refused after
+        // the upserts started, so the parent-pointer clearing and deletes
+        // must roll back with them.
+        let mut broken = publish(&store, &resource, ENV_NARROWED).expect("narrowed");
+        let narrowed = broken.clone();
+        broken.remove(0);
+        store
+            .replace_for_resource(resource.id, &resource.resource_revision, &published)
+            .expect("back to the interface form");
+        let error = store
+            .replace_for_resource(resource.id, &resource.resource_revision, &broken)
+            .expect_err("an inconsistent set must not be written");
+
+        assert!(matches!(error, SymbolError::UnknownParent { .. }));
+        assert_eq!(
+            store.list_for_resource(resource.id).expect("list"),
+            published
+        );
+        assert_ne!(published, narrowed);
+        assert_no_dangling_parent(&store);
     }
 
     #[test]
