@@ -416,9 +416,16 @@ fn spawn_detached(command: &mut Command) -> io::Result<Child> {
 /// log and NUL handles std duplicates for it. Nothing else in this process
 /// passes them on implicitly: std duplicates an inherited stdio for each
 /// child it starts.
+///
+/// A process that starts a `brainprint` which starts the daemon in turn
+/// (`brainprint update`, #90) calls this first too: every child inherits
+/// all of its parent's inheritable handles, not only its stdio, so the
+/// intermediate `brainprint` would otherwise carry the caller's own pipes
+/// as plain inherited handles -- which no clearing of its own stdio
+/// reaches -- on to the daemon.
 #[cfg(windows)]
 #[allow(unsafe_code)]
-fn stop_inheriting_stdio() {
+pub fn stop_inheriting_stdio() {
     use std::os::windows::io::{AsRawHandle as _, RawHandle};
 
     const HANDLE_FLAG_INHERIT: u32 = 0x0000_0001;

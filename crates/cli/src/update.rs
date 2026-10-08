@@ -126,6 +126,10 @@ pub async fn run(check: bool, version: Option<Version>) -> i32 {
 }
 
 async fn update(check: bool, requested: Option<Version>) -> Fallible<()> {
+    // The new `brainprint daemon restart` starts the daemon: keep this
+    // process's own output out of both.
+    #[cfg(windows)]
+    lifecycle::stop_inheriting_stdio();
     let current: Version = PACKAGE_VERSION.parse()?;
     let source = source()?;
     // A check changes nothing, so it needs no installation and no daemon.
