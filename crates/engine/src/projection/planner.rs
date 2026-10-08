@@ -57,8 +57,8 @@ use crate::{
     paths::WorkspacePaths,
     prepare::{PrepareError, PreparedRange, RangeRole, SourceUnavailable, unavailable_from},
     query::{
-        Located, QueryError, QueryIndex, ResourceLocator, StructuralCoverage, SymbolCandidate,
-        SymbolQuery, SymbolSelector,
+        Located, QueryError, QueryIndex, ResourceLocator, SymbolCandidate, SymbolQuery,
+        SymbolSelector,
     },
     registry::{GlobalRegistry, RegistryError},
     related_tests::{RelatedTestError, RelatedTests},
@@ -656,7 +656,11 @@ impl ProjectionPlanner {
             self.count(|stats| stats.relation_queries += 1);
             plan.raw.known(&answer.confirmed);
             plan.raw.known(&answer.gaps);
-            let report = answer.coverage.limits();
+            let mut report = answer.coverage.limits();
+            if *direction == Direction::Incoming {
+                // A caller can sit anywhere in the Workspace (#58).
+                report.merge(&self.index().structural_limits()?);
+            }
             let confirmed = answer.confirmed_count();
             self.relations(answer.confirmed, plan)?;
             plan.items
@@ -1163,14 +1167,8 @@ impl Plan {
         let mut report = CoverageReport::new();
         report.note_if(located.truncated, CoverageLimit::CandidateTruncated);
         for note in &located.incomplete_coverage {
-            match note.coverage {
-                StructuralCoverage::Complete => {}
-                StructuralCoverage::Partial => report.note(CoverageLimit::PartialSupport),
-                StructuralCoverage::ContainerOnly
-                | StructuralCoverage::Unsupported
-                | StructuralCoverage::GeneratedUnmapped => {
-                    report.note(CoverageLimit::UnsupportedScope);
-                }
+            if let Some(limit) = note.coverage.limit() {
+                report.note(limit);
             }
         }
         report.note_if(

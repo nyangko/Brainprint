@@ -34,9 +34,10 @@ use crate::{
     },
     paths::WorkspacePaths,
     projection::{
-        ChangeKind, EvidenceItem, PlannerError, PlannerStats, PreparedProjection,
-        ProjectionCorrelation, ProjectionGap, ProjectionIntent, ProjectionKnowledgeRefs,
-        ProjectionPlanner, ProjectionRequest, ProjectionRequestError, ProjectionTarget,
+        ChangeKind, CoverageEvidence, CoverageSubject, EvidenceItem, PlannerError, PlannerStats,
+        PreparedProjection, ProjectionCorrelation, ProjectionGap, ProjectionIntent,
+        ProjectionKnowledgeRefs, ProjectionPlanner, ProjectionRequest, ProjectionRequestError,
+        ProjectionTarget,
         planner::{
             ContextRetention, DeliveryBudget, DeliveryContinuation, DeliveryError, DeliveryLedger,
             ExactTokenCounter, PendingDelivery,
@@ -45,7 +46,7 @@ use crate::{
     },
     query::{Currentness, DEFAULT_CANDIDATE_LIMIT, FileListing, FileQuery, QueryError},
     registry::{GlobalRegistry, RegistryError, RegistryState},
-    relations::{RelationAnswer, RelationError, caller_owner_candidates},
+    relations::{Direction, RelationAnswer, RelationError, caller_owner_candidates},
     resource::{ResourceKind, ResourceLanguage, ResourceRole},
     search::{
         FallbackReason, SearchBudget, SearchError, TextPattern, TextSearch, TextSearchResult,
@@ -767,7 +768,7 @@ impl CoreQuerySurface {
         self.check(request.context.workspace)?;
         let mut locate = self.request(&request.context, ProjectionIntent::Locate);
         locate.target = Some(request.target);
-        let projection = self.plan(&locate)?;
+        let mut projection = self.plan(&locate)?;
         let target = TargetResolution::of(&projection);
         let mut answers = Vec::new();
         if let TargetResolution::Resolved(anchor) = &target {
@@ -797,6 +798,28 @@ impl CoreQuerySurface {
                             .map_err(CoreError::Relation)?
                             .len();
                 }
+                // #58: a caller can sit in any Resource the structural
+                // index covers only partly -- said once, compactly, not as
+                // the per-file list an exact target no longer carries.
+                let mut report = answer.coverage.limits();
+                report.merge(
+                    &self
+                        .planner
+                        .query_index()
+                        .structural_limits()
+                        .map_err(CoreError::Query)?,
+                );
+                projection
+                    .evidence
+                    .push(EvidenceItem::Coverage(CoverageEvidence {
+                        subject: CoverageSubject::Relations {
+                            anchor: anchor.clone(),
+                            direction: Direction::Incoming,
+                            kinds: answer.kinds.clone(),
+                        },
+                        report,
+                        confirmed: answer.confirmed_count(),
+                    }));
                 answers.push(answer);
                 self.count(|stats| stats.relation_queries += 1);
             }

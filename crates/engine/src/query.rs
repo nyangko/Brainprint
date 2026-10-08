@@ -44,6 +44,7 @@ use rusqlite::{Connection, OptionalExtension, ToSql, params_from_iter};
 
 use crate::{
     component::{self, ComponentError, FreshnessState},
+    coverage::{CoverageLimit, CoverageReport},
     db::DbOpenError,
     parser::{self, StructuralCapability},
     resource::{self, Resource, ResourceError, ResourceKind, ResourceLanguage, ResourceRole},
@@ -126,6 +127,18 @@ impl StructuralCoverage {
     #[must_use]
     pub const fn is_complete(self) -> bool {
         matches!(self, Self::Complete)
+    }
+
+    /// The limit this coverage places on a question asked across it.
+    #[must_use]
+    pub const fn limit(self) -> Option<CoverageLimit> {
+        match self {
+            Self::Complete => None,
+            Self::Partial => Some(CoverageLimit::PartialSupport),
+            Self::ContainerOnly | Self::Unsupported | Self::GeneratedUnmapped => {
+                Some(CoverageLimit::UnsupportedScope)
+            }
+        }
     }
 }
 
@@ -655,6 +668,17 @@ impl QueryIndex {
             }
         }
 
+        // A Symbol id names one row in one Resource: no other Resource's
+        // structural coverage can hide it or add a second match, so once
+        // it is found its own Resource is the whole coverage scope (#58:
+        // the Workspace-wide list buried the source of an exact inspect).
+        // An id found nowhere keeps the query's scope.
+        let coverage_scope = match (query.selector, candidates.first().or(last_valid.first())) {
+            (SymbolSelector::Id(_), Some(found)) => {
+                Some(ResourceScope::Id(found.symbol.resource_id))
+            }
+            _ => query.scope,
+        };
         Ok(Located {
             candidates,
             last_valid,
@@ -662,7 +686,7 @@ impl QueryIndex {
             truncated,
             currentness: self.currentness()?,
             source: ResultSource::StructuralIndex,
-            incomplete_coverage: self.incomplete_coverage(query.scope)?,
+            incomplete_coverage: self.incomplete_coverage(coverage_scope)?,
         })
     }
 
@@ -780,6 +804,17 @@ impl QueryIndex {
             &resource.path_rel,
             resource.kind.as_str(),
         ))
+    }
+
+    /// The Workspace's structural gaps as limits, without the per-file
+    /// list (#58): what a question across the whole Workspace -- who
+    /// calls this -- cannot rule out.
+    pub fn structural_limits(&self) -> Result<CoverageReport, QueryError> {
+        Ok(self
+            .incomplete_coverage(None)?
+            .into_iter()
+            .filter_map(|note| note.coverage.limit())
+            .collect())
     }
 
     /// Every Resource in `scope` the structural index does not fully
@@ -1499,6 +1534,52 @@ def run():
             listing.currentness,
             Currentness::NotCurrent(NotCurrentReason::ResourceIndexDirty)
         );
+    }
+
+    #[test]
+    fn a_found_symbol_id_scopes_coverage_to_its_own_resource() {
+        let fixture = Fixture::create("id-coverage");
+        let index = fixture.index();
+        let widget = fixture.resource("ui/Widget.svelte");
+
+        // A name search can still miss a declaration in the container-only
+        // component, so its coverage stays Workspace-wide.
+        let by_name = index
+            .search_symbols(&SymbolQuery::new(SymbolSelector::QualifiedName("App.run")))
+            .expect("search");
+        let app_run = by_name.exact().expect("one App.run").clone();
+        assert!(
+            by_name
+                .incomplete_coverage
+                .iter()
+                .any(|note| note.resource_id == widget.id)
+        );
+
+        // The same Symbol by id: nothing elsewhere can change that answer.
+        let by_id = index
+            .search_symbols(&SymbolQuery::new(SymbolSelector::Id(app_run.symbol.id)))
+            .expect("search");
+        assert_eq!(
+            by_id.exact().map(|found| found.symbol.id),
+            Some(app_run.symbol.id)
+        );
+        assert!(
+            by_id
+                .incomplete_coverage
+                .iter()
+                .all(|note| note.resource_id == app_run.symbol.resource_id),
+            "{:?}",
+            by_id.incomplete_coverage
+        );
+
+        // An id found nowhere is still not a complete not-found.
+        let missing = index
+            .search_symbols(&SymbolQuery::new(SymbolSelector::Id(SymbolId::from_bytes(
+                [0xab; 16],
+            ))))
+            .expect("search");
+        assert!(missing.candidates.is_empty() && missing.last_valid.is_empty());
+        assert_eq!(missing.incomplete_coverage, by_name.incomplete_coverage);
     }
 
     #[test]

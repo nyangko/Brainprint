@@ -1300,6 +1300,64 @@ fn relations_are_filtered_exactly_by_direction_and_kind() {
 }
 
 #[test]
+fn an_exact_symbol_id_carries_only_its_own_coverage_and_incoming_keeps_the_workspace_gap() {
+    // #58 / #91: a Symbol id's selection no longer lists every partly
+    // covered Resource, but who calls it still cannot be ruled out there.
+    let fixture = Fixture::with_files(
+        "surface-id-coverage",
+        &[
+            ("src/unique.ts", UNIQUE_TS),
+            (
+                "ui/Widget.svelte",
+                "<script>\n  export function mount() {}\n</script>\n<p>hi</p>\n",
+            ),
+        ],
+    );
+    let surface = surface(&fixture);
+    let id = fixture.symbol("src/unique.ts", "holds_unique_fragment");
+    let incoming = relations_of(
+        &surface,
+        &fixture,
+        named(SymbolName::Id(id)),
+        RelationDirection::Incoming,
+        Vec::new(),
+    );
+
+    assert_eq!(
+        incoming.target,
+        TargetResolution::Resolved(GraphEndpoint::Symbol(id))
+    );
+    assert!(
+        selection_of(&incoming.selection)
+            .located
+            .incomplete_coverage
+            .is_empty(),
+        "the Widget cannot change what this id names"
+    );
+    let summary = incoming
+        .selection
+        .iter()
+        .find_map(|item| match item {
+            EvidenceItem::Coverage(coverage)
+                if matches!(
+                    coverage.subject,
+                    CoverageSubject::Relations {
+                        direction: Direction::Incoming,
+                        ..
+                    }
+                ) =>
+            {
+                Some(coverage)
+            }
+            _ => None,
+        })
+        .expect("the incoming answer's coverage, compactly");
+    assert!(summary.report.has(CoverageLimit::UnsupportedScope));
+    assert_eq!(summary.confirmed, incoming.answers[0].confirmed.len());
+    assert!(!summary.answer_state().is_safe_negative());
+}
+
+#[test]
 fn one_canonical_relation_keeps_every_occurrence() {
     // 23
     let fixture = Fixture::standard("surface-occurrences");
