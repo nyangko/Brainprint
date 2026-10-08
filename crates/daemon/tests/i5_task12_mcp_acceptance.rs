@@ -422,8 +422,8 @@ async fn parity_find_text() {
                 path_prefix: None,
                 search_budget: SearchBudgetWire {
                     max_results: 50,
-                    max_files: 500,
-                    max_bytes: 8 * 1024 * 1024,
+                    max_files: 5_000,
+                    max_bytes: 64 * 1024 * 1024,
                     deadline_ms: Some(1_000),
                 },
                 max_file_bytes: 1024 * 1024,
@@ -1559,4 +1559,92 @@ async fn human_lines_issue_75_representative_regression() {
         .map(|m| human_lines(&m["span"]).0)
         .collect();
     assert_eq!(got, editor_lines(CONFIG_RS, "CONFIG_FORMAT_VERSION"));
+}
+
+/// #91 D2b C': the default (compact) text search reaches past 500 files,
+/// still stops at 50 results, and a scope it could not finish is
+/// `Truncated` with an axis -- never `NotFound`.
+#[tokio::test]
+async fn compact_text_search_covers_5000_files_and_stays_honest() {
+    let home = TestHome::create("compact-c-prime-home");
+    let global_paths = home.global_paths();
+    let (_server, endpoint) = start_server(&global_paths).await;
+    let workspace = TestHome::create("compact-c-prime-ws");
+    // `a/` is 700 files (inside the 5,000-file budget, past the old 500);
+    // with `z/` the Workspace is 5,100 (past it). Walk order is path order.
+    for (dir, count) in [("a", 700), ("z", 4_400)] {
+        fs::create_dir_all(workspace.path().join(dir)).expect("dir");
+        for index in 0..count {
+            let mut body = format!("export const v{index} = {index};\n");
+            if dir == "a" && index < 60 {
+                body.push_str("// common\n");
+            }
+            if dir == "a" && index == 650 {
+                body.push_str("// needle_mid\n");
+            }
+            if dir == "z" && index == count - 1 {
+                body.push_str("// needle_last\n");
+            }
+            fs::write(
+                workspace.path().join(dir).join(format!("f{index:04}.ts")),
+                body,
+            )
+            .expect("fixture file should write");
+        }
+    }
+    let mut connection = ready_connection(&endpoint).await;
+    init_workspace(&mut connection, workspace.path()).await;
+    let paths = WorkspacePaths::from_root(workspace.path());
+    BaselineScan::open(&paths.index_db)
+        .expect("index.db")
+        .run_initial_scan(workspace.path(), &WorkspaceConfig::default(), "rev-1")
+        .expect("baseline scan");
+    let mcp =
+        BrainprintMcp::with_endpoint(workspace.path().to_path_buf(), mcp_endpoint(&global_paths));
+
+    let search = |pattern: &'static str, prefix: Option<&'static str>| {
+        let mcp = &mcp;
+        let root = workspace.path().to_string_lossy().into_owned();
+        async move {
+            let result = mcp
+                .find(Parameters(from_json(json!({
+                    "mode": "text",
+                    "pattern": pattern,
+                    "path_prefix": prefix,
+                    "workspace_path": root,
+                }))))
+                .await
+                .expect("brainprint.find text should succeed");
+            let QueryResultWire::Find(FindResultWire::Text(text)) = payload(&result) else {
+                panic!("expected Text result")
+            };
+            text
+        }
+    };
+
+    // 700 files: past the old 500-file cap, inside the new budget -- the
+    // late hit is found and the scope is complete.
+    let mid = search("needle_mid", Some("a")).await;
+    assert_eq!(mid.status, QueryStatusWire::Found, "{:?}", mid.scope);
+    assert_eq!(mid.matches.len(), 1);
+    assert_eq!(mid.matches[0].path_rel, "a/f0650.ts");
+    assert_eq!(mid.scope.budget_exhausted, None);
+    assert_eq!(mid.scope.files_scanned, 700);
+
+    // 60 hits: the 50-result bound still applies; what was found is kept.
+    let common = search("common", Some("a")).await;
+    assert_eq!(common.status, QueryStatusWire::Truncated);
+    assert_eq!(common.matches.len(), 50);
+    assert_eq!(common.scope.budget_exhausted, Some(BudgetAxisWire::Results));
+
+    // 5,100 files: the last one is past the 5,000-file budget. "Not found
+    // so far" is Truncated, never NotFound. (Deadline may bind first on a
+    // slow runner; an unfinished scan names its axis either way.)
+    let last = search("needle_last", None).await;
+    assert_eq!(last.status, QueryStatusWire::Truncated);
+    assert!(last.matches.is_empty());
+    assert!(matches!(
+        last.scope.budget_exhausted,
+        Some(BudgetAxisWire::Files | BudgetAxisWire::Deadline)
+    ));
 }

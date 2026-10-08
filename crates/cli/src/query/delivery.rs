@@ -102,8 +102,8 @@ fn search_budget_profile(profile: BudgetProfileArg) -> SearchBudgetWire {
     match profile {
         BudgetProfileArg::Compact => SearchBudgetWire {
             max_results: 50,
-            max_files: 500,
-            max_bytes: 8 * MIB,
+            max_files: 5_000,
+            max_bytes: 64 * MIB,
             deadline_ms: Some(1_000),
         },
         BudgetProfileArg::Standard => SearchBudgetWire {
@@ -166,5 +166,36 @@ impl SearchBudgetArgs {
             .max_file_bytes
             .unwrap_or_else(|| search_budget_max_file_bytes(self.profile));
         (budget, max_file_bytes)
+    }
+}
+
+#[cfg(test)]
+mod search_profile_tests {
+    use super::*;
+
+    const MIB: u64 = 1024 * 1024;
+
+    /// #91 D2b C': same table as `brainprint-mcp`'s `SearchBudgetProfileParam`.
+    #[test]
+    fn profiles_match_the_locked_table() {
+        use BudgetProfileArg::{Compact, Standard, Wide};
+        let got = [Compact, Standard, Wide].map(|p| {
+            let b = search_budget_profile(p);
+            (
+                b.max_results,
+                b.max_files,
+                b.max_bytes,
+                b.deadline_ms,
+                search_budget_max_file_bytes(p),
+            )
+        });
+        assert_eq!(
+            got,
+            [
+                (50, 5_000, 64 * MIB, Some(1_000), MIB),
+                (200, 5_000, 64 * MIB, Some(3_000), 4 * MIB),
+                (500, 20_000, 256 * MIB, Some(10_000), 8 * MIB),
+            ]
+        );
     }
 }

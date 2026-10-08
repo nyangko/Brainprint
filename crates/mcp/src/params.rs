@@ -251,7 +251,7 @@ impl DeliveryContinuationParam {
     }
 }
 
-/// Source bytes `mode: text` scans: compact 8 MiB, standard 64, wide 256.
+/// Source bytes `mode: text` scans: compact 64 MiB, standard 64, wide 256.
 // #25 "Text SearchBudget"'s exact locked profiles -- the same numeric
 // values `brainprint-cli`'s `--search-budget` already locks (Task 11).
 #[derive(Debug, Clone, Copy, Default, Deserialize, JsonSchema)]
@@ -271,8 +271,8 @@ impl SearchBudgetProfileParam {
             Self::Compact => (
                 SearchBudgetWire {
                     max_results: 50,
-                    max_files: 500,
-                    max_bytes: 8 * MIB,
+                    max_files: 5_000,
+                    max_bytes: 64 * MIB,
                     deadline_ms: Some(1_000),
                 },
                 MIB,
@@ -552,4 +552,36 @@ pub fn parse_policy_id(value: &str) -> Result<PolicyId, ParamError> {
 
 pub fn parse_decision_id(value: &str) -> Result<DecisionId, ParamError> {
     parse_id(value, "decision_id")
+}
+
+#[cfg(test)]
+mod search_profile_tests {
+    use super::SearchBudgetProfileParam::{Compact, Standard, Wide};
+
+    const MIB: u64 = 1024 * 1024;
+
+    /// #91 D2b C': compact scans 5,000 files / 64 MiB; the other profiles
+    /// and every other axis are unchanged. Must equal `brainprint-cli`'s
+    /// `search_budget_profile` (pinned by the same table over there).
+    #[test]
+    fn profiles_match_the_locked_table() {
+        let got = [Compact, Standard, Wide].map(|p| {
+            let (b, max_file_bytes) = p.into_wire();
+            (
+                b.max_results,
+                b.max_files,
+                b.max_bytes,
+                b.deadline_ms,
+                max_file_bytes,
+            )
+        });
+        assert_eq!(
+            got,
+            [
+                (50, 5_000, 64 * MIB, Some(1_000), MIB),
+                (200, 5_000, 64 * MIB, Some(3_000), 4 * MIB),
+                (500, 20_000, 256 * MIB, Some(10_000), 8 * MIB),
+            ]
+        );
+    }
 }
