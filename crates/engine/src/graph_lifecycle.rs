@@ -1596,20 +1596,25 @@ export function lone(): number {
                 )
                 .expect("count")
         };
+        // The relation index promises no order between targets.
+        let sorted = |mut targets: Vec<GraphEndpoint>| {
+            targets.sort_by_key(|target| format!("{target:?}"));
+            targets
+        };
         let calls = |fixture: &Fixture| {
-            fixture.outgoing(
+            sorted(fixture.outgoing(
                 &fixture.declaration("src/user.ts", "use"),
                 RelationKind::Calls,
-            )
+            ))
         };
 
         let first = symbols(&fixture);
         assert_eq!(
             calls(&fixture),
-            vec![
+            sorted(vec![
                 fixture.declaration("src/env.ts", "gone"),
                 fixture.declaration("src/env.ts", "kept"),
-            ],
+            ]),
             "both calls resolve before the edits"
         );
         assert_eq!(entities_of(&fixture, id(&first, "gone")), 1);
