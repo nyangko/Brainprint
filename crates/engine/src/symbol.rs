@@ -1810,6 +1810,68 @@ export function top(): number { return 1 }
         assert_no_dangling_parent(&store);
     }
 
+    /// The detach-and-delete of the vanished rows has already run when a
+    /// later step of the same transaction fails: nothing of it survives.
+    #[test]
+    fn a_failure_after_the_vanished_rows_were_deleted_restores_them_with_their_parents() {
+        let fixture = Fixture::create("failure-after-delete");
+        fixture.write("env.d.ts", ENV_OBJECT);
+        let (store, resource, generation) = fixture.baseline_with_generation("env.d.ts");
+        publish_structure(&store, &resource, generation, ENV_OBJECT).expect("first");
+        let (published, occurrences) =
+            publish_structure(&store, &resource, generation, ENV_INTERFACE).expect("kind change");
+        let rows_before = symbol_rows(&store);
+
+        // The narrowed set removes the parent and `env.B`; the evidence
+        // names a Symbol that is in no set, which is refused afterwards.
+        let dialect = dialect_for_resource(&resource).expect("a supported dialect");
+        let extraction = extraction_of(dialect, ENV_NARROWED);
+        let profile_id = store.ensure_profile(&extraction.profile).expect("profile");
+        let narrowed = assign_ids(&published, &extraction, &resource, profile_id);
+        let orphan = Occurrence {
+            containing_symbol_id: Some(SymbolId::generate()),
+            ..occurrences[0].clone()
+        };
+        let error = store
+            .replace_structure(
+                resource.id,
+                &resource.resource_revision,
+                generation,
+                &narrowed,
+                &[orphan],
+            )
+            .expect_err("inconsistent evidence must not be written");
+
+        assert!(matches!(error, SymbolError::UnknownContainingSymbol { .. }));
+        assert_eq!(
+            symbol_rows(&store),
+            rows_before,
+            "every row, its id and its parent pointer are as they were"
+        );
+        assert_eq!(
+            store.list_for_resource(resource.id).expect("list"),
+            published
+        );
+        assert_eq!(
+            store
+                .list_occurrences_for_resource(resource.id)
+                .expect("list"),
+            occurrences
+        );
+        assert_no_dangling_parent(&store);
+    }
+
+    fn symbol_rows(store: &SymbolStore) -> Vec<(i64, Option<i64>, String)> {
+        store
+            .connection()
+            .prepare("SELECT id, parent_symbol_id, qualified_name || ' ' || kind FROM symbol ORDER BY id")
+            .expect("prepare")
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .expect("rows")
+            .map(|row| row.expect("row"))
+            .collect()
+    }
+
     #[test]
     fn a_replacement_is_whole_set_not_row_by_row() {
         let fixture = Fixture::create("whole-set");

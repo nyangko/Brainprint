@@ -1531,6 +1531,136 @@ export function lone(): number {
         );
     }
 
+    /// #91: a parent declaration changes kind (so its row is re-inserted
+    /// above its surviving members), then the parent, a member and a
+    /// called function vanish in one publication. The graph entity of the
+    /// vanished function goes with its row and its caller keeps the call
+    /// as a gap; nothing points at a removed row; the surviving member
+    /// keeps its row, id and parent.
+    #[test]
+    fn a_publication_removing_a_parent_a_member_and_a_called_function_leaves_a_consistent_graph() {
+        let fixture = Fixture::create("env-kind-change");
+        const KEPT: &str = "export function kept(): number {\n  return 2\n}\n";
+        const GONE: &str = "export function gone(): number {\n  return 1\n}\n";
+        let env_ts = |declaration: &str, with_gone: bool| {
+            format!("{declaration}\n{KEPT}{}", if with_gone { GONE } else { "" })
+        };
+        fixture.write(
+            "src/env.ts",
+            &env_ts("export declare const env: { A: string; B: string }", true),
+        );
+        fixture.write(
+            "src/user.ts",
+            "import { gone, kept } from './env'\n\nexport function use(): number {\n  return gone() + kept()\n}\n",
+        );
+        fixture.baseline();
+        let symbols = |fixture: &Fixture| {
+            SymbolStore::open(&fixture.db_path())
+                .expect("index.db")
+                .list_for_resource(fixture.resource("src/env.ts").id)
+                .expect("symbols")
+        };
+        let id = |symbols: &[Symbol], name: &str| {
+            symbols
+                .iter()
+                .find(|symbol| symbol.qualified_name == name)
+                .unwrap_or_else(|| panic!("{name} is indexed"))
+                .id
+        };
+        // (foreign_key_check rows, entities naming a removed Symbol row)
+        let dangling = |fixture: &Fixture| -> (i64, i64) {
+            let store = fixture.store();
+            let connection = store.connection();
+            let count = |sql: &str| -> i64 {
+                connection
+                    .query_row(sql, [], |row| row.get(0))
+                    .expect("count")
+            };
+            (
+                count("SELECT COUNT(*) FROM pragma_foreign_key_check"),
+                count(
+                    "SELECT COUNT(*) FROM graph_entity WHERE symbol_id IS NOT NULL \
+                     AND symbol_id NOT IN (SELECT id FROM symbol)",
+                ),
+            )
+        };
+        let entities_of = |fixture: &Fixture, symbol: brainprint_core::SymbolId| -> i64 {
+            fixture
+                .store()
+                .connection()
+                .query_row(
+                    "SELECT COUNT(*) FROM graph_entity JOIN symbol ON symbol.id = \
+                     graph_entity.symbol_id WHERE symbol.uid = ?1",
+                    [symbol.to_bytes().to_vec()],
+                    |row| row.get(0),
+                )
+                .expect("count")
+        };
+        let calls = |fixture: &Fixture| {
+            fixture.outgoing(
+                &fixture.declaration("src/user.ts", "use"),
+                RelationKind::Calls,
+            )
+        };
+
+        let first = symbols(&fixture);
+        assert_eq!(
+            calls(&fixture),
+            vec![
+                fixture.declaration("src/env.ts", "gone"),
+                fixture.declaration("src/env.ts", "kept"),
+            ],
+            "both calls resolve before the edits"
+        );
+        assert_eq!(entities_of(&fixture, id(&first, "gone")), 1);
+
+        fixture.save(
+            "src/env.ts",
+            &env_ts("export interface env { A: string; B: string }", true),
+        );
+        let second = symbols(&fixture);
+        assert_ne!(id(&first, "env"), id(&second, "env"), "a new parent row");
+        assert_eq!(id(&first, "env.A"), id(&second, "env.A"));
+        assert_eq!(id(&first, "gone"), id(&second, "gone"));
+        assert_eq!(dangling(&fixture), (0, 0));
+
+        fixture.save(
+            "src/env.ts",
+            &env_ts("export declare const env: { A: string }", false),
+        );
+        let third = symbols(&fixture);
+        assert_eq!(id(&second, "env.A"), id(&third, "env.A"));
+        assert_eq!(id(&second, "kept"), id(&third, "kept"));
+        assert!(third.iter().all(|symbol| symbol.qualified_name != "env.B"));
+        assert!(third.iter().all(|symbol| symbol.qualified_name != "gone"));
+        assert_eq!(
+            third
+                .iter()
+                .find(|symbol| symbol.qualified_name == "env.A")
+                .and_then(|symbol| symbol.parent_id),
+            Some(id(&third, "env"))
+        );
+        assert_eq!(entities_of(&fixture, id(&second, "gone")), 0);
+        assert_eq!(dangling(&fixture), (0, 0), "no row points at a removed row");
+        assert_eq!(
+            calls(&fixture),
+            vec![fixture.declaration("src/env.ts", "kept")],
+            "the call into the surviving function still resolves"
+        );
+        assert!(
+            fixture
+                .gaps("src/user.ts")
+                .iter()
+                .any(|gap| gap.contains("gone")),
+            "the call into the removed function is a gap, not a dropped fact: {:?}",
+            fixture.gaps("src/user.ts")
+        );
+        assert_eq!(
+            fixture.relation_state("src/env.ts"),
+            Some(FreshnessState::Current)
+        );
+    }
+
     #[test]
     fn revalidation_can_change_a_candidate_set() {
         let fixture = Fixture::create("candidates");
