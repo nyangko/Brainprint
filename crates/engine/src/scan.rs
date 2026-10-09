@@ -508,13 +508,42 @@ pub(crate) fn observe_workspace_verified(
     workspace_root: &Path,
     config: &WorkspaceConfig,
 ) -> Result<Vec<ObservedResource>, ScanError> {
-    discovery::enumerate_resources(workspace_root, config)?
-        .iter()
-        .map(|entry| {
-            identity::observe(workspace_root, entry, None, ObservationMode::Verified)
-                .map_err(ScanError::from)
-        })
-        .collect()
+    let entries = discovery::enumerate_resources(workspace_root, config)?;
+    // Hashing every byte dominates a reconcile on a Workspace with large
+    // build output (#95), so contiguous chunks are hashed in parallel. The
+    // result is the same list, in the same path order, with the same first
+    // error in path order, as a sequential pass.
+    // ponytail: fixed worker cap; make it configurable if a machine needs it.
+    let workers = std::thread::available_parallelism().map_or(1, |n| n.get().min(8));
+    let chunk = entries.len().div_ceil(workers).max(1);
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = entries
+            .chunks(chunk)
+            .map(|entries| {
+                scope.spawn(move || {
+                    entries
+                        .iter()
+                        .map(|entry| {
+                            identity::observe(
+                                workspace_root,
+                                entry,
+                                None,
+                                ObservationMode::Verified,
+                            )
+                        })
+                        .collect::<Result<Vec<_>, _>>()
+                })
+            })
+            .collect();
+        let mut observed = Vec::with_capacity(entries.len());
+        for handle in handles {
+            let part = handle
+                .join()
+                .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+            observed.extend(part?);
+        }
+        Ok(observed)
+    })
 }
 
 /// The first way `candidate` and `fresh` disagree on something that decides
@@ -623,6 +652,27 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.base);
         }
+    }
+
+    #[test]
+    fn a_parallel_verified_observation_matches_a_sequential_one_in_path_order() {
+        let fixture = Fixture::create("parallel-observation");
+        for i in 0..64 {
+            fixture.write(&format!("dir{}/file{i:02}.txt", i % 5), &"x".repeat(i));
+        }
+        let config = WorkspaceConfig::default();
+        let observed =
+            observe_workspace_verified(&fixture.root, &config).expect("observation should succeed");
+        let sequential: Vec<_> = discovery::enumerate_resources(&fixture.root, &config)
+            .expect("discovery should succeed")
+            .iter()
+            .map(|entry| {
+                identity::observe(&fixture.root, entry, None, ObservationMode::Verified)
+                    .expect("observe should succeed")
+            })
+            .collect();
+        assert_eq!(observed, sequential);
+        assert_eq!(observed.len(), 69);
     }
 
     fn active_paths(engine: &BaselineScan) -> Vec<String> {
