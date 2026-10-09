@@ -1785,6 +1785,228 @@ fn a_relations_miss_keeps_its_selection_coverage_and_asks_no_relation() {
     assert_eq!(surface.stats().relation_queries, before);
 }
 
+// ---------------------------------------------------- inspect selection
+
+fn inspect_at_4kb(
+    surface: &CoreQuerySurface,
+    fixture: &Fixture,
+    target: ProjectionTarget,
+) -> ProjectedAnswer {
+    inspect_with(
+        surface,
+        ctx(fixture),
+        target,
+        opts(budget(None, Some(4000), None), NO_REUSE),
+        &mut ledger(),
+    )
+    .expect("inspect")
+}
+
+fn is_selection(item: &EvidenceItem) -> bool {
+    matches!(item, EvidenceItem::TargetSelection(_))
+}
+
+/// Whether the page's TargetSelection came with the required bundle (ahead
+/// of the first Coverage) rather than as the optional last unit.
+fn selection_required(items: &[EvidenceItem]) -> bool {
+    let selection = items.iter().position(is_selection).expect("a selection");
+    let coverage = items
+        .iter()
+        .position(|item| matches!(item, EvidenceItem::Coverage(_)))
+        .expect("a coverage");
+    selection < coverage
+}
+
+#[test]
+fn a_compact_inspect_by_name_delivers_source_and_coverage_before_an_oversized_selection() {
+    // #58 / #91: `inspect workStateOf` by name at compact delivered the
+    // Symbol only -- the selector's per-Resource coverage list was a
+    // required unit too large for any page, and the source behind it was
+    // never reached.
+    let fixture = partly_covered("surface-inspect-4kb", 120);
+    let surface = surface(&fixture);
+    let target = || named(SymbolName::Name("shared".to_owned()));
+    let whole = inspect(&surface, &fixture, target());
+    assert!(
+        !selection_required(page(&whole)),
+        "an exact single match's list goes last"
+    );
+    assert!(is_selection(page(&whole).last().expect("items")));
+
+    let small = inspect_at_4kb(&surface, &fixture, target());
+    let delivered = &small.delivery.page;
+    assert!(delivered.used_bytes <= 4000);
+    assert_eq!(small.target, whole.target);
+    assert!(matches!(small.target, TargetResolution::Resolved(_)));
+    assert_eq!(small.currentness, whole.currentness);
+    assert_eq!(
+        anchor_sources(&small),
+        anchor_sources(&whole),
+        "the source is delivered"
+    );
+    assert!(has_coverage(page(&small), false), "selection summary");
+    assert!(!page(&small).iter().any(is_selection));
+    assert!(delivered.more_available);
+    assert_eq!(delivered.omitted_units, 1, "only the list is left");
+    assert!(delivered.continuation.is_none());
+    assert_eq!(
+        delivered.continuation_unavailable,
+        Some(ContinuationUnavailable::UnitExceedsBudget)
+    );
+}
+
+#[test]
+fn a_compact_inspect_by_partial_name_keeps_target_not_exact_and_its_coverage() {
+    let fixture = partly_covered("surface-inspect-partial", 120);
+    let surface = surface(&fixture);
+    let small = inspect_at_4kb(
+        &surface,
+        &fixture,
+        named(SymbolName::PartialName("unique_fragment".to_owned())),
+    );
+    assert_eq!(small.target, TargetResolution::SingleNonExactCandidate);
+    assert!(
+        small
+            .delivery
+            .page
+            .gaps
+            .contains(&ProjectionGap::TargetNotExact)
+    );
+    assert!(has_coverage(page(&small), false));
+    assert!(
+        page(&small)
+            .iter()
+            .any(|item| matches!(item, EvidenceItem::Symbol(_)))
+    );
+    assert!(!page(&small).iter().any(is_selection));
+    assert!(small.delivery.page.more_available);
+}
+
+#[test]
+fn an_inspect_miss_with_incomplete_coverage_reports_not_found_with_incomplete_coverage() {
+    let fixture = partly_covered("surface-inspect-miss", 120);
+    let surface = surface(&fixture);
+    let small = inspect_at_4kb(
+        &surface,
+        &fixture,
+        named(SymbolName::Name("no_such_symbol".to_owned())),
+    );
+    assert_eq!(small.target, TargetResolution::NotFoundIncompleteCoverage);
+    assert!(
+        small
+            .delivery
+            .page
+            .gaps
+            .contains(&ProjectionGap::TargetNotFoundWithIncompleteCoverage)
+    );
+    assert!(
+        !small
+            .delivery
+            .page
+            .gaps
+            .contains(&ProjectionGap::TargetNotFound)
+    );
+    assert!(has_coverage(page(&small), false));
+}
+
+#[test]
+fn an_ambiguous_inspect_keeps_its_candidates_required() {
+    let fixture = partly_covered("surface-inspect-ambiguous", 3);
+    let answer = inspect(
+        &surface(&fixture),
+        &fixture,
+        named(SymbolName::Name("run".to_owned())),
+    );
+    assert_eq!(answer.target, TargetResolution::MultipleCandidates);
+    assert!(
+        answer
+            .delivery
+            .page
+            .gaps
+            .contains(&ProjectionGap::TargetAmbiguous)
+    );
+    assert!(selection_required(page(&answer)));
+    assert_eq!(selection_of(page(&answer)).located.candidates.len(), 2);
+}
+
+#[test]
+fn an_inspect_by_symbol_id_still_delivers_everything_on_a_compact_page() {
+    let fixture = partly_covered("surface-inspect-id", 120);
+    let surface = surface(&fixture);
+    let id = fixture.symbol("src/shared.ts", "shared");
+    let small = inspect_at_4kb(&surface, &fixture, named(SymbolName::Id(id)));
+    assert!(matches!(small.target, TargetResolution::Resolved(_)));
+    assert!(!small.delivery.page.more_available);
+    assert!(!anchor_sources(&small).is_empty());
+    assert!(
+        selection_of(page(&small))
+            .located
+            .incomplete_coverage
+            .is_empty()
+    );
+}
+
+#[test]
+fn an_inspect_with_last_valid_candidates_keeps_its_selection_required() {
+    let fixture = Fixture::with_files(
+        "surface-inspect-last-valid",
+        &[(
+            "src/lv.ts",
+            "export class Lv {\n  lvOnly(): number {\n    return 1\n  }\n}\n",
+        )],
+    );
+    fs::write(
+        fixture.root.join("src/lv.ts"),
+        "export class Lv {\n  lvOnly(): number {\n",
+    )
+    .expect("break the file");
+    crate::reconcile::Reconcile::open(&fixture.paths.index_db)
+        .expect("index")
+        .run(&fixture.root, &WorkspaceConfig::default())
+        .expect("reconcile");
+    let answer = inspect(
+        &surface(&fixture),
+        &fixture,
+        named(SymbolName::Name("lvOnly".to_owned())),
+    );
+    let selection = selection_of(page(&answer));
+    assert!(selection.located.candidates.is_empty());
+    assert_eq!(selection.located.last_valid.len(), 1);
+    assert!(selection_required(page(&answer)));
+    assert!(
+        !answer
+            .delivery
+            .page
+            .gaps
+            .contains(&ProjectionGap::TargetNotFound)
+    );
+}
+
+#[test]
+fn an_inspect_with_cut_off_candidates_keeps_its_selection_required() {
+    let texts: Vec<(String, String)> = (0..=DEFAULT_CANDIDATE_LIMIT)
+        .map(|index| {
+            (
+                format!("src/d{index:03}.ts"),
+                "export function dup(): number {\n  return 0\n}\n".to_owned(),
+            )
+        })
+        .collect();
+    let files: Vec<(&str, &str)> = texts
+        .iter()
+        .map(|(rel, text)| (rel.as_str(), text.as_str()))
+        .collect();
+    let many = Fixture::with_files("surface-inspect-truncated", &files);
+    let answer = inspect(
+        &surface(&many),
+        &many,
+        named(SymbolName::Name("dup".to_owned())),
+    );
+    let selection = selection_of(page(&answer));
+    assert!(selection.located.truncated);
+    assert!(selection_required(page(&answer)));
+}
+
 // ----------------------------------------------------------------- impact
 
 #[test]

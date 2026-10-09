@@ -515,7 +515,18 @@ fn required(item: &EvidenceItem, intent: ProjectionIntent) -> bool {
         // #58: a relations answer's selection list (one unit, possibly the
         // whole Workspace's partial coverage) goes last, so it can never
         // hold back the summaries or relations; its coverage stays required.
-        EvidenceItem::TargetSelection(_) => intent != ProjectionIntent::Relations,
+        EvidenceItem::TargetSelection(selection) => match intent {
+            ProjectionIntent::Relations => false,
+            // #58: an inspect's selection goes last too, unless it is the
+            // only place the choice still open is told -- several or cut-off
+            // candidates, or last-valid ones -- so it never holds back the
+            // source; the Symbol, its coverage and the gap still say the rest.
+            ProjectionIntent::Understand => {
+                let located = &selection.located;
+                located.candidates.len() > 1 || !located.last_valid.is_empty() || located.truncated
+            }
+            _ => true,
+        },
         EvidenceItem::Resource(_)
         | EvidenceItem::Symbol(_)
         | EvidenceItem::Outline(_)
@@ -553,7 +564,8 @@ const fn tier(relevance: Relevance) -> u8 {
 
 const SOURCE_TIER: u8 = 8;
 
-/// #58: a relations answer's optional `TargetSelection`, after everything.
+/// #58: a relations or inspect answer's optional `TargetSelection`, after
+/// everything.
 const SELECTION_TIER: u8 = 9;
 
 /// #58: required evidence that did not fit a first page, delivered

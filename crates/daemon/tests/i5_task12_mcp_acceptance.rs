@@ -702,6 +702,76 @@ async fn relations_direct_honours_max_bytes_over_mcp() {
 }
 
 #[tokio::test]
+async fn inspect_by_name_delivers_its_source_within_max_bytes_over_mcp() {
+    // #58 / #91: by name at compact, the selector's per-Resource coverage
+    // list must not hold back the declaration source.
+    let widget = "<script>\n  export function mount() {}\n</script>\n<p>hi</p>\n";
+    let names: Vec<String> = (0..300)
+        .map(|n| format!("ui/components/Widget{n:03}.svelte"))
+        .collect();
+    let extra: Vec<(&str, &str)> = names.iter().map(|name| (name.as_str(), widget)).collect();
+    let (fixture, _connection, _server, _endpoint) =
+        populated_fixture_with("inspect-58-budget", &extra).await;
+    let mcp = mcp_server(&fixture);
+    let mut params = workspace_json(&fixture);
+    merge(
+        &mut params,
+        json!({"symbol_name": "helper", "budget_profile": "compact", "max_bytes": 4000}),
+    );
+    let result = mcp
+        .inspect(Parameters(from_json(params)))
+        .await
+        .expect("brainprint.inspect");
+    let chars = serde_json::to_string(result.structured_content.as_ref().expect("structured"))
+        .expect("json")
+        .chars()
+        .count();
+    eprintln!("#58 inspect by name over MCP at max_bytes 4000: {chars} chars");
+    let QueryResultWire::Inspect(answer) = payload(&result) else {
+        panic!("inspect payload")
+    };
+    assert!(answer.page.used_bytes <= 4000);
+    assert!(
+        chars < 10_000,
+        "well inside a client's output limit: {chars}"
+    );
+    assert!(matches!(
+        answer.target_resolution,
+        TargetResolutionWire::Resolved(_)
+    ));
+    let full: Vec<&EvidenceWire> = answer
+        .page
+        .evidence
+        .iter()
+        .filter_map(|item| match item {
+            DeliveredItemWire::Full(evidence) => Some(evidence),
+            DeliveredItemWire::Reuse(_) => None,
+        })
+        .collect();
+    assert!(
+        full.iter()
+            .any(|item| matches!(item, EvidenceWire::CurrentSource(_))),
+        "the declaration source is delivered"
+    );
+    assert!(full.iter().any(|item| matches!(
+        item,
+        EvidenceWire::Coverage(coverage)
+            if matches!(coverage.subject, CoverageSubjectWire::TargetSelection(_))
+    )));
+    assert!(
+        !full
+            .iter()
+            .any(|item| matches!(item, EvidenceWire::TargetSelection(_)))
+    );
+    assert!(answer.more_available);
+    assert!(answer.continuation.is_none());
+    assert_eq!(
+        answer.economy.continuation_unavailable,
+        Some(ContinuationUnavailableWire::UnitExceedsBudget)
+    );
+}
+
+#[tokio::test]
 async fn parity_relations_impact() {
     let (fixture, mut connection, _server, _endpoint) = populated_fixture("relations-impact").await;
     let mcp = mcp_server(&fixture);
