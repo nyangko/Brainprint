@@ -470,7 +470,7 @@ pub fn query_context(
 pub enum ConvertedOperation<'a> {
     Find(FindRequest<'a>),
     Inspect(InspectRequest<'a>),
-    Relations(RelationsRequest),
+    Relations(RelationsRequest<'a>),
     Impact(ImpactRequest<'a>),
     Context(ContextRequest<'a>),
     Knowledge(KnowledgeRequest),
@@ -545,16 +545,21 @@ pub fn operation<'a>(
             target,
             direction,
             kinds,
-        }) => Ok(ConvertedOperation::Relations(RelationsRequest {
-            context,
-            target: projection_target(target)?,
-            direction: match direction {
-                RelationDirectionWire::Outgoing => RelationDirection::Outgoing,
-                RelationDirectionWire::Incoming => RelationDirection::Incoming,
-                RelationDirectionWire::Both => RelationDirection::Both,
-            },
-            kinds: kinds.into_iter().map(relation_kind).collect(),
-        })),
+            delivery,
+        }) => {
+            deliveries.push(delivery_options(delivery)?);
+            Ok(ConvertedOperation::Relations(RelationsRequest {
+                context,
+                target: projection_target(target)?,
+                direction: match direction {
+                    RelationDirectionWire::Outgoing => RelationDirection::Outgoing,
+                    RelationDirectionWire::Incoming => RelationDirection::Incoming,
+                    RelationDirectionWire::Both => RelationDirection::Both,
+                },
+                kinds: kinds.into_iter().map(relation_kind).collect(),
+                delivery: as_delivery_options(deliveries.last().expect("just pushed")),
+            }))
+        }
         QueryOperationWire::Impact(ImpactWire {
             target,
             change,

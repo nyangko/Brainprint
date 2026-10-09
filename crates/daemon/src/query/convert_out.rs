@@ -42,12 +42,12 @@ use brainprint_engine::{
     query::{Currentness, FileListing, NotCurrentReason, ResultSource, StructuralCoverage},
     query_surface::{
         CoreError, FindResult, InvalidRequest, KnowledgeResult, NotInitialized, ProjectedAnswer,
-        RelationsResult, TargetResolution,
+        RelationsResult, SelectionDelivery, TargetResolution,
     },
     related_tests::{ProjectionBasis, RelatedTestCandidate, TestPath},
     relations::{
-        Coverage, Direction, EvidenceLocation, GapAttribution, RelationAnswer, RelationGap,
-        RelationResult, ScopeState,
+        Coverage, Direction, EvidenceLocation, GapAttribution, RelationGap, RelationResult,
+        RelationTotals, ScopeState,
     },
     resolution::{Dispatch, Freshness, Resolution, Support, TargetScope},
     resource::{Resource, ResourceState},
@@ -507,17 +507,35 @@ fn coverage_wire(coverage: Coverage) -> CoverageWire {
     }
 }
 
-fn relation_answer_wire(answer: RelationAnswer) -> RelationAnswerWire {
-    RelationAnswerWire {
-        direction: direction_wire(answer.direction),
-        kinds: answer.kinds.into_iter().map(relation_kind_wire).collect(),
-        confirmed: answer
-            .confirmed
-            .into_iter()
-            .map(relation_result_wire)
-            .collect(),
-        gaps: answer.gaps.into_iter().map(relation_gap_wire).collect(),
-        coverage: coverage_wire(answer.coverage),
+fn relation_totals_wire(totals: RelationTotals) -> RelationTotalsWire {
+    RelationTotalsWire {
+        direction: direction_wire(totals.direction),
+        kinds: totals.kinds.into_iter().map(relation_kind_wire).collect(),
+        confirmed: totals.confirmed,
+        gaps: totals.gaps,
+        coverage: coverage_wire(totals.coverage),
+    }
+}
+
+const fn selection_delivery_wire(selection: SelectionDelivery) -> SelectionDeliveryWire {
+    match selection {
+        SelectionDelivery::Absent => SelectionDeliveryWire::Absent,
+        SelectionDelivery::Delivered { coverage_notes } => {
+            SelectionDeliveryWire::Delivered { coverage_notes }
+        }
+        SelectionDelivery::Pending { coverage_notes } => {
+            SelectionDeliveryWire::Pending { coverage_notes }
+        }
+        SelectionDelivery::ExceedsBudget {
+            coverage_notes,
+            bytes,
+        } => SelectionDeliveryWire::ExceedsBudget {
+            coverage_notes,
+            bytes,
+        },
+        SelectionDelivery::NotReached { coverage_notes } => {
+            SelectionDeliveryWire::NotReached { coverage_notes }
+        }
     }
 }
 
@@ -1782,21 +1800,23 @@ pub fn find_result_wire(
 
 // -------------------------------------------------------------- relations
 
-pub fn relations_result_wire(result: RelationsResult) -> RelationsResultWire {
-    RelationsResultWire {
-        target: target_resolution_wire(result.target),
-        selection: result
-            .selection
+pub fn relations_result_wire(
+    result: RelationsResult,
+) -> (
+    RelationsResultWire,
+    brainprint_engine::projection::planner::DeliveryReceipt,
+) {
+    let (answer, receipt) = projected_answer_wire(result.answer);
+    let wire = RelationsResultWire {
+        answer,
+        totals: result
+            .totals
             .into_iter()
-            .map(evidence_item_wire)
+            .map(relation_totals_wire)
             .collect(),
-        currentness: currentness_wire(result.currentness),
-        answers: result
-            .answers
-            .into_iter()
-            .map(relation_answer_wire)
-            .collect(),
-    }
+        selection: selection_delivery_wire(result.selection),
+    };
+    (wire, receipt)
 }
 
 // -------------------------------------------------------------- structure

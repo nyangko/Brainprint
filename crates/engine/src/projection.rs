@@ -61,6 +61,17 @@ pub enum ProjectionIntent {
     Impact(ChangeKind),
     /// Resume or hand off an explicitly named WorkItem.
     ResumeHandoff,
+    /// #58: the target's direct relations in [`ProjectionRequest::relations`],
+    /// one hop, index metadata only -- no source.
+    Relations,
+}
+
+/// What a [`ProjectionIntent::Relations`] request asks for. Empty `kinds`
+/// means every kind (the `RelationIndex` rule).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RelationScope {
+    pub directions: Vec<Direction>,
+    pub kinds: Vec<RelationKind>,
 }
 
 /// The form of a change (#6 task 5 §1). Declared by the caller, executed
@@ -286,6 +297,8 @@ pub struct ProjectionRequest {
     pub directives: Vec<RequestDirective>,
     pub knowledge: ProjectionKnowledgeRefs,
     pub correlation: Option<ProjectionCorrelation>,
+    /// `Relations` only; empty for every other intent.
+    pub relations: RelationScope,
 }
 
 impl ProjectionRequest {
@@ -305,6 +318,10 @@ impl ProjectionRequest {
                 blueprint_applications: BTreeSet::new(),
             },
             correlation: None,
+            relations: RelationScope {
+                directions: Vec::new(),
+                kinds: Vec::new(),
+            },
         }
     }
 
@@ -642,6 +659,15 @@ impl EvidenceItem {
             | Self::SourceUnavailable { .. }
             | Self::IndexCurrentness { .. } => EvidenceOrigin::Derived,
         }
+    }
+}
+
+impl EvidenceItem {
+    /// What this item costs a delivery byte budget in full: the measure a
+    /// page's `max_bytes` is checked against (task 7).
+    #[must_use]
+    pub fn delivery_bytes(&self) -> usize {
+        canonical::size(self)
     }
 }
 

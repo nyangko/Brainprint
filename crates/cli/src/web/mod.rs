@@ -266,7 +266,7 @@ async fn route(head: &Head, address: SocketAddr, daemon: &Daemon, locale: Locale
             };
             Reply::json(&match path {
                 "/api/inspect" => api::inspect(daemon, target, continuation).await,
-                "/api/relations" => api::relations(daemon, target).await,
+                "/api/relations" => api::relations(daemon, target, continuation).await,
                 _ => {
                     let change = param("change").and_then(|c| c.parse().ok()).unwrap_or(0);
                     api::impact(daemon, target, change, continuation).await

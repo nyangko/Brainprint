@@ -278,17 +278,14 @@ impl Daemon {
                     target: symbol(name),
                     direction: RelationDirectionWire::Incoming,
                     kinds: vec![RelationKindWire::Calls],
+                    delivery: inspect_op_delivery(),
                 }),
             )
             .await;
         let QueryResultWire::Relations(answer) = result else {
             panic!("expected direct relations")
         };
-        answer
-            .answers
-            .iter()
-            .map(|answer| answer.confirmed.len())
-            .sum()
+        answer.totals.iter().map(|totals| totals.confirmed).sum()
     }
 }
 
@@ -304,15 +301,19 @@ fn symbol(name: &str) -> ProjectionTargetWire {
 fn inspect_op(name: &str) -> QueryOperationWire {
     QueryOperationWire::Inspect(InspectWire {
         target: symbol(name),
-        delivery: DeliveryWire {
-            budget: DeliveryBudgetWire {
-                max_items: NonZeroUsize::new(64),
-                max_bytes: NonZeroUsize::new(64 * 1024),
-            },
-            continuation: None,
-            retention: RetentionWire::Disabled,
-        },
+        delivery: inspect_op_delivery(),
     })
+}
+
+fn inspect_op_delivery() -> DeliveryWire {
+    DeliveryWire {
+        budget: DeliveryBudgetWire {
+            max_items: NonZeroUsize::new(64),
+            max_bytes: NonZeroUsize::new(64 * 1024),
+        },
+        continuation: None,
+        retention: RetentionWire::Disabled,
+    }
 }
 
 fn files_op() -> QueryOperationWire {
@@ -1208,16 +1209,17 @@ async fn an_unsupported_language_file_is_usable_and_never_a_false_zero() {
                 )),
                 direction: RelationDirectionWire::Outgoing,
                 kinds: Vec::new(),
+                delivery: inspect_op_delivery(),
             }),
         )
         .await
     else {
         panic!("expected direct relations")
     };
-    for answer in &answer.answers {
-        assert!(answer.confirmed.is_empty());
-        let scope = answer.coverage.scope.as_ref().expect("scoped coverage");
-        assert_eq!(scope.support, SupportWire::Unsupported, "{answer:?}");
+    for totals in &answer.totals {
+        assert_eq!(totals.confirmed, 0);
+        let scope = totals.coverage.scope.as_ref().expect("scoped coverage");
+        assert_eq!(scope.support, SupportWire::Unsupported, "{totals:?}");
     }
     assert!(daemon.inspect(id, "gopherOnly").await.is_none());
 

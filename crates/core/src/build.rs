@@ -41,8 +41,10 @@ pub const PACKAGE_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// `ProjectedRelationWire` (each evidence site's path, 1-based line and
 /// containing Symbol name). Bumped to 15 by #89: the `Shutdown` request
 /// and response, which a daemon also honours after a protocol mismatch so
-/// a newer client can stop it.
-pub const PROTOCOL_VERSION: u32 = 15;
+/// a newer client can stop it. Bumped to 16 by #58: `RelationsWire`
+/// carries a `delivery`, and `RelationsResultWire` is one delivery page
+/// with each direction's totals and the selection's standing.
+pub const PROTOCOL_VERSION: u32 = 16;
 
 /// Minimal build identity that benchmark and runtime boundaries can record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

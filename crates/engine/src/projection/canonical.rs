@@ -759,6 +759,7 @@ impl Canonical for ProjectionIntent {
                 kind.encode(out);
             }
             Self::ResumeHandoff => out.tag(4),
+            Self::Relations => out.tag(5),
         }
     }
 }
@@ -939,6 +940,8 @@ impl Canonical for ProjectionRequest {
         directives.encode(out);
         self.knowledge.encode(out);
         self.correlation.encode(out);
+        self.relations.directions.encode(out);
+        self.relations.kinds.encode(out);
     }
 }
 

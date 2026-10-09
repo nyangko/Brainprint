@@ -155,9 +155,14 @@ fn is_complete(result: &QueryResultWire) -> bool {
         | QueryResultWire::Inspect(answer)
         | QueryResultWire::Impact(answer)
         | QueryResultWire::Context(answer) => projected_complete(answer),
+        // #58: a relations answer is one page; whole only without more.
         QueryResultWire::Relations(relations) => {
-            relations.currentness == CurrentnessWire::Current
-                && matches!(relations.target, TargetResolutionWire::Resolved(_))
+            relations.answer.currentness == CurrentnessWire::Current
+                && !relations.answer.more_available
+                && matches!(
+                    relations.answer.target_resolution,
+                    TargetResolutionWire::Resolved(_)
+                )
         }
         QueryResultWire::Structure(summary) => summary.currentness == CurrentnessWire::Current,
         QueryResultWire::Knowledge(_) => true,

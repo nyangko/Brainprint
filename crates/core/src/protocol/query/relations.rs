@@ -121,13 +121,15 @@ pub struct CoverageWire {
     pub semantic: SemanticScopeWire,
 }
 
-/// Mirrors `brainprint_engine::relations::RelationAnswer`.
+/// Mirrors `brainprint_engine::relations::RelationTotals` (#58): one
+/// direction's counts and full coverage. The relations and gaps it counts
+/// are delivered as page units.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RelationAnswerWire {
+pub struct RelationTotalsWire {
     pub direction: DirectionWire,
     pub kinds: Vec<RelationKindWire>,
-    pub confirmed: Vec<RelationResultWire>,
-    pub gaps: Vec<RelationGapWire>,
+    pub confirmed: usize,
+    pub gaps: usize,
     pub coverage: CoverageWire,
 }
 

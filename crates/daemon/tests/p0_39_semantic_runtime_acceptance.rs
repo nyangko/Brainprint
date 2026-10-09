@@ -38,9 +38,13 @@ use brainprint_daemon::{
 };
 use brainprint_engine::{
     paths::{GlobalPaths, WorkspacePaths},
-    projection::{ProjectionTarget, SymbolName, SymbolTarget},
+    projection::{
+        ProjectionTarget, SymbolName, SymbolTarget,
+        planner::{ContextRetention, DeliveryBudget, DeliveryLedger, LedgerLimits},
+    },
     query_surface::{
-        CoreQuerySurface, QueryContext, RelationDirection, RelationsRequest, TargetResolution,
+        CoreQuerySurface, DeliveryOptions, QueryContext, RelationDirection, RelationsRequest,
+        TargetResolution,
     },
     resource::ResourceLanguage,
     semantic_index::{SemanticIndex, SemanticState},
@@ -251,6 +255,7 @@ impl Daemon {
                     target,
                     direction,
                     kinds: Vec::new(),
+                    delivery: delivery(),
                 }),
             )
             .await
@@ -260,7 +265,7 @@ impl Daemon {
         }
     }
 
-    async fn outgoing(&self, workspace: WorkspaceId, name: &str) -> RelationAnswerWire {
+    async fn outgoing(&self, workspace: WorkspaceId, name: &str) -> Answer {
         let result = self
             .relations(
                 workspace,
@@ -269,12 +274,15 @@ impl Daemon {
             )
             .await;
         assert!(
-            matches!(result.target, TargetResolutionWire::Resolved(_)),
+            matches!(
+                result.answer.target_resolution,
+                TargetResolutionWire::Resolved(_)
+            ),
             "{name} resolves: {:?}",
-            result.target
+            result.answer.target_resolution
         );
-        assert_eq!(result.currentness, CurrentnessWire::Current);
-        result.answers.into_iter().next().expect("one answer")
+        assert_eq!(result.answer.currentness, CurrentnessWire::Current);
+        first_answer(&result)
     }
 }
 
@@ -345,7 +353,40 @@ fn find_files() -> QueryOperationWire {
     })
 }
 
-fn calls(answer: &RelationAnswerWire) -> usize {
+/// #58: one direction of a whole relations page, as these checks read it.
+#[derive(Debug)]
+struct Answer {
+    confirmed: Vec<RelationResultWire>,
+    gaps: Vec<RelationGapWire>,
+    coverage: CoverageWire,
+}
+
+/// A one-direction answer, whole on its single page.
+fn first_answer(result: &RelationsResultWire) -> Answer {
+    assert!(!result.answer.more_available, "one whole page: {result:?}");
+    let totals = result.totals.first().expect("one answer");
+    let mut answer = Answer {
+        confirmed: Vec::new(),
+        gaps: Vec::new(),
+        coverage: totals.coverage.clone(),
+    };
+    for item in &result.answer.page.evidence {
+        match item {
+            DeliveredItemWire::Full(EvidenceWire::Relation(projected))
+                if projected.relation.direction == totals.direction =>
+            {
+                answer.confirmed.push(projected.relation.clone());
+            }
+            DeliveredItemWire::Full(EvidenceWire::RelationGap(gap)) => {
+                answer.gaps.push(gap.clone());
+            }
+            _ => {}
+        }
+    }
+    answer
+}
+
+fn calls(answer: &Answer) -> usize {
     answer
         .confirmed
         .iter()
@@ -353,7 +394,7 @@ fn calls(answer: &RelationAnswerWire) -> usize {
         .count()
 }
 
-fn receiver_gaps(answer: &RelationAnswerWire) -> usize {
+fn receiver_gaps(answer: &Answer) -> usize {
     answer
         .gaps
         .iter()
@@ -363,7 +404,7 @@ fn receiver_gaps(answer: &RelationAnswerWire) -> usize {
 
 /// Level B truth for `call`: the receiver-typed call is an explicit
 /// gap, never a false zero.
-fn assert_structural_gap(answer: &RelationAnswerWire) {
+fn assert_structural_gap(answer: &Answer) {
     assert_eq!(calls(answer), 0, "no CALLS edge without semantics");
     assert_eq!(receiver_gaps(answer), 1, "the call site stays a gap");
     assert!(
@@ -375,7 +416,7 @@ fn assert_structural_gap(answer: &RelationAnswerWire) {
 
 /// Level A truth for `call`: one CALLS edge, the gap closed, semantic
 /// contribution current.
-fn assert_enriched(answer: &RelationAnswerWire) {
+fn assert_enriched(answer: &Answer) {
     assert_eq!(calls(answer), 1, "x.run(1) binds: {:?}", answer.confirmed);
     assert_eq!(receiver_gaps(answer), 0, "{:?}", answer.gaps);
     assert_eq!(answer.coverage.requires_semantics, 0);
@@ -532,21 +573,33 @@ async fn python_gaps_lazily_enrich_through_every_product_operation() {
     // it answers structurally with the explicit gap and starts nothing.
     let surface = CoreQuerySurface::open(&home.global.global_db, workspace).expect("surface");
     let direct = surface
-        .relations(RelationsRequest {
-            context: QueryContext {
-                workspace,
-                correlation: None,
+        .relations(
+            RelationsRequest {
+                context: QueryContext {
+                    workspace,
+                    correlation: None,
+                },
+                target: ProjectionTarget::Symbol(SymbolTarget {
+                    language: Some(ResourceLanguage::Python),
+                    ..SymbolTarget::new(SymbolName::QualifiedName("call".to_owned()))
+                }),
+                direction: RelationDirection::Outgoing,
+                kinds: Vec::new(),
+                delivery: DeliveryOptions {
+                    budget: DeliveryBudget::new(Some(64), None, None).expect("budget"),
+                    continuation: None,
+                    retention: ContextRetention::ReuseDisabled,
+                    tokens: None,
+                },
             },
-            target: ProjectionTarget::Symbol(SymbolTarget {
-                language: Some(ResourceLanguage::Python),
-                ..SymbolTarget::new(SymbolName::QualifiedName("call".to_owned()))
-            }),
-            direction: RelationDirection::Outgoing,
-            kinds: Vec::new(),
-        })
+            &mut DeliveryLedger::new(LedgerLimits::new(1, 1).expect("limits")),
+        )
         .expect("direct relations");
-    assert!(matches!(direct.target, TargetResolution::Resolved(_)));
-    assert_eq!(direct.answers[0].coverage.requires_semantics, 1);
+    assert!(matches!(
+        direct.answer.target,
+        TargetResolution::Resolved(_)
+    ));
+    assert_eq!(direct.totals[0].coverage.requires_semantics, 1);
     assert_eq!(processes_matching(&alias.to_string_lossy()), 0);
     drop(surface);
 
@@ -640,7 +693,7 @@ async fn python_gaps_lazily_enrich_through_every_product_operation() {
     let QueryResultWire::Relations(via_mcp) = payload else {
         panic!("relations payload")
     };
-    assert_enriched(&via_mcp.answers[0]);
+    assert_enriched(&first_answer(&via_mcp));
     let stats = daemon.semantic(workspace).await;
     assert_eq!(stats.backend_starts, 1, "MCP shares the runtime");
     daemon.stop().await;
@@ -799,7 +852,8 @@ async fn crash_and_backoff_keep_the_daemon_and_never_serve_stale() {
                 RelationDirectionWire::Outgoing,
             )
             .await
-            .target
+            .answer
+            .target_resolution
             != TargetResolutionWire::NotFound
     })
     .await;
@@ -943,7 +997,8 @@ async fn target_for(
                 RelationDirectionWire::Outgoing,
             )
             .await
-            .target;
+            .answer
+            .target_resolution;
         let TargetResolutionWire::Resolved(GraphEndpointWire::Resource(resource)) = resolved else {
             panic!("{path}: {resolved:?}")
         };
@@ -988,22 +1043,25 @@ async fn outgoing_within(
     name: &str,
     language: ResourceLanguageWire,
     within: Option<&str>,
-) -> RelationAnswerWire {
+) -> Answer {
     let target = target_for(daemon, workspace, name, language, within).await;
     let result = daemon
         .relations(workspace, target.clone(), RelationDirectionWire::Outgoing)
         .await;
     assert!(
-        matches!(result.target, TargetResolutionWire::Resolved(_)),
+        matches!(
+            result.answer.target_resolution,
+            TargetResolutionWire::Resolved(_)
+        ),
         "{target:?}: {:?}",
-        result.target
+        result.answer.target_resolution
     );
-    assert_eq!(result.currentness, CurrentnessWire::Current);
-    result.answers.into_iter().next().expect("one answer")
+    assert_eq!(result.answer.currentness, CurrentnessWire::Current);
+    first_answer(&result)
 }
 
 /// Call sites, not distinct callees: an edit may call a known target again.
-fn call_sites(answer: &RelationAnswerWire) -> usize {
+fn call_sites(answer: &Answer) -> usize {
     answer
         .confirmed
         .iter()
@@ -1012,7 +1070,7 @@ fn call_sites(answer: &RelationAnswerWire) -> usize {
         .sum()
 }
 
-fn semantic_gaps(answer: &RelationAnswerWire) -> usize {
+fn semantic_gaps(answer: &Answer) -> usize {
     answer.coverage.requires_semantics
 }
 
@@ -1266,7 +1324,7 @@ async fn typescript_and_svelte_enrich_through_the_product_path() {
                 RelationDirectionWire::Outgoing,
             )
             .await;
-        let answer = &result.answers[0];
+        let answer = &first_answer(&result);
         assert_eq!(calls(answer), 3, "s.run() and m.describe() bind too");
         assert_eq!(receiver_gaps(answer), 0, "{:?}", answer.gaps);
         assert_eq!(answer.coverage.semantic.contexts, 1);
@@ -1296,7 +1354,7 @@ async fn typescript_and_svelte_enrich_through_the_product_path() {
                 RelationDirectionWire::Outgoing,
             )
             .await;
-        let answer = &result.answers[0];
+        let answer = &first_answer(&result);
         // A container-only component: structurally no outgoing evidence,
         // PARTIAL coverage; Level A reaches the template references.
         assert!(
@@ -1460,8 +1518,11 @@ async fn brainprints_own_macro_calls_resolve_through_the_product_path() {
         let result = daemon
             .relations(workspace, target.clone(), RelationDirectionWire::Incoming)
             .await;
-        assert!(matches!(result.target, TargetResolutionWire::Resolved(_)));
-        let answer = result.answers.into_iter().next().expect("one answer");
+        assert!(matches!(
+            result.answer.target_resolution,
+            TargetResolutionWire::Resolved(_)
+        ));
+        let answer = first_answer(&result);
         let after = candidate_states(&root, config_rs);
         let settled = after
             .iter()
@@ -1544,7 +1605,7 @@ async fn brainprints_own_macro_calls_resolve_through_the_product_path() {
     let again = daemon
         .relations(workspace, target.clone(), RelationDirectionWire::Incoming)
         .await;
-    let again = again.answers.into_iter().next().expect("one answer");
+    let again = first_answer(&again);
     assert_eq!(call_sites(&again), call_sites(&answer));
     let stats = daemon.semantic(workspace).await;
     assert_eq!(stats.backend_starts, 1);

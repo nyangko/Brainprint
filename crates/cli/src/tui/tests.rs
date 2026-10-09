@@ -357,6 +357,7 @@ async fn the_tui_shows_the_daemons_truth_and_outlives_nothing() {
             target: target.clone(),
             direction: RelationDirectionWire::Both,
             kinds: Vec::new(),
+            delivery: crate::surface::delivery(None),
         }))
         .await
         .unwrap_or_else(|_| panic!("direct relations"));
@@ -365,11 +366,11 @@ async fn the_tui_shows_the_daemons_truth_and_outlives_nothing() {
     };
     assert_eq!(relations, direct, "same answer, nothing recomputed");
     let incoming = relations
-        .answers
+        .totals
         .iter()
-        .find(|answer| answer.direction == DirectionWire::Incoming)
+        .find(|totals| totals.direction == DirectionWire::Incoming)
         .expect("incoming");
-    assert_eq!(incoming.confirmed.len(), 1);
+    assert_eq!(incoming.confirmed, 1);
     assert!(
         shows(&app, "Confirmed 1 (Calls 1)"),
         "{:?}",
@@ -405,9 +406,9 @@ async fn the_tui_shows_the_daemons_truth_and_outlives_nothing() {
         .relations
         .as_ref()
         .expect("go relations")
-        .answers
+        .totals
         .iter()
-        .find(|answer| answer.direction == DirectionWire::Outgoing)
+        .find(|totals| totals.direction == DirectionWire::Outgoing)
         .expect("outgoing")
         .clone();
     assert_eq!(

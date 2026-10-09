@@ -282,8 +282,13 @@ pub async fn impact(
     )
 }
 
-/// Both directions, each summarized the way every surface words it.
-pub async fn relations(daemon: &Daemon, target: ProjectionTargetWire) -> Value {
+/// Both directions, each summarized the way every surface words it, on
+/// one delivery page (#58).
+pub async fn relations(
+    daemon: &Daemon,
+    target: ProjectionTargetWire,
+    continuation: Option<DeliveryContinuationWire>,
+) -> Value {
     envelope(
         async {
             let result = daemon
@@ -291,16 +296,18 @@ pub async fn relations(daemon: &Daemon, target: ProjectionTargetWire) -> Value {
                     target,
                     direction: RelationDirectionWire::Both,
                     kinds: Vec::new(),
+                    delivery: delivery(continuation),
                 }))
                 .await?;
             let QueryResultWire::Relations(relations) = &result else {
                 return Err(unexpected());
             };
             let answers: Vec<_> = relations
-                .answers
+                .totals
                 .iter()
-                .map(|answer| {
-                    let summary = present::relation_summary(answer);
+                .map(|totals| {
+                    let summary =
+                        present::relation_summary(totals, &relations.answer.page.evidence);
                     json!({
                         "direction": summary.direction.key(),
                         "confirmed": summary.confirmed,
@@ -314,12 +321,9 @@ pub async fn relations(daemon: &Daemon, target: ProjectionTargetWire) -> Value {
                     })
                 })
                 .collect();
-            Ok(json!({
-                "currentness": present::currentness(&relations.currentness).key(),
-                "resolution": present::resolution(&relations.target).key(),
-                "answers": answers,
-                "body": compact(&result),
-            }))
+            let mut page = page(&result, &relations.answer);
+            page["answers"] = Value::from(answers);
+            Ok(page)
         }
         .await,
     )

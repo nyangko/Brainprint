@@ -15,9 +15,9 @@ use crate::protocol::{
         SchemaCheckWire, WatcherCheckWire,
     },
     query::{
-        AnswerStateWire, ChangeKindWire, CoverageWire, CurrentnessWire, DirectionWire,
-        ImpactIntentWire, NotCurrentReasonWire, RelationAnswerWire, RelationKindWire, SupportWire,
-        TargetResolutionWire, WorkItemStatusWire,
+        AnswerStateWire, ChangeKindWire, CoverageWire, CurrentnessWire, DeliveredItemWire,
+        DirectionWire, EvidenceWire, ImpactIntentWire, NotCurrentReasonWire, RelationKindWire,
+        RelationTotalsWire, SupportWire, TargetResolutionWire, WorkItemStatusWire,
     },
 };
 
@@ -392,8 +392,9 @@ pub const fn relation_coverage(coverage: &CoverageWire) -> Msg {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RelationSummary {
     pub direction: Msg,
+    /// The direction's whole count, whatever this page delivered (#58).
     pub confirmed: usize,
-    /// Per kind, in first-seen order of the delivered list.
+    /// Per kind, in first-seen order of the page's full items.
     pub kinds: Vec<(RelationKindWire, usize)>,
     pub coverage: Msg,
     /// With nothing confirmed: complete-none, unsupported, or incomplete.
@@ -402,31 +403,43 @@ pub struct RelationSummary {
     pub gaps: usize,
 }
 
+/// `totals` with the relations one page delivered in full in its
+/// direction.
 #[must_use]
-pub fn relation_summary(answer: &RelationAnswerWire) -> RelationSummary {
-    let coverage = relation_coverage(&answer.coverage);
+pub fn relation_summary(
+    totals: &RelationTotalsWire,
+    page: &[DeliveredItemWire],
+) -> RelationSummary {
+    let coverage = relation_coverage(&totals.coverage);
     let mut kinds: Vec<(RelationKindWire, usize)> = Vec::new();
-    for relation in &answer.confirmed {
+    for item in page {
+        let DeliveredItemWire::Full(EvidenceWire::Relation(projected)) = item else {
+            continue;
+        };
+        let relation = &projected.relation;
+        if relation.direction != totals.direction {
+            continue;
+        }
         match kinds.iter_mut().find(|(kind, _)| *kind == relation.kind) {
             Some((_, seen)) => *seen += 1,
             None => kinds.push((relation.kind, 1)),
         }
     }
-    let none = answer.confirmed.is_empty().then_some(match coverage {
+    let none = (totals.confirmed == 0).then_some(match coverage {
         Msg::CoverageComplete => Msg::AnswerNoneComplete,
         Msg::CoverageUnsupported => Msg::CoverageUnsupported,
         _ => Msg::AnswerNoneIncomplete,
     });
     RelationSummary {
-        direction: match answer.direction {
+        direction: match totals.direction {
             DirectionWire::Incoming => Msg::LabelIncoming,
             DirectionWire::Outgoing => Msg::LabelOutgoing,
         },
-        confirmed: answer.confirmed.len(),
+        confirmed: totals.confirmed,
         kinds,
         coverage,
         none,
-        gaps: answer.gaps.len(),
+        gaps: totals.gaps,
     }
 }
 

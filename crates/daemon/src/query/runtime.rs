@@ -981,12 +981,10 @@ fn run_query(
         }
         convert_in::ConvertedOperation::Relations(request) => {
             let result = surface
-                .relations(request)
+                .relations(request, ledger)
                 .map_err(convert_out::core_error)?;
-            (
-                QueryResultWire::Relations(convert_out::relations_result_wire(result)),
-                None,
-            )
+            let (wire, receipt) = convert_out::relations_result_wire(result);
+            (QueryResultWire::Relations(wire), Some(receipt))
         }
         convert_in::ConvertedOperation::Impact(request) => {
             let answer = surface

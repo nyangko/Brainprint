@@ -21,10 +21,10 @@ use crate::{
         ContextPurpose, ContextRequest, CoreError, CoreQuerySurface, DeliveryOptions, FindQuery,
         FindRequest, FindResult, ImpactRequest, InspectRequest, InvalidRequest, KnowledgeQuery,
         KnowledgeRequest, KnowledgeResult, LineageTarget, NotInitialized, OwnedTextPattern,
-        ProjectedAnswer, QueryContext, RelationDirection, RelationsRequest, SurfaceStats,
-        TargetResolution,
+        ProjectedAnswer, QueryContext, RelationDirection, RelationsRequest, RelationsResult,
+        SelectionDelivery, SurfaceStats, TargetResolution,
     },
-    relations::RelationIndex,
+    relations::{RelationAnswer, RelationGap, RelationIndex, RelationResult},
     search::{QueryStatus, SearchBudget},
     symbol::SymbolKind,
 };
@@ -149,21 +149,91 @@ fn impact(
         .expect("impact")
 }
 
+fn relations_with(
+    surface: &CoreQuerySurface,
+    fixture: &Fixture,
+    target: ProjectionTarget,
+    direction: RelationDirection,
+    kinds: Vec<RelationKind>,
+    delivery: DeliveryOptions<'_>,
+    ledger: &mut DeliveryLedger,
+) -> RelationsResult {
+    surface
+        .relations(
+            RelationsRequest {
+                context: ctx(fixture),
+                target,
+                direction,
+                kinds,
+                delivery,
+            },
+            ledger,
+        )
+        .expect("relations")
+}
+
 fn relations_of(
     surface: &CoreQuerySurface,
     fixture: &Fixture,
     target: ProjectionTarget,
     direction: RelationDirection,
     kinds: Vec<RelationKind>,
-) -> crate::query_surface::RelationsResult {
-    surface
-        .relations(RelationsRequest {
-            context: ctx(fixture),
-            target,
-            direction,
-            kinds,
+) -> RelationsResult {
+    relations_with(
+        surface,
+        fixture,
+        target,
+        direction,
+        kinds,
+        wide(),
+        &mut ledger(),
+    )
+}
+
+/// A page's delivered relations in one direction.
+fn delivered(result: &RelationsResult, direction: Direction) -> Vec<RelationResult> {
+    page(&result.answer)
+        .iter()
+        .filter_map(|item| match item {
+            EvidenceItem::Relation(projected) if projected.relation.direction == direction => {
+                Some(projected.relation.clone())
+            }
+            _ => None,
         })
-        .expect("relations")
+        .collect()
+}
+
+fn delivered_gaps(result: &RelationsResult) -> Vec<RelationGap> {
+    page(&result.answer)
+        .iter()
+        .filter_map(|item| match item {
+            EvidenceItem::RelationGap(gap) => Some(gap.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A whole (one-page) relations answer is exactly the `RelationIndex`
+/// answers: the same totals, relations and gaps. Page order is the
+/// planner's, so the lists compare as sets.
+fn assert_answers(result: &RelationsResult, expected: &[RelationAnswer]) {
+    assert!(!result.answer.delivery.page.more_available);
+    assert_eq!(
+        result.totals,
+        expected
+            .iter()
+            .map(RelationAnswer::totals)
+            .collect::<Vec<_>>()
+    );
+    for answer in expected {
+        assert_eq!(
+            sorted_debug(delivered(result, answer.direction)),
+            sorted_debug(&answer.confirmed)
+        );
+    }
+    let mut gaps = sorted_debug(expected.iter().flat_map(|answer| &answer.gaps));
+    gaps.dedup();
+    assert_eq!(sorted_debug(delivered_gaps(result)), gaps);
 }
 
 /// The facade form of a planner CHANGE / RESUME request.
@@ -468,12 +538,16 @@ fn a_handle_answers_only_for_its_own_workspace() {
     // Another Workspace's request is refused outright.
     let foreign = ctx(&b);
     assert!(matches!(
-        surface_a.relations(RelationsRequest {
-            context: foreign.clone(),
-            target: named(SymbolName::Name("shared".to_owned())),
-            direction: RelationDirection::Both,
-            kinds: Vec::new(),
-        }),
+        surface_a.relations(
+            RelationsRequest {
+                context: foreign.clone(),
+                target: named(SymbolName::Name("shared".to_owned())),
+                direction: RelationDirection::Both,
+                kinds: Vec::new(),
+                delivery: wide(),
+            },
+            &mut ledger(),
+        ),
         Err(CoreError::WorkspaceMismatch { .. })
     ));
     assert!(matches!(
@@ -721,7 +795,7 @@ fn call_counts_are_fixed_per_operation() {
         vec![
             (facade(1, 1, 0, 0, 0), [1, 0, 0, 0, 0]), // find
             (facade(1, 1, 0, 0, 0), [1, 2, 0, 0, 0]), // inspect
-            (facade(1, 0, 2, 0, 0), [1, 0, 0, 0, 0]), // relations
+            (facade(1, 1, 2, 0, 0), [1, 2, 0, 0, 0]), // relations (#58: one page)
             (facade(1, 1, 0, 0, 0), [1, 0, 1, 0, 0]), // impact
             (facade(1, 1, 0, 0, 0), [1, 2, 0, 1, 0]), // context
             (facade(0, 0, 0, 1, 0), [0, 0, 0, 1, 0]), // knowledge
@@ -1238,20 +1312,23 @@ fn relations_are_filtered_exactly_by_direction_and_kind() {
         RelationDirection::Incoming,
         vec![RelationKind::Imports],
     );
-    assert_eq!(imports.target, TargetResolution::Resolved(file.clone()));
-    assert_eq!(imports.answers.len(), 1);
-    assert_eq!(imports.answers[0].confirmed.len(), 3);
+    assert_eq!(
+        imports.answer.target,
+        TargetResolution::Resolved(file.clone())
+    );
+    assert_eq!(imports.selection, SelectionDelivery::Absent);
+    assert_eq!(imports.totals.len(), 1);
+    assert_eq!(imports.totals[0].confirmed, 3);
     assert!(
-        imports.answers[0]
-            .confirmed
+        delivered(&imports, Direction::Incoming)
             .iter()
             .all(|relation| relation.kind == RelationKind::Imports)
     );
-    assert_eq!(
-        imports.answers[0],
-        direct
+    assert_answers(
+        &imports,
+        &[direct
             .incoming(&file, &[RelationKind::Imports])
-            .expect("direct")
+            .expect("direct")],
     );
     let calls = relations_of(
         &surface,
@@ -1260,7 +1337,8 @@ fn relations_are_filtered_exactly_by_direction_and_kind() {
         RelationDirection::Incoming,
         vec![RelationKind::Calls],
     );
-    assert!(calls.answers[0].confirmed.is_empty());
+    assert_eq!(calls.totals[0].confirmed, 0);
+    assert!(delivered(&calls, Direction::Incoming).is_empty());
 
     let run = fixture.endpoint("src/app.ts", "run");
     let both = relations_of(
@@ -1270,13 +1348,13 @@ fn relations_are_filtered_exactly_by_direction_and_kind() {
         RelationDirection::Both,
         Vec::new(),
     );
-    assert_eq!(
-        both.answers,
-        vec![
+    // Empty kinds = every kind, outgoing then incoming.
+    assert_answers(
+        &both,
+        &[
             direct.outgoing(&run, &[]).expect("direct"),
             direct.incoming(&run, &[]).expect("direct"),
         ],
-        "empty kinds = every kind, outgoing then incoming"
     );
     let stats = surface.planner_stats();
     assert_eq!((stats.source_file_reads, stats.source_bytes), (0, 0));
@@ -1290,12 +1368,22 @@ fn relations_are_filtered_exactly_by_direction_and_kind() {
         RelationDirection::Both,
         Vec::new(),
     );
-    assert_eq!(ambiguous.target, TargetResolution::MultipleCandidates);
-    assert!(ambiguous.answers.is_empty());
     assert_eq!(
-        selection_of(&ambiguous.selection).located.candidates.len(),
+        ambiguous.answer.target,
+        TargetResolution::MultipleCandidates
+    );
+    assert!(ambiguous.totals.is_empty());
+    assert_eq!(
+        selection_of(page(&ambiguous.answer))
+            .located
+            .candidates
+            .len(),
         2
     );
+    assert!(matches!(
+        ambiguous.selection,
+        SelectionDelivery::Delivered { .. }
+    ));
     assert_eq!(surface.stats().relation_queries, before);
 }
 
@@ -1324,18 +1412,15 @@ fn an_exact_symbol_id_carries_only_its_own_coverage_and_incoming_keeps_the_works
     );
 
     assert_eq!(
-        incoming.target,
+        incoming.answer.target,
         TargetResolution::Resolved(GraphEndpoint::Symbol(id))
     );
-    assert!(
-        selection_of(&incoming.selection)
-            .located
-            .incomplete_coverage
-            .is_empty(),
+    assert_eq!(
+        incoming.selection,
+        SelectionDelivery::Delivered { coverage_notes: 0 },
         "the Widget cannot change what this id names"
     );
-    let summary = incoming
-        .selection
+    let summary = page(&incoming.answer)
         .iter()
         .find_map(|item| match item {
             EvidenceItem::Coverage(coverage)
@@ -1353,7 +1438,7 @@ fn an_exact_symbol_id_carries_only_its_own_coverage_and_incoming_keeps_the_works
         })
         .expect("the incoming answer's coverage, compactly");
     assert!(summary.report.has(CoverageLimit::UnsupportedScope));
-    assert_eq!(summary.confirmed, incoming.answers[0].confirmed.len());
+    assert_eq!(summary.confirmed, incoming.totals[0].confirmed);
     assert!(!summary.answer_state().is_safe_negative());
 }
 
@@ -1369,7 +1454,7 @@ fn one_canonical_relation_keeps_every_occurrence() {
         RelationDirection::Outgoing,
         vec![RelationKind::Calls],
     );
-    let calls = &result.answers[0].confirmed;
+    let calls = delivered(&result, Direction::Outgoing);
     assert_eq!(calls.len(), 1, "one canonical edge for two call sites");
     assert_eq!(calls[0].evidence.len(), 2);
 }
@@ -1385,12 +1470,12 @@ fn unresolved_sites_are_gaps_and_zero_is_not_none() {
         RelationDirection::Outgoing,
         Vec::new(),
     );
-    let answer = &result.answers[0];
-    assert!(answer.confirmed.is_empty());
-    assert_eq!(answer.gaps.len(), 1);
-    assert!(!answer.coverage.limits().is_complete());
+    let totals = &result.totals[0];
+    assert_eq!((totals.confirmed, totals.gaps), (0, 1));
+    assert_eq!(delivered_gaps(&result).len(), 1);
+    assert!(!totals.coverage.limits().is_complete());
     assert_eq!(
-        answer.answer_state(),
+        totals.coverage.limits().state(totals.confirmed),
         AnswerState::NoneWithIncompleteCoverage
     );
 }
@@ -1430,15 +1515,274 @@ fn a_logical_symbol_answers_as_the_relation_index_defines() {
         RelationDirection::Both,
         Vec::new(),
     );
-    assert_eq!(result.target, TargetResolution::Resolved(endpoint.clone()));
-    let direct = RelationIndex::open(&fixture.paths.index_db).expect("index");
     assert_eq!(
-        result.answers,
-        vec![
+        result.answer.target,
+        TargetResolution::Resolved(endpoint.clone())
+    );
+    let direct = RelationIndex::open(&fixture.paths.index_db).expect("index");
+    assert_answers(
+        &result,
+        &[
             direct.outgoing(&endpoint, &[]).expect("direct"),
             direct.incoming(&endpoint, &[]).expect("direct"),
-        ]
+        ],
     );
+}
+
+/// #58: the standard graph plus `widgets` Svelte components the
+/// structural index covers only partly -- so a *name* selector's
+/// `TargetSelection` lists every one of them (Web-OrchStack: 445).
+fn partly_covered(label: &str, widgets: usize) -> Fixture {
+    let names: Vec<String> = (0..widgets)
+        .map(|n| format!("ui/components/Widget{n:03}.svelte"))
+        .collect();
+    let widget = "<script>\n  export function mount() {}\n</script>\n<p>hi</p>\n";
+    let mut files = vec![
+        ("src/app.ts", APP_TS),
+        ("src/other.ts", OTHER_TS),
+        ("src/shared.ts", SHARED_TS),
+        ("src/util/run.ts", UTIL_RUN_TS),
+        ("src/unique.ts", UNIQUE_TS),
+        ("src/dyn.ts", DYN_TS),
+        ("tests/shared.test.ts", TEST_TS),
+    ];
+    files.extend(names.iter().map(|name| (name.as_str(), widget)));
+    let fixture = Fixture::with_files(label, &files);
+    fixture.publish(&fixture.standard_graph());
+    fixture
+}
+
+fn has_coverage(items: &[EvidenceItem], incoming: bool) -> bool {
+    items.iter().any(|item| match item {
+        EvidenceItem::Coverage(coverage) => match &coverage.subject {
+            CoverageSubject::TargetSelection(_) => !incoming,
+            CoverageSubject::Relations { direction, .. } => {
+                incoming && *direction == Direction::Incoming
+            }
+            _ => false,
+        },
+        _ => false,
+    })
+}
+
+#[test]
+fn a_4kb_relations_page_delivers_coverage_and_callers_before_an_oversized_selection() {
+    // #58 / #91: `fileMeta` incoming at max_bytes 4000 came back 71,948
+    // characters, nearly all of it the name selector's per-Resource
+    // coverage list. Paged as a required unit, that list alone would
+    // fill the page and strand the coverage and relations behind it.
+    let fixture = partly_covered("surface-relations-4kb", 120);
+    let surface = surface(&fixture);
+    let target = || named(SymbolName::Name("shared".to_owned()));
+    let whole = relations_of(
+        &surface,
+        &fixture,
+        target(),
+        RelationDirection::Incoming,
+        Vec::new(),
+    );
+    let SelectionDelivery::Delivered { coverage_notes } = whole.selection else {
+        panic!("a wide page holds the selection: {:?}", whole.selection);
+    };
+    assert!(coverage_notes >= 120, "{coverage_notes}");
+    let selection_bytes = page(&whole.answer)
+        .iter()
+        .find(|item| matches!(item, EvidenceItem::TargetSelection(_)))
+        .expect("selection")
+        .delivery_bytes();
+    let rest = whole.answer.delivery.page.used_bytes - selection_bytes;
+    assert!(
+        rest <= 4000 && selection_bytes > 4000,
+        "{rest} / {selection_bytes}"
+    );
+
+    let small = relations_with(
+        &surface,
+        &fixture,
+        target(),
+        RelationDirection::Incoming,
+        Vec::new(),
+        opts(budget(None, Some(4000), None), NO_REUSE),
+        &mut ledger(),
+    );
+    let delivered_page = &small.answer.delivery.page;
+    assert!(delivered_page.used_bytes <= 4000);
+    assert_eq!(small.answer.target, whole.answer.target);
+    assert_eq!(small.answer.currentness, whole.answer.currentness);
+    assert!(
+        page(&small.answer)
+            .iter()
+            .any(|item| matches!(item, EvidenceItem::Symbol(_)))
+    );
+    assert!(
+        has_coverage(page(&small.answer), false),
+        "selection summary"
+    );
+    assert!(has_coverage(page(&small.answer), true), "incoming coverage");
+    assert_eq!(small.totals, whole.totals, "totals are never cut");
+    assert!(small.totals[0].confirmed > 0);
+    assert_eq!(
+        sorted_debug(delivered(&small, Direction::Incoming)),
+        sorted_debug(delivered(&whole, Direction::Incoming)),
+        "every caller fits ahead of the selection list"
+    );
+    assert_eq!(delivered_gaps(&small), delivered_gaps(&whole));
+    assert!(
+        !page(&small.answer)
+            .iter()
+            .any(|item| matches!(item, EvidenceItem::TargetSelection(_)))
+    );
+    assert_eq!(
+        small.selection,
+        SelectionDelivery::ExceedsBudget {
+            coverage_notes,
+            bytes: selection_bytes,
+        }
+    );
+    // Omitted explicitly, and honestly unrecoverable at this budget.
+    assert!(delivered_page.more_available);
+    assert_eq!(delivered_page.omitted_units, 1);
+    assert!(delivered_page.continuation.is_none());
+    assert_eq!(
+        small.answer.delivery.economy.continuation_unavailable,
+        Some(ContinuationUnavailable::UnitExceedsBudget)
+    );
+}
+
+#[test]
+fn a_paged_relations_chain_delivers_every_unit_once_in_a_stable_order() {
+    // #58: confirmed relations, gaps and the selection over several
+    // pages: nothing twice, nothing missing, the same order every time.
+    let fixture = partly_covered("surface-relations-chain", 4);
+    let surface = surface(&fixture);
+    let target = || named(SymbolName::Name("shared".to_owned()));
+    let whole = relations_of(
+        &surface,
+        &fixture,
+        target(),
+        RelationDirection::Both,
+        Vec::new(),
+    );
+    let chain = || {
+        let mut units = Vec::new();
+        let mut states = Vec::new();
+        let mut continuation = None;
+        loop {
+            let result = relations_with(
+                &surface,
+                &fixture,
+                target(),
+                RelationDirection::Both,
+                Vec::new(),
+                DeliveryOptions {
+                    continuation,
+                    ..opts(items(2), NO_REUSE)
+                },
+                &mut ledger(),
+            );
+            assert_eq!(result.totals, whole.totals, "on every page");
+            assert_eq!(result.answer.target, whole.answer.target);
+            units.extend(page(&result.answer).iter().map(|item| format!("{item:?}")));
+            states.push(result.selection);
+            continuation = result.answer.delivery.page.continuation.clone();
+            if continuation.is_none() {
+                assert!(!result.answer.delivery.page.more_available);
+                break (units, states);
+            }
+        }
+    };
+    let (units, states) = chain();
+    assert!(states.len() > 2, "several pages: {states:?}");
+    let mut unique = units.clone();
+    unique.sort();
+    unique.dedup();
+    assert_eq!(unique.len(), units.len(), "no unit twice");
+    assert_eq!(unique, sorted_debug(page(&whole.answer)), "no unit missing");
+    let (last, earlier) = states.split_last().expect("pages");
+    assert!(matches!(last, SelectionDelivery::Delivered { .. }));
+    assert!(
+        earlier
+            .iter()
+            .all(|state| matches!(state, SelectionDelivery::Pending { .. })),
+        "the selection list comes last: {states:?}"
+    );
+    assert_eq!(chain(), (units, states), "a stable order");
+}
+
+#[test]
+fn a_relations_continuation_is_bound_to_its_direction_and_kinds() {
+    // #58: direction and kinds are part of the request, so a cursor
+    // cannot be replayed against a different question.
+    let fixture = partly_covered("surface-relations-cursor", 4);
+    let surface = surface(&fixture);
+    let target = || named(SymbolName::Name("shared".to_owned()));
+    let first = relations_with(
+        &surface,
+        &fixture,
+        target(),
+        RelationDirection::Both,
+        Vec::new(),
+        opts(items(4), NO_REUSE),
+        &mut ledger(),
+    );
+    let continuation = first
+        .answer
+        .delivery
+        .page
+        .continuation
+        .expect("more remains");
+    for (direction, kinds) in [
+        (RelationDirection::Incoming, Vec::new()),
+        (RelationDirection::Both, vec![RelationKind::Calls]),
+    ] {
+        let replay = surface.relations(
+            RelationsRequest {
+                context: ctx(&fixture),
+                target: target(),
+                direction,
+                kinds,
+                delivery: DeliveryOptions {
+                    continuation: Some(continuation.clone()),
+                    ..opts(items(4), NO_REUSE)
+                },
+            },
+            &mut ledger(),
+        );
+        assert!(
+            matches!(
+                replay,
+                Err(CoreError::Delivery(DeliveryError::ContinuationMismatch(
+                    ContinuationMismatch::Request
+                )))
+            ),
+            "{replay:?}"
+        );
+    }
+}
+
+#[test]
+fn a_relations_miss_keeps_its_selection_coverage_and_asks_no_relation() {
+    // #58: zero candidates is NotFound with its coverage on the page --
+    // never an empty relation answer.
+    let fixture = partly_covered("surface-relations-miss", 3);
+    let surface = surface(&fixture);
+    let before = surface.stats().relation_queries;
+    let result = relations_with(
+        &surface,
+        &fixture,
+        named(SymbolName::Name("no_such_symbol".to_owned())),
+        RelationDirection::Incoming,
+        Vec::new(),
+        opts(budget(None, Some(4000), None), NO_REUSE),
+        &mut ledger(),
+    );
+    assert_eq!(
+        result.answer.target,
+        TargetResolution::NotFoundIncompleteCoverage
+    );
+    assert!(result.totals.is_empty());
+    assert!(has_coverage(page(&result.answer), false));
+    assert_eq!(surface.stats().relation_queries, before);
 }
 
 // ----------------------------------------------------------------- impact
@@ -2364,15 +2708,15 @@ fn a_top_level_reverse_query_counts_the_owners_it_could_not_confirm() {
         RelationDirection::Incoming,
         Vec::new(),
     );
-    let answer = incoming.answers.first().expect("an answer");
-    assert_eq!(answer.coverage.unconfirmed_owners, 1);
+    let totals = incoming.totals.first().expect("an answer");
+    assert_eq!(totals.coverage.unconfirmed_owners, 1);
     assert!(
-        answer
+        totals
             .coverage
             .limits()
             .has(crate::coverage::CoverageLimit::UnconfirmedCallerOwners)
     );
-    assert!(answer.confirmed.is_empty(), "a name match confirms nothing");
+    assert_eq!(totals.confirmed, 0, "a name match confirms nothing");
 
     // A forward question has no callers to miss.
     let outgoing = relations_of(
@@ -2382,5 +2726,5 @@ fn a_top_level_reverse_query_counts_the_owners_it_could_not_confirm() {
         RelationDirection::Outgoing,
         Vec::new(),
     );
-    assert_eq!(outgoing.answers[0].coverage.unconfirmed_owners, 0);
+    assert_eq!(outgoing.totals[0].coverage.unconfirmed_owners, 0);
 }

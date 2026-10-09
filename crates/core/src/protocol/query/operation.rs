@@ -99,6 +99,7 @@ pub struct RelationsWire {
     pub target: ProjectionTargetWire,
     pub direction: RelationDirectionWire,
     pub kinds: Vec<RelationKindWire>,
+    pub delivery: DeliveryWire,
 }
 
 /// Mirrors `brainprint_engine::query_surface::ImpactRequest`'s

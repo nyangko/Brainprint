@@ -1,6 +1,7 @@
 //! `brainprint.relations` (#25 "brainprint.relations"): direct / impact.
-//! `direct` stays one-anchor, one-hop, unpaged, no source, no MCP-side
-//! pagination. `impact` uses the existing closed `ChangeKind` vocabulary
+//! `direct` stays one-anchor, one-hop, no source; since #58 it is paged
+//! by the daemon's existing delivery budget and continuation (still no
+//! MCP-side pagination). `impact` uses the existing closed `ChangeKind` vocabulary
 //! -- the caller states the change form; nothing here infers one.
 //!
 //! `RelationsParams` is a flat struct (see `find.rs`'s doc comment for
@@ -139,7 +140,7 @@ pub struct RelationsParams {
     pub workspace: WorkspaceSelectorParam,
     #[serde(flatten)]
     pub correlation: CorrelationParams,
-    /// `mode: impact` delivery budget. Ignored for `direct`.
+    /// Delivery budget and continuation, for both modes (#58).
     #[serde(flatten)]
     pub delivery: DeliveryParams,
 }
@@ -155,13 +156,14 @@ impl RelationsParams {
     pub fn split(self) -> BuiltRelations {
         match self.mode {
             RelationsMode::Direct => {
-                let operation = self.target.into_wire().map(|target| {
-                    QueryOperationWire::Relations(RelationsWire {
-                        target,
+                let operation = (|| {
+                    Ok(QueryOperationWire::Relations(RelationsWire {
+                        target: self.target.into_wire()?,
                         direction: self.direction.into(),
                         kinds: self.kinds.into_iter().map(Into::into).collect(),
-                    })
-                });
+                        delivery: self.delivery.into_wire()?,
+                    }))
+                })();
                 BuiltRelations {
                     workspace: self.workspace,
                     correlation: self.correlation,

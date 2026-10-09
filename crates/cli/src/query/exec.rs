@@ -281,12 +281,17 @@ pub async fn run_relations(args: RelationsArgs) -> Exit {
         Ok(target) => target,
         Err(error) => return syntax_exit(error.into()),
     };
+    let delivery = match args.delivery.into_wire(args.common.has_correlation()) {
+        Ok(delivery) => delivery,
+        Err(error) => return syntax_exit(error.into()),
+    };
     run(
         &args.common,
         QueryOperationWire::Relations(brainprint_core::protocol::query::RelationsWire {
             target,
             direction: args.direction.into(),
             kinds: args.kind.into_iter().map(Into::into).collect(),
+            delivery,
         }),
     )
     .await

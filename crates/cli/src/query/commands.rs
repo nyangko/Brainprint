@@ -266,7 +266,8 @@ pub struct InspectArgs {
     pub common: CommonArgs,
 }
 
-/// The resolved target's direct confirmed relations (one hop, unpaged).
+/// The resolved target's direct confirmed relations (one hop), one
+/// delivery page at a time.
 #[derive(Debug, Args)]
 pub struct RelationsArgs {
     #[command(flatten)]
@@ -275,6 +276,8 @@ pub struct RelationsArgs {
     pub direction: DirectionArg,
     #[arg(long = "kind", value_enum)]
     pub kind: Vec<RelationKindArg>,
+    #[command(flatten)]
+    pub delivery: DeliveryArgs,
     #[command(flatten)]
     pub common: CommonArgs,
 }

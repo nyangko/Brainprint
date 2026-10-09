@@ -44,7 +44,7 @@ use super::{
 use crate::{
     coverage::{CoverageLimit, CoverageReport},
     generation::{GenerationError, GenerationStore},
-    graph::{self, GraphEndpoint},
+    graph::{self, GraphEndpoint, RelationKind},
     impact::{Budget, ImpactError, ImpactIntent},
     inspect::{ReadError, SourceReader},
     knowledge::{
@@ -62,7 +62,7 @@ use crate::{
     },
     registry::{GlobalRegistry, RegistryError},
     related_tests::{RelatedTestError, RelatedTests},
-    relations::{Direction, RelationError, caller_owner_candidates},
+    relations::{Direction, RelationError, RelationTotals, caller_owner_candidates},
 };
 
 // ---------------------------------------------------------------- output
@@ -343,6 +343,16 @@ impl ProjectionPlanner {
 
     /// Plan `request`. An invalid request fails before any query runs.
     pub fn plan(&self, request: &ProjectionRequest) -> Result<PreparedProjection, PlannerError> {
+        self.plan_relations(request)
+            .map(|(projection, _)| projection)
+    }
+
+    /// [`Self::plan`], plus -- for [`ProjectionIntent::Relations`] -- each
+    /// requested direction's totals, which no page is allowed to cut (#58).
+    pub fn plan_relations(
+        &self,
+        request: &ProjectionRequest,
+    ) -> Result<(PreparedProjection, Vec<RelationTotals>), PlannerError> {
         let context = request.validate()?;
         if request.workspace != self.workspace_id {
             return Err(PlannerError::WorkspaceMismatch {
@@ -380,21 +390,29 @@ impl ProjectionPlanner {
         }
         // Every intent that carries the target's direct callers says how
         // many owners still hold a same-named use site nobody confirmed.
-        if matches!(
-            request.intent,
+        let callers = match request.intent {
             ProjectionIntent::Understand
-                | ProjectionIntent::Change(_)
-                | ProjectionIntent::Impact(_)
-        ) && let Some(Selected {
-            endpoint: GraphEndpoint::Symbol(symbol),
-            ..
-        }) = &selected
-        {
-            let owners = caller_owner_candidates(self.index().connection(), *symbol)?.len();
-            if owners > 0 {
-                plan.gap(ProjectionGap::UnconfirmedCallerOwners(owners));
+            | ProjectionIntent::Change(_)
+            | ProjectionIntent::Impact(_) => true,
+            ProjectionIntent::Relations => {
+                request.relations.directions.contains(&Direction::Incoming)
             }
+            ProjectionIntent::Locate | ProjectionIntent::ResumeHandoff => false,
+        };
+        let mut owners = None;
+        if callers
+            && let Some(Selected {
+                endpoint: GraphEndpoint::Symbol(symbol),
+                ..
+            }) = &selected
+        {
+            let count = caller_owner_candidates(self.index().connection(), *symbol)?.len();
+            if count > 0 {
+                plan.gap(ProjectionGap::UnconfirmedCallerOwners(count));
+            }
+            owners = Some(count);
         }
+        let mut totals = Vec::new();
 
         match request.intent {
             ProjectionIntent::Locate => {}
@@ -407,6 +425,19 @@ impl ProjectionPlanner {
                     self.direct(
                         &selected.endpoint,
                         &[Direction::Outgoing, Direction::Incoming],
+                        &[],
+                        None,
+                        &mut plan,
+                    )?;
+                }
+            }
+            ProjectionIntent::Relations => {
+                if let Some(selected) = &selected {
+                    totals = self.direct(
+                        &selected.endpoint,
+                        &request.relations.directions,
+                        &request.relations.kinds,
+                        owners,
                         &mut plan,
                     )?;
                 }
@@ -435,12 +466,13 @@ impl ProjectionPlanner {
         }
 
         self.materialize(&mut plan)?;
-        Ok(plan.finish(
+        let projection = plan.finish(
             self.workspace_id,
             self.project_id,
             request.intent,
             selected.map(|selected| selected.endpoint),
-        ))
+        );
+        Ok((projection, totals))
     }
 
     // ---- target -------------------------------------------------------
@@ -630,29 +662,48 @@ impl ProjectionPlanner {
             Some(ChangeKind::Structural(intent)) => self.impact(anchor, intent, plan),
             None => {
                 plan.gap(ProjectionGap::DependencyExpansionUndefined);
-                self.direct(anchor, &[Direction::Outgoing, Direction::Incoming], plan)
+                self.direct(
+                    anchor,
+                    &[Direction::Outgoing, Direction::Incoming],
+                    &[],
+                    None,
+                    plan,
+                )
+                .map(drop)
             }
             // No canonical transitive plan: never mapped onto another
             // intent. What depends on the target directly is still known.
             Some(kind @ (ChangeKind::Delete | ChangeKind::DomainContractChange)) => {
                 plan.gap(ProjectionGap::UnsupportedImpactProfile(kind));
-                self.direct(anchor, &[Direction::Incoming], plan)
+                self.direct(anchor, &[Direction::Incoming], &[], None, plan)
+                    .map(drop)
             }
         }
     }
 
+    /// `owners`: a top-level reverse query's unconfirmed caller owners,
+    /// carried on its own incoming coverage (an inspect says them as a gap).
     fn direct(
         &self,
         anchor: &GraphEndpoint,
         directions: &[Direction],
+        kinds: &[RelationKind],
+        owners: Option<usize>,
         plan: &mut Plan,
-    ) -> Result<(), PlannerError> {
+    ) -> Result<Vec<RelationTotals>, PlannerError> {
         let relations = self.tests.traversal().relations();
+        let mut totals = Vec::with_capacity(directions.len());
         for direction in directions {
-            let answer = match direction {
-                Direction::Outgoing => relations.outgoing(anchor, &[])?,
-                Direction::Incoming => relations.incoming(anchor, &[])?,
+            let mut answer = match direction {
+                Direction::Outgoing => relations.outgoing(anchor, kinds)?,
+                Direction::Incoming => relations.incoming(anchor, kinds)?,
             };
+            if *direction == Direction::Incoming
+                && let Some(owners) = owners
+            {
+                answer.coverage.unconfirmed_owners = owners;
+            }
+            totals.push(answer.totals());
             self.count(|stats| stats.relation_queries += 1);
             plan.raw.known(&answer.confirmed);
             plan.raw.known(&answer.gaps);
@@ -675,7 +726,7 @@ impl ProjectionPlanner {
                 confirmed,
             }));
         }
-        Ok(())
+        Ok(totals)
     }
 
     /// One I3 traversal, and the related tests derived from that same
@@ -877,10 +928,6 @@ impl ProjectionPlanner {
 
     pub(crate) const fn query_index(&self) -> &QueryIndex {
         self.index()
-    }
-
-    pub(crate) const fn relation_index(&self) -> &crate::relations::RelationIndex {
-        self.tests.traversal().relations()
     }
 
     pub(crate) const fn global_store(&self) -> &GlobalKnowledgeStore {
@@ -1235,10 +1282,12 @@ impl Plan {
         // anchor (or an impact node already named as a site owner), so it
         // is not offered again; each site's path/line/owner travels on its
         // relation.
+        // #58: a relations answer reads no source.
         let mut optional = Vec::new();
         for item in &self.items {
             if let EvidenceItem::Relation(projected) = item
                 && projected.relation.direction == Direction::Outgoing
+                && intent != ProjectionIntent::Relations
             {
                 for location in &projected.relation.evidence {
                     optional.push(PlannedSourceRange {

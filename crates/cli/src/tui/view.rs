@@ -12,7 +12,7 @@ use brainprint_core::{
             DoctorWorkspaceWire, IndexCheckWire, RuntimeCheckWire, StoredBasisWire,
             WatcherCheckWire, WorkspaceStatusWire,
         },
-        query::{KnowledgeResultWire, RelationAnswerWire},
+        query::{DeliveredItemWire, KnowledgeResultWire, RelationTotalsWire},
         work::PostCommandRefreshWire,
     },
 };
@@ -458,8 +458,12 @@ fn inspect(app: &App, lines: &mut Vec<Line<'static>>) {
 
 /// One direction's answer. Zero confirmed relations is a count only
 /// under complete coverage; otherwise the coverage state is the answer.
-fn relation_answer(app: &App, answer: &RelationAnswerWire) -> Line<'static> {
-    let summary = present::relation_summary(answer);
+fn relation_answer(
+    app: &App,
+    totals: &RelationTotalsWire,
+    page: &[DeliveredItemWire],
+) -> Line<'static> {
+    let summary = present::relation_summary(totals, page);
     let value = match summary.none {
         Some(none) => t(app, none).to_owned(),
         None => {
@@ -496,15 +500,22 @@ fn relations(app: &App, lines: &mut Vec<Line<'static>>) {
     lines.push(field(
         app,
         Msg::LabelCurrentness,
-        t(app, present::currentness(&relations.currentness)),
+        t(app, present::currentness(&relations.answer.currentness)),
     ));
     lines.push(field(
         app,
         Msg::LabelResolution,
-        t(app, present::resolution(&relations.target)),
+        t(
+            app,
+            present::resolution(&relations.answer.target_resolution),
+        ),
     ));
-    for answer in &relations.answers {
-        lines.push(relation_answer(app, answer));
+    for totals in &relations.totals {
+        lines.push(relation_answer(
+            app,
+            totals,
+            &relations.answer.page.evidence,
+        ));
     }
     lines.push(Line::default());
     lines.extend(app.relations_body.iter().cloned().map(Line::from));

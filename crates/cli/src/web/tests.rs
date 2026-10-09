@@ -300,6 +300,7 @@ async fn the_bridge_passes_the_daemons_truth_through() {
             target: target.clone(),
             direction: RelationDirectionWire::Both,
             kinds: Vec::new(),
+            delivery: crate::surface::delivery(None),
         }))
         .await
         .unwrap_or_else(|_| panic!("direct relations"))
@@ -310,14 +311,15 @@ async fn the_bridge_passes_the_daemons_truth_through() {
         .as_array()
         .expect("answers")
         .iter()
-        .zip(&direct_relations.answers)
+        .zip(&direct_relations.totals)
     {
-        let summary = present::relation_summary(answer);
+        let summary = present::relation_summary(answer, &direct_relations.answer.page.evidence);
         assert_eq!(bridged["direction"], summary.direction.key());
         assert_eq!(bridged["confirmed"], summary.confirmed);
         assert_eq!(bridged["coverage"], summary.coverage.key());
         assert_eq!(bridged["none"].as_str(), summary.none.map(Msg::key));
     }
+    assert_eq!(relations["more_available"], false);
     let incoming = &relations["answers"][1];
     assert_eq!(incoming["direction"], Msg::LabelIncoming.key());
     assert_eq!(incoming["confirmed"], 1);

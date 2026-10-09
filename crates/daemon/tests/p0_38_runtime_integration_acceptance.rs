@@ -992,6 +992,14 @@ async fn agent_query(
             target: symbol("helper"),
             direction: RelationDirectionWire::Incoming,
             kinds: vec![RelationKindWire::Calls],
+            delivery: DeliveryWire {
+                budget: DeliveryBudgetWire {
+                    max_items: NonZeroUsize::new(64),
+                    max_bytes: NonZeroUsize::new(64 * 1024),
+                },
+                continuation: None,
+                retention: RetentionWire::Disabled,
+            },
         }),
         _ => QueryOperationWire::Knowledge(KnowledgeWire::WorkItems {
             statuses: vec![WorkItemStatusWire::Open],
@@ -1021,11 +1029,11 @@ async fn agent_query(
                 answer.currentness == CurrentnessWire::Current,
             )
         }
-        QueryResultWire::Relations(answer) => {
-            let callers: usize = answer.answers.iter().map(|a| a.confirmed.len()).sum();
+        QueryResultWire::Relations(result) => {
+            let callers: usize = result.totals.iter().map(|totals| totals.confirmed).sum();
             (
                 callers.to_string(),
-                answer.currentness == CurrentnessWire::Current,
+                result.answer.currentness == CurrentnessWire::Current,
             )
         }
         // Working State has no index basis: it is read, not compared.

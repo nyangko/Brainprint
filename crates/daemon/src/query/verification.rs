@@ -652,14 +652,18 @@ async fn parity_relations() {
     let (fixture, mut connection, _server, _endpoint) = populated_fixture("relations").await;
     let surface = direct_surface(&fixture);
     let direct = surface
-        .relations(RelationsRequest {
-            context: direct_context(&fixture),
-            target: app_ts_target(),
-            direction: RelationDirection::Both,
-            kinds: Vec::new(),
-        })
+        .relations(
+            RelationsRequest {
+                context: direct_context(&fixture),
+                target: app_ts_target(),
+                direction: RelationDirection::Both,
+                kinds: Vec::new(),
+                delivery: compact_direct_delivery(),
+            },
+            &mut fresh_ledger(),
+        )
         .expect("direct relations");
-    let expected = convert_out::relations_result_wire(direct);
+    let expected = convert_out::relations_result_wire(direct).0;
 
     let response = query(
         &mut connection,
@@ -668,6 +672,7 @@ async fn parity_relations() {
             target: app_ts_target_wire(),
             direction: RelationDirectionWire::Both,
             kinds: Vec::new(),
+            delivery: compact_wire_delivery(),
         }),
     )
     .await;
@@ -676,10 +681,7 @@ async fn parity_relations() {
     };
     assert_eq!(expected, actual);
     assert!(
-        actual
-            .answers
-            .iter()
-            .any(|answer| !answer.confirmed.is_empty()),
+        actual.totals.iter().any(|totals| totals.confirmed > 0),
         "app.ts imports shared.ts: expected a confirmed relation, got {actual:?}"
     );
 }
@@ -1014,12 +1016,16 @@ async fn source_reads_and_bytes_match_task_10_expectations() {
         )
         .expect("find target");
     zero_read_surface
-        .relations(RelationsRequest {
-            context: direct_context(&fixture),
-            target: app_ts_target(),
-            direction: RelationDirection::Both,
-            kinds: Vec::new(),
-        })
+        .relations(
+            RelationsRequest {
+                context: direct_context(&fixture),
+                target: app_ts_target(),
+                direction: RelationDirection::Both,
+                kinds: Vec::new(),
+                delivery: compact_direct_delivery(),
+            },
+            &mut fresh_ledger(),
+        )
         .expect("relations");
     zero_read_surface
         .knowledge(KnowledgeRequest {
@@ -1159,12 +1165,16 @@ async fn no_semantic_backend_activity_on_structural_queries() {
         )
         .expect("find target");
     surface
-        .relations(RelationsRequest {
-            context: direct_context(&fixture),
-            target: app_ts_target(),
-            direction: RelationDirection::Both,
-            kinds: Vec::new(),
-        })
+        .relations(
+            RelationsRequest {
+                context: direct_context(&fixture),
+                target: app_ts_target(),
+                direction: RelationDirection::Both,
+                kinds: Vec::new(),
+                delivery: compact_direct_delivery(),
+            },
+            &mut fresh_ledger(),
+        )
         .expect("relations");
     surface
         .structure(&brainprint_engine::boundary::StructuralSummaryRequest {
@@ -1195,6 +1205,7 @@ async fn no_semantic_backend_activity_on_structural_queries() {
             target: app_ts_target_wire(),
             direction: RelationDirectionWire::Both,
             kinds: Vec::new(),
+            delivery: compact_wire_delivery(),
         }),
     )
     .await;

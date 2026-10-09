@@ -396,7 +396,7 @@ async fn an_unregistered_workspace_fails_before_git_runs() {
 #[tokio::test]
 async fn protocol_version_is_pinned() {
     // #51 bumped it to 5, #52 to 6.
-    assert_eq!(PROTOCOL_VERSION, 15);
+    assert_eq!(PROTOCOL_VERSION, 16);
 }
 
 /// v4 client → v5 daemon: refused at handshake; an Observe request sent

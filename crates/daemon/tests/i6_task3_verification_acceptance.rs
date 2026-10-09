@@ -105,7 +105,7 @@ fn main() {
             "the_cli_runs_verification_and_maps_exit_codes",
             the_cli_runs_verification_and_maps_exit_codes,
         ),
-        ("protocol_version_is_15", protocol_version_is_15),
+        ("protocol_version_is_16", protocol_version_is_16),
         (
             "a_v14_client_is_refused_by_a_v15_daemon",
             a_v14_client_is_refused_by_a_v15_daemon,
@@ -1463,21 +1463,21 @@ fn the_cli_runs_verification_and_maps_exit_codes() {
 
 // ------------------------------------------------------------- protocol
 
-fn protocol_version_is_15() {
-    assert_eq!(PROTOCOL_VERSION, 15);
+fn protocol_version_is_16() {
+    assert_eq!(PROTOCOL_VERSION, 16);
 }
 
-/// v14 client → v15 daemon: refused at handshake; a verification request
+/// v15 client → v16 daemon: refused at handshake; a verification request
 /// sent anyway is never served and runs nothing.
 fn a_v14_client_is_refused_by_a_v15_daemon() {
     block_on(async {
-        let fixture = Fixture::new("v14-client", false).await;
+        let fixture = Fixture::new("v15-client", false).await;
         let mut connection = connect(&fixture.endpoint).await;
         assert_eq!(
-            handshake(&mut connection, 14).await,
+            handshake(&mut connection, 15).await,
             Response::Handshake(HandshakeResponse::VersionMismatch {
-                server_protocol_version: 15,
-                client_protocol_version: 14,
+                server_protocol_version: 16,
+                client_protocol_version: 15,
             })
         );
         let request = work_request(
@@ -1497,10 +1497,10 @@ fn a_v14_client_is_refused_by_a_v15_daemon() {
     });
 }
 
-/// v15 client → v14 daemon: the client reports the mismatch and stops.
+/// v16 client → v15 daemon: the client reports the mismatch and stops.
 fn a_v15_client_stops_at_a_v14_daemon() {
     block_on(async {
-        let home = TestDir::create("v14-daemon");
+        let home = TestDir::create("v15-daemon");
         let endpoint = runtime_paths::resolve(&GlobalPaths::from_home(home.path()));
         #[cfg(unix)]
         let listener = {
@@ -1509,7 +1509,7 @@ fn a_v15_client_stops_at_a_v14_daemon() {
         };
         #[cfg(windows)]
         let listener = protocol::Listener::bind(&endpoint.pipe_name).expect("listener");
-        let fake_v14 = tokio::spawn(async move {
+        let fake_v15 = tokio::spawn(async move {
             let mut listener = listener;
             let mut connection = listener.accept().await.expect("accept");
             let request: Request = protocol::framing::read_message(&mut connection)
@@ -1521,7 +1521,7 @@ fn a_v15_client_stops_at_a_v14_daemon() {
             protocol::framing::write_message(
                 &mut connection,
                 &Response::Handshake(HandshakeResponse::VersionMismatch {
-                    server_protocol_version: 14,
+                    server_protocol_version: 15,
                     client_protocol_version: handshake.protocol_version,
                 }),
             )
@@ -1534,18 +1534,18 @@ fn a_v15_client_stops_at_a_v14_daemon() {
             .expect("connect");
         let error = brainprint_daemon::client::handshake(&mut connection, "i6-task3-test")
             .await
-            .expect_err("a v14 daemon must be refused");
+            .expect_err("a v15 daemon must be refused");
         assert!(
             matches!(
                 error,
                 brainprint_daemon::client::ClientError::VersionMismatch {
-                    server_protocol_version: 14,
-                    client_protocol_version: 15,
+                    server_protocol_version: 15,
+                    client_protocol_version: 16,
                 }
             ),
             "{error:?}"
         );
-        assert_eq!(fake_v14.await.expect("fake daemon"), 15);
+        assert_eq!(fake_v15.await.expect("fake daemon"), 16);
     });
 }
 

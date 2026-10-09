@@ -306,6 +306,30 @@ impl RelationAnswer {
     pub fn answer_state(&self) -> AnswerState {
         self.coverage.limits().state(self.confirmed_count())
     }
+
+    /// #58: everything but the two lists, which a page delivers by budget.
+    #[must_use]
+    pub fn totals(&self) -> RelationTotals {
+        RelationTotals {
+            direction: self.direction,
+            kinds: self.kinds.clone(),
+            confirmed: self.confirmed.len(),
+            gaps: self.gaps.len(),
+            coverage: self.coverage,
+        }
+    }
+}
+
+/// #58: one direct answer's counts and full coverage -- small and fixed,
+/// so it travels whole on every page while the confirmed relations and
+/// gaps it counts are delivered as budgeted units.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelationTotals {
+    pub direction: Direction,
+    pub kinds: Vec<RelationKind>,
+    pub confirmed: usize,
+    pub gaps: usize,
+    pub coverage: Coverage,
 }
 
 /// Failure answering a relation query.

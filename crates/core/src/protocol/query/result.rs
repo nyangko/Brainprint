@@ -7,7 +7,7 @@ use super::{
     delivery::DeliveryContinuationWire,
     evidence::{EvidenceWire, ProjectionGapWire, RangeRoleWire, TargetResolutionWire},
     knowledge::KnowledgeResultWire,
-    relations::RelationAnswerWire,
+    relations::RelationTotalsWire,
     target::{
         GraphEndpointWire, RelationKindWire, ResourceKindWire, ResourceLanguageWire,
         ResourceRoleWire,
@@ -236,13 +236,35 @@ pub enum FindResultWire {
 
 // -------------------------------------------------------------- relations
 
-/// Mirrors `brainprint_engine::query_surface::RelationsResult`.
+/// Mirrors `brainprint_engine::query_surface::RelationsResult` (#58):
+/// one delivery page, plus what every page carries whole.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RelationsResultWire {
-    pub target: TargetResolutionWire,
-    pub selection: Vec<EvidenceWire>,
-    pub currentness: CurrentnessWire,
-    pub answers: Vec<RelationAnswerWire>,
+    pub answer: ProjectedAnswerWire,
+    /// Outgoing then incoming; empty unless `Resolved`.
+    pub totals: Vec<RelationTotalsWire>,
+    pub selection: SelectionDeliveryWire,
+}
+
+/// Mirrors `brainprint_engine::query_surface::SelectionDelivery`: where
+/// the `TargetSelection` unit (delivered last) stands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SelectionDeliveryWire {
+    Absent,
+    Delivered {
+        coverage_notes: usize,
+    },
+    Pending {
+        coverage_notes: usize,
+    },
+    /// No continuation reaches it; only `max_bytes >= bytes` can.
+    ExceedsBudget {
+        coverage_notes: usize,
+        bytes: usize,
+    },
+    NotReached {
+        coverage_notes: usize,
+    },
 }
 
 // -------------------------------------------------------------- structure

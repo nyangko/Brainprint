@@ -154,8 +154,8 @@ async fn v1_client_against_the_current_daemon_is_rejected() {
 #[tokio::test]
 async fn the_client_speaks_the_current_protocol_version() {
     // #50 bumped 3 -> 4 (`Request`/`Response::Work`), #51 4 -> 5, #52
-    // 5 -> 6.
-    assert_eq!(PROTOCOL_VERSION, 15);
+    // 5 -> 6, #58 15 -> 16 (paged direct relations).
+    assert_eq!(PROTOCOL_VERSION, 16);
 }
 
 #[tokio::test]

@@ -28,7 +28,7 @@ Principles the implementation follows:
 
 ## Status
 
-**Pre-release, source only.** The source version is **0.1.1** (tag `v0.1.1`): the 0.1.1 efficiency and stabilization pass ([#79](https://github.com/nyangko/Brainprint/issues/79)) was accepted in [#86](https://github.com/nyangko/Brainprint/issues/86), on top of 0.1.0 accepted in [#77](https://github.com/nyangko/Brainprint/issues/77). Build it from source (below); no prebuilt binaries or packages are published. Interfaces, storage and protocol (on `master`: protocol 15, MCP envelope schema 2; `v0.1.1` speaks protocol 14) may still change.
+**Pre-release, source only.** The source version is **0.1.1** (tag `v0.1.1`): the 0.1.1 efficiency and stabilization pass ([#79](https://github.com/nyangko/Brainprint/issues/79)) was accepted in [#86](https://github.com/nyangko/Brainprint/issues/86), on top of 0.1.0 accepted in [#77](https://github.com/nyangko/Brainprint/issues/77). Build it from source (below); no prebuilt binaries or packages are published. Interfaces, storage and protocol (on `master`: protocol 16, MCP envelope schema 2; `v0.1.1` speaks protocol 14) may still change.
 
 0.1.1, measured against 0.1.0 under the same conditions ([#86](https://github.com/nyangko/Brainprint/issues/86)): `.brainprint/` 59.8 → 34.1 MiB (WAL 29.7 → 4.0 MiB); for the measured Claude Code workloads, whole-Workspace text-search and default file-listing results now arrive inline instead of being replaced by a saved-to-file notice; correctness and coverage semantics unchanged. Token/USD savings are **not proven** — native-only exploration stayed cheaper in [#32](https://github.com/nyangko/Brainprint/issues/32), [#35](https://github.com/nyangko/Brainprint/issues/35), [#74](https://github.com/nyangko/Brainprint/issues/74) and [#75](https://github.com/nyangko/Brainprint/issues/75).
 
@@ -159,7 +159,7 @@ Every command has `--help`. Workspace-scoped commands default to the current dir
 | `find files [--directory --recursive --path-prefix --role --language --kind --limit]` | Resource inventory from the index (default limit 200). Reads no source. |
 | `find text --literal\|--regex … --search-budget compact\|standard\|wide` | Explicit source-text search, bounded by results/files/bytes/deadline. Never an automatic fallback. |
 | `inspect <selector>` | Exact current declaration source plus direct relations in both directions. |
-| `relations <selector> --direction outgoing\|incoming\|both [--kind …]` | Direct confirmed relations, one hop, unpaged. |
+| `relations <selector> --direction outgoing\|incoming\|both [--kind …]` | Direct confirmed relations, one hop, one delivery page at a time (`--budget`, `--continuation`); each direction's totals and coverage on every page. |
 | `impact <selector> --change <kind>` | What a declared change would affect (`public-signature`, `rename`, `module-move`, `base-interface`, `delete`, `domain-contract`), including related tests. |
 | `context change <selector>` | Context for an edit at a target. |
 | `context resume --work-item <id>` | Context to resume a WorkItem's handoff. |

@@ -34,11 +34,15 @@ use brainprint_engine::{
     graph::GraphEndpoint,
     merge,
     paths::GlobalPaths,
-    projection::ProjectionTarget,
+    projection::{
+        EvidenceItem, ProjectionTarget,
+        planner::{ContextRetention, DeliveryBudget, DeliveryLedger, LedgerLimits},
+    },
     python_semantic::{self as python, PyrightInstall, PythonLauncher, PythonSettings},
     query::Currentness,
     query_surface::{
-        CoreQuerySurface, QueryContext, RelationDirection, RelationsRequest, TargetResolution,
+        CoreQuerySurface, DeliveryOptions, QueryContext, RelationDirection, RelationsRequest,
+        TargetResolution,
     },
     relations::caller_owner_candidates,
     resolution::{Resolution, Support},
@@ -619,40 +623,57 @@ impl WorkspaceSemantic {
         target: &ProjectionTarget,
         symbol: &mut Option<SymbolId>,
     ) -> Result<BTreeMap<usize, BTreeSet<ResourceId>>, String> {
+        // #58: the whole answer on one internal page -- every gap is read,
+        // and nothing is delivered to a client or remembered for reuse.
         let probe = surface
-            .relations(RelationsRequest {
-                context: QueryContext {
-                    workspace: self.workspace,
-                    correlation: None,
+            .relations(
+                RelationsRequest {
+                    context: QueryContext {
+                        workspace: self.workspace,
+                        correlation: None,
+                    },
+                    target: target.clone(),
+                    direction: RelationDirection::Both,
+                    kinds: Vec::new(),
+                    delivery: DeliveryOptions {
+                        budget: DeliveryBudget::new(Some(usize::MAX), None, None)
+                            .map_err(|error| error.to_string())?,
+                        continuation: None,
+                        retention: ContextRetention::ReuseDisabled,
+                        tokens: None,
+                    },
                 },
-                target: target.clone(),
-                direction: RelationDirection::Both,
-                kinds: Vec::new(),
-            })
+                &mut DeliveryLedger::new(
+                    LedgerLimits::new(1, 1).expect("1/1 are non-zero ledger limits"),
+                ),
+            )
             .map_err(|error| error.to_string())?;
         // Only an exact, current selection is a demand; anything else is
         // answered structurally with its own explicit gap.
-        if !matches!(probe.target, TargetResolution::Resolved(_))
-            || probe.currentness != Currentness::Current
+        let answer = &probe.answer;
+        if !matches!(answer.target, TargetResolution::Resolved(_))
+            || answer.currentness != Currentness::Current
         {
             return Ok(BTreeMap::new());
         }
-        if let TargetResolution::Resolved(GraphEndpoint::Symbol(id)) = &probe.target {
+        if let TargetResolution::Resolved(GraphEndpoint::Symbol(id)) = &answer.target {
             *symbol = Some(*id);
         }
         let mut resources = BTreeSet::new();
-        for answer in &probe.answers {
-            for gap in &answer.gaps {
-                if gap.reason.requires_semantics() || gap.resolution == Resolution::Candidate {
-                    resources.insert(gap.location.resource);
-                }
+        for item in &answer.delivery.page.evidence {
+            if let EvidenceItem::RelationGap(gap) = item
+                && (gap.reason.requires_semantics() || gap.resolution == Resolution::Candidate)
+            {
+                resources.insert(gap.location.resource);
             }
+        }
+        for totals in &probe.totals {
             // The queried scope's own coverage: semantic enrichment that
             // is not current, or a Resource the structural tier covers
             // only partially (`PARTIAL_SUPPORT`, e.g. a container-only
             // component) -- both already say the answer is incomplete.
-            if let Some(scope) = answer.coverage.scope
-                && (answer.coverage.semantic.not_current || scope.support != Support::Supported)
+            if let Some(scope) = totals.coverage.scope
+                && (totals.coverage.semantic.not_current || scope.support != Support::Supported)
             {
                 resources.insert(scope.resource);
             }

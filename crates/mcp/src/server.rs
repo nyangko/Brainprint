@@ -110,7 +110,8 @@ impl BrainprintMcp {
     /// relations: direct / impact (#25 "brainprint.relations").
     #[tool(
         name = "brainprint.relations",
-        description = "`direct`: one anchor's confirmed relations, one hop, unpaged, no source. \
+        description = "`direct`: one anchor's confirmed relations, one hop, no source, paged by \
+                        the delivery budget with each direction's totals on every page. \
                         `impact`: the I3 traversal for a declared ChangeKind (caller states the \
                         change form explicitly -- never inferred)."
     )]

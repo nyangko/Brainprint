@@ -558,6 +558,7 @@ async fn parity_relations_direct() {
                 )),
                 direction: RelationDirectionWire::Both,
                 kinds: Vec::new(),
+                delivery: compact_delivery(),
             }),
         )
         .await,
@@ -574,6 +575,130 @@ async fn parity_relations_direct() {
         .expect("brainprint.relations direct should succeed");
     let via_mcp: QueryResultWire = payload(&result);
     assert_eq!(direct, via_mcp);
+}
+
+/// #58 / #91 regression: `fileMeta` incoming with `max_bytes: 4000` came
+/// back 71,948 characters, nearly all of it the name selector's
+/// per-Resource coverage list. Over the real MCP tool, the page now holds
+/// the selection summary, the incoming coverage, the caller and the
+/// totals, and names the list it could not fit, with its size.
+#[tokio::test]
+async fn relations_direct_honours_max_bytes_over_mcp() {
+    let widget = "<script>\n  export function mount() {}\n</script>\n<p>hi</p>\n";
+    let names: Vec<String> = (0..300)
+        .map(|n| format!("ui/components/Widget{n:03}.svelte"))
+        .collect();
+    let extra: Vec<(&str, &str)> = names.iter().map(|name| (name.as_str(), widget)).collect();
+    let (fixture, _connection, _server, _endpoint) =
+        populated_fixture_with("relations-58-budget", &extra).await;
+    let mcp = mcp_server(&fixture);
+    let call = |budget: serde_json::Value| {
+        let mut params = workspace_json(&fixture);
+        merge(
+            &mut params,
+            json!({"mode": "direct", "symbol_name": "helper", "direction": "incoming"}),
+        );
+        merge(&mut params, budget);
+        let mcp = &mcp;
+        async move {
+            let result = mcp
+                .relations(Parameters(from_json(params)))
+                .await
+                .expect("brainprint.relations direct");
+            let chars =
+                serde_json::to_string(result.structured_content.as_ref().expect("structured"))
+                    .expect("json")
+                    .chars()
+                    .count();
+            let QueryResultWire::Relations(relations) = payload(&result) else {
+                panic!("relations payload")
+            };
+            (chars, relations)
+        }
+    };
+
+    let (whole_chars, whole) =
+        call(json!({"budget_profile": "wide", "max_bytes": 1_000_000})).await;
+    let (small_chars, small) = call(json!({"budget_profile": "compact", "max_bytes": 4000})).await;
+    eprintln!(
+        "#58 relations incoming over MCP: whole {whole_chars} chars, max_bytes 4000 {small_chars} chars"
+    );
+
+    let SelectionDeliveryWire::Delivered { coverage_notes } = whole.selection else {
+        panic!(
+            "the whole answer holds the selection: {:?}",
+            whole.selection
+        )
+    };
+    assert!(coverage_notes >= 300, "{coverage_notes}");
+    assert!(
+        whole_chars > 20_000,
+        "the list alone is large: {whole_chars}"
+    );
+
+    assert!(small.answer.page.used_bytes <= 4000);
+    assert!(
+        small_chars < 10_000,
+        "well inside a client's output limit: {small_chars}"
+    );
+    assert_eq!(
+        small.answer.target_resolution,
+        whole.answer.target_resolution
+    );
+    assert!(matches!(
+        small.answer.target_resolution,
+        TargetResolutionWire::Resolved(_)
+    ));
+    assert_eq!(small.answer.currentness, CurrentnessWire::Current);
+    assert_eq!(small.totals, whole.totals, "totals are never cut");
+    assert_eq!(small.totals[0].direction, DirectionWire::Incoming);
+    assert_eq!(small.totals[0].confirmed, 1, "run() calls helper()");
+    let full: Vec<&EvidenceWire> = small
+        .answer
+        .page
+        .evidence
+        .iter()
+        .filter_map(|item| match item {
+            DeliveredItemWire::Full(evidence) => Some(evidence),
+            DeliveredItemWire::Reuse(_) => None,
+        })
+        .collect();
+    assert!(full.iter().any(|item| matches!(
+        item,
+        EvidenceWire::Coverage(coverage)
+            if matches!(coverage.subject, CoverageSubjectWire::TargetSelection(_))
+    )));
+    assert!(full.iter().any(|item| matches!(
+        item,
+        EvidenceWire::Coverage(coverage)
+            if matches!(coverage.subject, CoverageSubjectWire::Relations { .. })
+    )));
+    assert_eq!(
+        full.iter()
+            .filter(|item| matches!(item, EvidenceWire::Relation(_)))
+            .count(),
+        1
+    );
+    assert!(
+        !full
+            .iter()
+            .any(|item| matches!(item, EvidenceWire::TargetSelection(_)))
+    );
+    let SelectionDeliveryWire::ExceedsBudget {
+        coverage_notes: omitted,
+        bytes,
+    } = small.selection
+    else {
+        panic!("the list is named, not dropped: {:?}", small.selection)
+    };
+    assert_eq!(omitted, coverage_notes);
+    assert!(bytes > 4000, "{bytes}");
+    assert!(small.answer.more_available);
+    assert!(small.answer.continuation.is_none());
+    assert_eq!(
+        small.answer.economy.continuation_unavailable,
+        Some(ContinuationUnavailableWire::UnitExceedsBudget)
+    );
 }
 
 #[tokio::test]
@@ -996,12 +1121,11 @@ async fn result_too_large_stays_typed() {
     // `find text` under `search_budget_profile: wide` caps at 500
     // matches (#25's locked profile, never overridden), and each
     // match's own JSON footprint measures ~390 bytes -- nowhere near
-    // 1 MiB even at the cap. `relations direct` has no such cap at all
-    // (#25 "brainprint.relations": "one anchor, one hop, unpaged, no
-    // source" -- the whole `RelationIndex` answer), so many resources
-    // all importing one shared module reaches it reliably: build enough
-    // real confirmed Imports relations that the unpaged answer clears
-    // the 1 MiB frame on its own.
+    // 1 MiB even at the cap. `relations direct` is paged by the delivery
+    // budget (#58), but a caller may still ask for a page with no
+    // practical cap, so many resources all importing one shared module
+    // reaches it reliably: build enough real confirmed Imports relations
+    // that the one explicitly huge page clears the 1 MiB frame on its own.
     let home = TestHome::create("result-too-large-home");
     let global_paths = home.global_paths();
     let (_server, endpoint) = start_server(&global_paths).await;
@@ -1030,6 +1154,8 @@ async fn result_too_large_stays_typed() {
             "mode": "direct",
             "resource_path": "src/shared.ts",
             "direction": "incoming",
+            "max_items": 1_000_000,
+            "max_bytes": 1_000_000_000,
             "workspace_path": workspace.path().to_string_lossy(),
         }))))
         .await

@@ -261,17 +261,21 @@ impl Daemon {
                     }),
                     direction: RelationDirectionWire::Incoming,
                     kinds: vec![RelationKindWire::Calls],
+                    delivery: DeliveryWire {
+                        budget: DeliveryBudgetWire {
+                            max_items: NonZeroUsize::new(64),
+                            max_bytes: NonZeroUsize::new(64 * 1024),
+                        },
+                        continuation: None,
+                        retention: RetentionWire::Disabled,
+                    },
                 }),
             )
             .await;
         let QueryResultWire::Relations(answer) = result else {
             panic!("expected direct relations")
         };
-        answer
-            .answers
-            .iter()
-            .map(|answer| answer.confirmed.len())
-            .sum()
+        answer.totals.iter().map(|totals| totals.confirmed).sum()
     }
 }
 

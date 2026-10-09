@@ -512,9 +512,12 @@ struct Entry<'a> {
 fn required(item: &EvidenceItem, intent: ProjectionIntent) -> bool {
     let resume = intent == ProjectionIntent::ResumeHandoff;
     match item {
+        // #58: a relations answer's selection list (one unit, possibly the
+        // whole Workspace's partial coverage) goes last, so it can never
+        // hold back the summaries or relations; its coverage stays required.
+        EvidenceItem::TargetSelection(_) => intent != ProjectionIntent::Relations,
         EvidenceItem::Resource(_)
         | EvidenceItem::Symbol(_)
-        | EvidenceItem::TargetSelection(_)
         | EvidenceItem::Outline(_)
         | EvidenceItem::CurrentSource(_)
         | EvidenceItem::Coverage(_)
@@ -550,6 +553,9 @@ const fn tier(relevance: Relevance) -> u8 {
 
 const SOURCE_TIER: u8 = 8;
 
+/// #58: a relations answer's optional `TargetSelection`, after everything.
+const SELECTION_TIER: u8 = 9;
+
 /// #58: required evidence that did not fit a first page, delivered
 /// next and before every optional tier.
 const REQUIRED_REMAINDER_TIER: u8 = 0;
@@ -583,8 +589,12 @@ fn sequence(projection: &PreparedProjection) -> (Vec<&EvidenceItem>, Vec<Entry<'
             required_items.push(item);
         } else {
             let depth = hint.impact_depth.unwrap_or(0);
+            let tier = match item {
+                EvidenceItem::TargetSelection(_) => SELECTION_TIER,
+                _ => tier(hint.relevance),
+            };
             optional.push(Entry {
-                key: key(tier(hint.relevance), depth, item),
+                key: key(tier, depth, item),
                 slot: Slot::Evidence(item),
             });
         }
@@ -801,7 +811,9 @@ impl ProjectionPlanner {
                 // rules, conflicts, directives) stays atomic.
                 let divisible = matches!(
                     projection.intent,
-                    ProjectionIntent::Locate | ProjectionIntent::Understand
+                    ProjectionIntent::Locate
+                        | ProjectionIntent::Understand
+                        | ProjectionIntent::Relations
                 );
                 let mut fitting = total;
                 let mut references = Vec::with_capacity(required_items.len());

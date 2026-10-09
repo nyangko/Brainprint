@@ -34,19 +34,19 @@ use crate::{
     },
     paths::WorkspacePaths,
     projection::{
-        ChangeKind, CoverageEvidence, CoverageSubject, EvidenceItem, PlannerError, PlannerStats,
-        PreparedProjection, ProjectionCorrelation, ProjectionGap, ProjectionIntent,
-        ProjectionKnowledgeRefs, ProjectionPlanner, ProjectionRequest, ProjectionRequestError,
-        ProjectionTarget,
+        ChangeKind, EvidenceItem, PlannerError, PlannerStats, PreparedProjection,
+        ProjectionCorrelation, ProjectionGap, ProjectionIntent, ProjectionKnowledgeRefs,
+        ProjectionPlanner, ProjectionRequest, ProjectionRequestError, ProjectionTarget,
+        RelationScope,
         planner::{
             ContextRetention, DeliveryBudget, DeliveryContinuation, DeliveryError, DeliveryLedger,
-            ExactTokenCounter, PendingDelivery,
+            DeliveryPage, ExactTokenCounter, PendingDelivery,
         },
         validate_applicability,
     },
     query::{Currentness, DEFAULT_CANDIDATE_LIMIT, FileListing, FileQuery, QueryError},
     registry::{GlobalRegistry, RegistryError, RegistryState},
-    relations::{Direction, RelationAnswer, RelationError, caller_owner_candidates},
+    relations::{Direction, RelationError, RelationTotals},
     resource::{ResourceKind, ResourceLanguage, ResourceRole},
     search::{
         FallbackReason, SearchBudget, SearchError, TextPattern, TextSearch, TextSearchResult,
@@ -223,24 +223,72 @@ pub enum RelationDirection {
     Both,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RelationsRequest {
+pub struct RelationsRequest<'a> {
     pub context: QueryContext,
     pub target: ProjectionTarget,
     pub direction: RelationDirection,
     /// Empty means every kind (the `RelationIndex` rule).
     pub kinds: Vec<RelationKind>,
+    pub delivery: DeliveryOptions<'a>,
 }
 
-/// One anchor's whole direct answer, unpaged (#23 decision 1).
+/// One page of an anchor's direct answer (#58, replacing #23 decision 1's
+/// unpaged whole): the task 7/8 delivery of its selection, confirmed
+/// relations and gaps, plus what every page carries whole.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RelationsResult {
-    pub target: TargetResolution,
-    /// The LOCATE plan's selection, coverage and currentness items.
-    pub selection: Vec<EvidenceItem>,
-    pub currentness: Currentness,
+    pub answer: ProjectedAnswer,
     /// Outgoing then incoming; empty unless `Resolved`.
-    pub answers: Vec<RelationAnswer>,
+    pub totals: Vec<RelationTotals>,
+    pub selection: SelectionDelivery,
+}
+
+/// #58: where a relations answer's `TargetSelection` stands. It is that
+/// answer's last unit, because its per-Resource `incomplete_coverage` list
+/// can be larger than any page; its `Coverage` summary is always required.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SelectionDelivery {
+    /// The selection carried none: an exact graph endpoint resolved.
+    Absent,
+    /// On this page, in full or by reference.
+    Delivered { coverage_notes: usize },
+    /// A later page of this chain delivers it.
+    Pending { coverage_notes: usize },
+    /// Larger than the page's `max_bytes` on its own: no continuation
+    /// reaches it. Only a request with `max_bytes >= bytes` can.
+    ExceedsBudget { coverage_notes: usize, bytes: usize },
+    /// An earlier unit ended the chain without a continuation.
+    NotReached { coverage_notes: usize },
+}
+
+impl SelectionDelivery {
+    fn of(projection: &PreparedProjection, page: &DeliveryPage, budget: &DeliveryBudget) -> Self {
+        let Some((item, coverage_notes)) = projection.evidence.iter().find_map(|item| match item {
+            EvidenceItem::TargetSelection(selection) => {
+                Some((item, selection.located.incomplete_coverage.len()))
+            }
+            _ => None,
+        }) else {
+            return Self::Absent;
+        };
+        let bytes = item.delivery_bytes();
+        if page
+            .evidence
+            .iter()
+            .any(|delivered| matches!(delivered, EvidenceItem::TargetSelection(_)))
+        {
+            Self::Delivered { coverage_notes }
+        } else if budget.max_bytes().is_some_and(|max| bytes > max.get()) {
+            Self::ExceedsBudget {
+                coverage_notes,
+                bytes,
+            }
+        } else if page.continuation.is_some() {
+            Self::Pending { coverage_notes }
+        } else {
+            Self::NotReached { coverage_notes }
+        }
+    }
 }
 
 // ----------------------------------------------------------- context
@@ -647,11 +695,21 @@ impl CoreQuerySurface {
         ledger: &mut DeliveryLedger,
     ) -> Result<ProjectedAnswer, CoreError> {
         let projection = self.plan(request)?;
+        self.deliver(request, &projection, options, ledger)
+    }
+
+    fn deliver(
+        &self,
+        request: &ProjectionRequest,
+        projection: &PreparedProjection,
+        options: &DeliveryOptions<'_>,
+        ledger: &mut DeliveryLedger,
+    ) -> Result<ProjectedAnswer, CoreError> {
         let delivery = self
             .planner
             .deliver_pending(
                 request,
-                &projection,
+                projection,
                 &options.budget,
                 options.continuation.as_ref(),
                 options.tokens,
@@ -661,7 +719,7 @@ impl CoreQuerySurface {
             .map_err(CoreError::Delivery)?;
         self.count(|stats| stats.deliveries += 1);
         Ok(ProjectedAnswer {
-            target: TargetResolution::of(&projection),
+            target: TargetResolution::of(projection),
             currentness: currentness(&projection.evidence),
             delivery,
         })
@@ -762,73 +820,39 @@ impl CoreQuerySurface {
         self.project(&projection, &request.delivery, ledger)
     }
 
-    /// Direct confirmed relations of one resolved anchor, index-only and
-    /// unpaged: the whole `RelationIndex` answer per requested direction.
-    pub fn relations(&self, request: RelationsRequest) -> Result<RelationsResult, CoreError> {
+    /// Direct confirmed relations of one resolved anchor, index-only: one
+    /// task 7/8 page of them, with each direction's totals (#58).
+    pub fn relations(
+        &self,
+        request: RelationsRequest<'_>,
+        ledger: &mut DeliveryLedger,
+    ) -> Result<RelationsResult, CoreError> {
         self.check(request.context.workspace)?;
-        let mut locate = self.request(&request.context, ProjectionIntent::Locate);
-        locate.target = Some(request.target);
-        let mut projection = self.plan(&locate)?;
-        let target = TargetResolution::of(&projection);
-        let mut answers = Vec::new();
-        if let TargetResolution::Resolved(anchor) = &target {
-            let index = self.planner.relation_index();
-            let (outgoing, incoming) = match request.direction {
-                RelationDirection::Outgoing => (true, false),
-                RelationDirection::Incoming => (false, true),
-                RelationDirection::Both => (true, true),
-            };
-            if outgoing {
-                answers.push(
-                    index
-                        .outgoing(anchor, &request.kinds)
-                        .map_err(CoreError::Relation)?,
-                );
-                self.count(|stats| stats.relation_queries += 1);
-            }
-            if incoming {
-                let mut answer = index
-                    .incoming(anchor, &request.kinds)
-                    .map_err(CoreError::Relation)?;
-                // A top-level reverse query says which owners it could not
-                // confirm; an impact traversal never asks (one scan each).
-                if let GraphEndpoint::Symbol(symbol) = anchor {
-                    answer.coverage.unconfirmed_owners =
-                        caller_owner_candidates(index.connection(), *symbol)
-                            .map_err(CoreError::Relation)?
-                            .len();
-                }
-                // #58: a caller can sit in any Resource the structural
-                // index covers only partly -- said once, compactly, not as
-                // the per-file list an exact target no longer carries.
-                let mut report = answer.coverage.limits();
-                report.merge(
-                    &self
-                        .planner
-                        .query_index()
-                        .structural_limits()
-                        .map_err(CoreError::Query)?,
-                );
-                projection
-                    .evidence
-                    .push(EvidenceItem::Coverage(CoverageEvidence {
-                        subject: CoverageSubject::Relations {
-                            anchor: anchor.clone(),
-                            direction: Direction::Incoming,
-                            kinds: answer.kinds.clone(),
-                        },
-                        report,
-                        confirmed: answer.confirmed_count(),
-                    }));
-                answers.push(answer);
-                self.count(|stats| stats.relation_queries += 1);
-            }
-        }
+        let mut projection = self.request(&request.context, ProjectionIntent::Relations);
+        projection.target = Some(request.target);
+        projection.relations = RelationScope {
+            directions: match request.direction {
+                RelationDirection::Outgoing => vec![Direction::Outgoing],
+                RelationDirection::Incoming => vec![Direction::Incoming],
+                RelationDirection::Both => vec![Direction::Outgoing, Direction::Incoming],
+            },
+            kinds: request.kinds,
+        };
+        let (prepared, totals) = self
+            .planner
+            .plan_relations(&projection)
+            .map_err(|error| CoreError::planner(error, self.workspace, None))?;
+        self.count(|stats| {
+            stats.plans += 1;
+            stats.relation_queries += totals.len() as u64;
+        });
+        let answer = self.deliver(&projection, &prepared, &request.delivery, ledger)?;
+        let selection =
+            SelectionDelivery::of(&prepared, &answer.delivery.page, &request.delivery.budget);
         Ok(RelationsResult {
-            target,
-            currentness: currentness(&projection.evidence),
-            selection: projection.evidence,
-            answers,
+            answer,
+            totals,
+            selection,
         })
     }
 

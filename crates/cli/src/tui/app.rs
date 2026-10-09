@@ -508,6 +508,7 @@ async fn run(app: &mut App, daemon: &Daemon, command: Command) -> Result<(), Fai
                     target: target.target,
                     direction: RelationDirectionWire::Both,
                     kinds: Vec::new(),
+                    delivery: delivery(None),
                 }))
                 .await?;
             app.relations_body = compact(&result);

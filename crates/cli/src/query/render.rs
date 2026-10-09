@@ -352,19 +352,34 @@ fn print_relations_result(
     out: &mut impl Write,
     result: &RelationsResultWire,
 ) -> std::io::Result<()> {
-    print_target_resolution(out, &result.target)?;
-    print_currentness(out, &result.currentness)?;
-    for answer in &result.answers {
-        for relation in &answer.confirmed {
-            writeln!(
-                out,
-                "{:?} {:?} {:?} -> {:?}",
-                relation.kind, relation.direction, relation.source, relation.target
-            )?;
+    let answer = &result.answer;
+    print_target_resolution(out, &answer.target_resolution)?;
+    print_currentness(out, &answer.currentness)?;
+    let mut source_unavailable = false;
+    for item in &answer.page.evidence {
+        match item {
+            DeliveredItemWire::Full(EvidenceWire::Relation(projected)) => {
+                let relation = &projected.relation;
+                writeln!(
+                    out,
+                    "{:?} {:?} {:?} -> {:?}",
+                    relation.kind, relation.direction, relation.source, relation.target
+                )?;
+            }
+            DeliveredItemWire::Full(evidence) => {
+                source_unavailable |= print_one_evidence(out, evidence)?;
+            }
+            DeliveredItemWire::Reuse(reference) => writeln!(out, "REUSE {reference:?}")?,
         }
-        // #78: the confirmed rows are never the whole answer by omission --
-        // each direction states its coverage the way `present` judges it.
-        let summary = present::relation_summary(answer);
+    }
+    if source_unavailable {
+        marker(out, "SOURCE_UNAVAILABLE")?;
+    }
+    // #78: the confirmed rows are never the whole answer by omission --
+    // each direction states its coverage the way `present` judges it,
+    // from its totals, whatever this page held (#58).
+    for totals in &result.totals {
+        let summary = present::relation_summary(totals, &answer.page.evidence);
         let state = match summary.none {
             Some(none) => say(none).to_owned(),
             None => format!(
@@ -377,13 +392,30 @@ fn print_relations_result(
             out,
             "{}: {state}{}",
             say(summary.direction),
-            parenthesized(&relation_limits(&answer.coverage))
+            parenthesized(&relation_limits(&totals.coverage))
         )?;
-        if !answer.gaps.is_empty() {
+        if totals.gaps > 0 {
             marker(out, "TRUNCATED")?;
         }
     }
-    Ok(())
+    // #58: the selection list goes last; when it is not here, say why.
+    match result.selection {
+        SelectionDeliveryWire::Absent | SelectionDeliveryWire::Delivered { .. } => {}
+        SelectionDeliveryWire::Pending { coverage_notes } => {
+            writeln!(out, "SELECTION_PENDING coverage notes {coverage_notes}")?;
+        }
+        SelectionDeliveryWire::ExceedsBudget {
+            coverage_notes,
+            bytes,
+        } => writeln!(
+            out,
+            "SELECTION_EXCEEDS_BUDGET coverage notes {coverage_notes}, {bytes} bytes"
+        )?,
+        SelectionDeliveryWire::NotReached { coverage_notes } => {
+            writeln!(out, "SELECTION_NOT_REACHED coverage notes {coverage_notes}")?;
+        }
+    }
+    print_delivery_tail(out, &answer.page, &answer.economy, &answer.continuation)
 }
 
 fn print_knowledge_result(
@@ -771,20 +803,89 @@ mod tests {
     }
 
     fn relations(confirmed: Vec<RelationResultWire>, coverage: CoverageWire) -> String {
+        relations_page(confirmed, coverage, SelectionDeliveryWire::Absent)
+    }
+
+    fn relations_page(
+        confirmed: Vec<RelationResultWire>,
+        coverage: CoverageWire,
+        selection: SelectionDeliveryWire,
+    ) -> String {
+        let unknown = StageAmountWire {
+            items: MeasureWire::Unknown,
+            bytes: MeasureWire::Unknown,
+            tokens: MeasureWire::Unknown,
+        };
+        let more_available = !matches!(
+            selection,
+            SelectionDeliveryWire::Absent | SelectionDeliveryWire::Delivered { .. }
+        );
         compact(&QueryResultWire::Relations(RelationsResultWire {
-            target: TargetResolutionWire::Resolved(GraphEndpointWire::Symbol(
-                SymbolId::from_bytes([3; 16]),
-            )),
-            selection: Vec::new(),
-            currentness: CurrentnessWire::Current,
-            answers: vec![RelationAnswerWire {
+            answer: ProjectedAnswerWire {
+                target_resolution: TargetResolutionWire::Resolved(GraphEndpointWire::Symbol(
+                    SymbolId::from_bytes([3; 16]),
+                )),
+                currentness: CurrentnessWire::Current,
+                page: DeliveryPageWire {
+                    evidence: confirmed
+                        .iter()
+                        .cloned()
+                        .map(|relation| {
+                            DeliveredItemWire::Full(EvidenceWire::Relation(ProjectedRelationWire {
+                                relation,
+                                sites: Vec::new(),
+                            }))
+                        })
+                        .collect(),
+                    gaps: Vec::new(),
+                    used_items: confirmed.len(),
+                    used_bytes: 0,
+                },
+                economy: DeliveryEconomyWire {
+                    raw_available: unknown,
+                    prepared: unknown,
+                    delivered: unknown,
+                    omitted_items: usize::from(more_available),
+                    more_available,
+                    limiting: Vec::new(),
+                    continuation_unavailable: more_available
+                        .then_some(ContinuationUnavailableWire::UnitExceedsBudget),
+                },
+                continuation: None,
+                more_available,
+            },
+            totals: vec![RelationTotalsWire {
                 direction: DirectionWire::Incoming,
                 kinds: vec![RelationKindWire::Calls],
-                confirmed,
-                gaps: Vec::new(),
+                confirmed: confirmed.len(),
+                gaps: 0,
                 coverage,
             }],
+            selection,
         }))
+    }
+
+    /// #58: a selection list that cannot fit says so, with its size.
+    #[test]
+    fn compact_relations_name_an_omitted_selection_list() {
+        let page = relations_page(
+            vec![call(3)],
+            coverage(168_658, 1),
+            SelectionDeliveryWire::ExceedsBudget {
+                coverage_notes: 445,
+                bytes: 69_942,
+            },
+        );
+        assert!(page.contains("\nCalls Incoming Symbol("), "{page}");
+        assert!(
+            page.contains("Incoming: 1 confirmed, coverage Partial"),
+            "{page}"
+        );
+        assert!(
+            page.contains("SELECTION_EXCEEDS_BUDGET coverage notes 445, 69942 bytes"),
+            "{page}"
+        );
+        assert!(page.contains("MORE_AVAILABLE"), "{page}");
     }
 
     /// #78: `load_workspace_config` incoming -- confirmed rows under incomplete coverage say so,
