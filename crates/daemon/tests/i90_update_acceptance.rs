@@ -704,6 +704,43 @@ fn only_a_complete_writable_installation_is_updated() {
     }
 }
 
+/// A Cargo target directory anywhere (`CARGO_TARGET_DIR`), not only
+/// `<package>/target` beside a manifest, is a build tree: the set built
+/// into it is refused, however complete and writable it is.
+#[test]
+fn a_cargo_target_directory_is_refused_wherever_it_is() {
+    let home = Home::create("buildtree");
+    let (_, next) = versions();
+    let source = fake_release(&home, "source", &next, Fixture::Good);
+
+    // Not named `target`, no manifest beside it -- marked the way Cargo
+    // marks every target directory it creates.
+    let target = home.root.join("elsewhere/out");
+    let profile = target.join("debug");
+    fs::create_dir_all(&profile).expect("profile");
+    fs::write(target.join(".rustc_info.json"), "{}").expect("info");
+    fs::write(
+        target.join("CACHEDIR.TAG"),
+        "Signature: 8a477f597d28d172789f06886806bc55\n# created by cargo.\n",
+    )
+    .expect("tag");
+    for name in BINARIES {
+        fs::copy(built(name), exe(&profile, name)).expect("copy a built binary");
+    }
+
+    let installed = home.snapshot();
+    let mut from_target = home.command(&exe(&profile, "brainprint"));
+    from_target.arg("update").env(TEST_SOURCE_ENV, &source);
+    let refused = run(from_target, QUICK);
+    assert!(!refused.status.success());
+    assert!(
+        stderr(&refused).contains("cargo build directory"),
+        "{}",
+        stderr(&refused)
+    );
+    assert_eq!(home.snapshot(), installed, "the installation is untouched");
+}
+
 #[test]
 fn a_failed_activation_or_daemon_restart_puts_the_previous_set_back() {
     let home = Home::create("rollback");

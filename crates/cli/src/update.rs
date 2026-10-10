@@ -623,6 +623,27 @@ fn wait_within(mut child: Child, timeout: Duration) -> std::io::Result<Option<Ex
     }
 }
 
+/// What Cargo writes first in the `CACHEDIR.TAG` of every target
+/// directory it creates (<https://bford.info/cachedir/>).
+const CACHEDIR_TAG_SIGNATURE: &[u8] = b"Signature: 8a477f597d28d172789f06886806bc55";
+
+/// Whether `dir` is inside a Cargo build tree, never an installation: the
+/// default `<package>/target` next to a `Cargo.toml`, or any other target
+/// directory (`CARGO_TARGET_DIR`, `build.target-dir`), which Cargo itself
+/// marks at its root with a signed `CACHEDIR.TAG` and a `.rustc_info.json`.
+fn in_build_tree(dir: &Path) -> bool {
+    dir.ancestors().any(|ancestor| {
+        let default_layout = ancestor.file_name() == Some("target".as_ref())
+            && ancestor
+                .parent()
+                .is_some_and(|parent| parent.join("Cargo.toml").is_file());
+        default_layout
+            || (ancestor.join(".rustc_info.json").is_file()
+                && fs::read(ancestor.join("CACHEDIR.TAG"))
+                    .is_ok_and(|tag| tag.starts_with(CACHEDIR_TAG_SIGNATURE)))
+    })
+}
+
 /// The installation `brainprint update` replaces: the real directory of
 /// the running `brainprint` (a symlink to it resolved), holding all four
 /// binaries as regular files, writable by this user. Never one found on
@@ -640,13 +661,7 @@ impl Install {
             .parent()
             .ok_or("the brainprint executable has no directory")?
             .to_path_buf();
-        let build_tree = dir.ancestors().any(|ancestor| {
-            ancestor.file_name() == Some("target".as_ref())
-                && ancestor
-                    .parent()
-                    .is_some_and(|parent| parent.join("Cargo.toml").is_file())
-        });
-        if build_tree {
+        if in_build_tree(&dir) {
             return Err(format!(
                 "this brainprint runs from a cargo build directory ({}): `brainprint update` \
                  replaces an installed binary set, never a build tree -- update the source \
@@ -945,6 +960,56 @@ mod tests {
             [("v0.1.0", "1"), ("v0.1.1", "3")],
             "an annotated tag names its commit, not the tag object"
         );
+    }
+
+    #[test]
+    fn a_cargo_target_directory_is_a_build_tree_wherever_it_is() {
+        let root = env::temp_dir().join(format!("bp-update-buildtree-{}", process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let dir = |path: &str| {
+            let dir = root.join(path);
+            fs::create_dir_all(&dir).expect("dir");
+            dir
+        };
+        // What Cargo writes at the root of a target directory.
+        let mark = |target: &Path, signature: &[u8]| {
+            fs::write(target.join(".rustc_info.json"), "{}").expect("info");
+            let mut tag = signature.to_vec();
+            tag.extend_from_slice(b"\n# created by cargo.\n");
+            fs::write(target.join("CACHEDIR.TAG"), tag).expect("tag");
+        };
+
+        // The default layout: `target` beside a manifest.
+        dir("pkg");
+        fs::write(root.join("pkg/Cargo.toml"), "").expect("manifest");
+        assert!(in_build_tree(&dir("pkg/target/debug")));
+        // A directory called `target` that no manifest sits beside.
+        assert!(!in_build_tree(&dir("plain/target/debug")));
+
+        // Any other target directory, plain or per-triple, and a custom profile.
+        mark(&dir("elsewhere/out"), CACHEDIR_TAG_SIGNATURE);
+        assert!(in_build_tree(&dir("elsewhere/out/debug")));
+        assert!(in_build_tree(&dir(
+            "elsewhere/out/x86_64-unknown-linux-gnu/dist"
+        )));
+
+        // Installations: a plain directory, one under a cache directory
+        // tagged without Cargo's `.rustc_info.json`, and under a tag that
+        // is not Cargo's.
+        assert!(!in_build_tree(&dir("home/bin")));
+        fs::write(
+            dir("home/.cache").join("CACHEDIR.TAG"),
+            CACHEDIR_TAG_SIGNATURE,
+        )
+        .expect("tag only");
+        assert!(!in_build_tree(&dir("home/.cache/brainprint/bin")));
+        mark(
+            &dir("home/foreign"),
+            b"Signature: 00000000000000000000000000000000",
+        );
+        assert!(!in_build_tree(&dir("home/foreign/bin")));
+
+        let _ = fs::remove_dir_all(&root);
     }
 
     /// A Brainprint-shaped tree in a fresh directory.
