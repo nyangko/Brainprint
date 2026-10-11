@@ -22,7 +22,7 @@ use brainprint_core::{IndexIncarnationId, ProjectId, WorkspaceId};
 
 use super::{
     PlannedSourceRange, PlannerError, PreparedProjection, ProjectionGap, ProjectionPlanner,
-    Relevance, ReuseReference, SourceRequirement, merge,
+    Relevance, ReuseReference, SourceRequirement, VerifiedFiles, merge,
 };
 use crate::{
     generation::GenerationError,
@@ -980,6 +980,7 @@ impl ProjectionPlanner {
         start: usize,
     ) -> Result<(usize, Option<Stop>), DeliveryError> {
         let mut index = start;
+        let mut files = VerifiedFiles::new();
         while index < optional.len() {
             match &optional[index].slot {
                 Slot::Evidence(item) => {
@@ -1047,7 +1048,7 @@ impl ProjectionPlanner {
                     for group in selected.chunk_by(|a, b| {
                         a.resource == b.resource && a.resource_revision == b.resource_revision
                     }) {
-                        for item in self.read(group)? {
+                        for item in self.read(group, &mut files)? {
                             let planned = planned.next().flatten();
                             if let (Some(planned), EvidenceItem::CurrentSource(_)) =
                                 (planned, &item)
