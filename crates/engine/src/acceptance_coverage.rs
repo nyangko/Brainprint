@@ -672,6 +672,37 @@ fn caller_owner_candidates_are_the_owners_of_same_named_unresolved_sites_only() 
     assert_eq!(answer.coverage.unconfirmed_owners, 0);
 }
 
+#[test]
+fn a_rust_method_call_makes_its_owner_a_caller_candidate() {
+    // #97: `self.compute()` has no confirmed target, but it was recorded
+    // with its looked-up name, so the owner is a candidate for `compute`
+    // (and for nothing else) and a semantic refresh can be asked of it.
+    let fixture = Fixture::empty("rust-caller-owners");
+    fixture.write(
+        "src/def.rs",
+        "pub struct P;\n\nimpl P {\n    pub fn compute(&self) -> i32 {\n        1\n    }\n}\n",
+    );
+    fixture.write(
+        "src/caller.rs",
+        "pub struct Q {\n    inner: i32,\n}\n\nimpl Q {\n    fn compute(&self) -> i32 {\n        \
+         self.inner\n    }\n\n    pub fn go(&self) -> i32 {\n        self.compute()\n    }\n}\n",
+    );
+    fixture.baseline();
+    let symbol = |name: &str| match fixture.declaration("src/def.rs", name) {
+        GraphEndpoint::Symbol(id) => id,
+        other => panic!("a declaration is a Symbol: {other:?}"),
+    };
+
+    let connection = fixture.index();
+    let owners = caller_owner_candidates(connection.connection(), symbol("P::compute"))
+        .expect("candidate owners");
+    assert_eq!(owners, vec![fixture.resource("src/caller.rs").id]);
+
+    // Still nothing confirmed by name: `Q::compute` is not `P::compute`.
+    let answer = fixture.incoming(&GraphEndpoint::Symbol(symbol("P::compute")), &[]);
+    assert!(answer.confirmed.is_empty());
+}
+
 // =================================================================
 // 11-12. Traversal completeness.
 // =================================================================
