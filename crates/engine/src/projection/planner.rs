@@ -46,7 +46,7 @@ use crate::{
     generation::{GenerationError, GenerationStore},
     graph::{self, GraphEndpoint, RelationKind},
     impact::{Budget, ImpactError, ImpactIntent},
-    inspect::{ReadError, SourceReader},
+    inspect::{RangeRead, ReadError, SourceReader, VerifiedFile},
     knowledge::{
         ApplicabilityContext, GlobalKnowledgeStore, KnowledgeError, KnowledgeSources,
         ProjectKnowledgeStore, RequestDirective, ResolveError, ResolveRequest, ResolvedKnowledge,
@@ -995,7 +995,8 @@ impl ProjectionPlanner {
     /// in one Resource revision merged, one verified read per Resource.
     fn materialize(&self, plan: &mut Plan) -> Result<(), PlannerError> {
         let merged = merge(&plan.required);
-        plan.items.extend(self.read(&merged)?);
+        plan.items
+            .extend(self.read(&merged, &mut VerifiedFiles::new())?);
         plan.required = merged;
         Ok(())
     }
@@ -1003,20 +1004,25 @@ impl ProjectionPlanner {
     /// Read already merged ranges (sorted by Resource, revision, span):
     /// one verified `read_ranges` per Resource revision, results in range
     /// order. A read that cannot be honest becomes `SourceUnavailable`.
-    fn read(&self, merged: &[PlannedSourceRange]) -> Result<Vec<EvidenceItem>, PlannerError> {
+    ///
+    /// `files` keeps each Resource revision verified so far: a later group
+    /// of the same file (another source tier) is sliced from those bytes,
+    /// not read and hashed again.
+    fn read(
+        &self,
+        merged: &[PlannedSourceRange],
+        files: &mut VerifiedFiles,
+    ) -> Result<Vec<EvidenceItem>, PlannerError> {
         let mut items = Vec::with_capacity(merged.len());
         for group in merged
             .chunk_by(|a, b| a.resource == b.resource && a.resource_revision == b.resource_revision)
         {
             let (resource, revision) = (group[0].resource, &group[0].resource_revision);
             let spans: Vec<SourceSpan> = group.iter().map(|range| range.span).collect();
-            match self.reader.read_ranges(resource, revision, &spans) {
+            match self.slices(resource, revision, &spans, files) {
                 Ok(reads) => {
                     let bytes: usize = reads.iter().map(|read| read.source.len()).sum();
-                    self.count(|stats| {
-                        stats.source_file_reads += 1;
-                        stats.source_bytes += bytes as u64;
-                    });
+                    self.count(|stats| stats.source_bytes += bytes as u64);
                     for (range, read) in group.iter().zip(reads) {
                         items.push(EvidenceItem::CurrentSource(PreparedRange {
                             resource: read.resource_id,
@@ -1043,7 +1049,28 @@ impl ProjectionPlanner {
         }
         Ok(items)
     }
+
+    /// `spans` of one Resource revision, verifying the file only the
+    /// first time `files` meets it.
+    fn slices(
+        &self,
+        resource: ResourceId,
+        revision: &str,
+        spans: &[SourceSpan],
+        files: &mut VerifiedFiles,
+    ) -> Result<Vec<RangeRead>, ReadError> {
+        let key = (resource, revision.to_owned());
+        if !files.contains_key(&key) {
+            let file = self.reader.verify(resource, revision)?;
+            self.count(|stats| stats.source_file_reads += 1);
+            files.insert(key.clone(), file);
+        }
+        files[&key].ranges(spans)
+    }
 }
+
+/// Resource revisions verified during one delivery.
+pub(super) type VerifiedFiles = BTreeMap<(ResourceId, String), VerifiedFile>;
 
 /// Named Blueprint Applications the resolver did not apply, in id order.
 fn not_applied(refs: &ProjectionKnowledgeRefs, resolved: &ResolvedKnowledge) -> Vec<ProjectionGap> {

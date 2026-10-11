@@ -1613,6 +1613,51 @@ fn a_file_inspect_is_an_outline_and_its_declarations_before_relations() {
     }
 }
 
+/// #58: a file inspect plans the file's member declarations (tier 1) and a
+/// relation's evidence span in the same file (tier 8); evidence units sit
+/// between them, so they were read as two groups -- the same Resource
+/// verified twice on one page.
+#[test]
+fn a_file_inspect_verifies_each_resource_once_across_source_tiers() {
+    let fixture = Fixture::standard("file-packet-reads");
+    let planner = fixture.planner();
+    let request = fixture.request(
+        ProjectionIntent::Understand,
+        Some(ProjectionTarget::Resource(ResourceTarget::Path(
+            "src/app.ts".to_owned(),
+        ))),
+    );
+    let projection = with_site_sources(planner.plan(&request).expect("plan"));
+    let before = planner.stats();
+    let page = first(&planner, &request, &projection, &items(10_000));
+    let after = planner.stats();
+    assert!(!page.more_available);
+
+    let roles: Vec<(ResourceId, RangeRole)> = page
+        .evidence
+        .iter()
+        .filter_map(|item| match item {
+            EvidenceItem::CurrentSource(range) => Some((range.resource, range.role)),
+            _ => None,
+        })
+        .collect();
+    let files: BTreeSet<ResourceId> = roles.iter().map(|(resource, _)| *resource).collect();
+    assert!(
+        roles
+            .iter()
+            .any(|(_, role)| *role == RangeRole::MemberDeclaration)
+            && roles
+                .iter()
+                .any(|(_, role)| *role == RangeRole::EvidenceSpan),
+        "both source tiers are delivered: {roles:?}"
+    );
+    assert_eq!(
+        after.source_file_reads - before.source_file_reads,
+        files.len() as u64,
+        "one verified read per Resource, not one per source tier"
+    );
+}
+
 #[test]
 fn a_small_budget_understand_is_a_useful_prefix_and_a_remainder_chain() {
     let fixture = Fixture::standard("small-budget");

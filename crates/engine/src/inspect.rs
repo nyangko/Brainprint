@@ -101,6 +101,38 @@ pub struct RangeRead {
     pub result_source: ResultSource,
 }
 
+/// One Resource's verified current bytes (see [`SourceReader::verify`]).
+#[derive(Debug, Clone)]
+pub struct VerifiedFile {
+    resource_id: ResourceId,
+    path_rel: String,
+    resource_revision: String,
+    bytes: Vec<u8>,
+    verification: SourceVerification,
+}
+
+impl VerifiedFile {
+    /// Every span sliced out of these exact bytes; all-or-nothing, as
+    /// [`SourceReader::read_ranges`].
+    pub fn ranges(&self, spans: &[SourceSpan]) -> Result<Vec<RangeRead>, ReadError> {
+        spans
+            .iter()
+            .map(|span| {
+                Ok(RangeRead {
+                    resource_id: self.resource_id,
+                    path_rel: self.path_rel.clone(),
+                    resource_revision: self.resource_revision.clone(),
+                    requested_span: *span,
+                    effective_span: *span,
+                    source: slice(&self.bytes, *span)?,
+                    verification: self.verification.clone(),
+                    result_source: ResultSource::StructuralIndex,
+                })
+            })
+            .collect()
+    }
+}
+
 /// Everything a caller needs about one Symbol, including its current
 /// source, so that nothing has to go back and read the file.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -412,6 +444,18 @@ impl SourceReader {
         expected_revision: &str,
         spans: &[SourceSpan],
     ) -> Result<Vec<RangeRead>, ReadError> {
+        self.verify(resource_id, expected_revision)?.ranges(spans)
+    }
+
+    /// The verified current bytes of one Resource at `expected_revision`:
+    /// the revision check and the content-hash proof of
+    /// [`Self::read_ranges`], once. A caller that slices the same file
+    /// for several batches keeps this instead of reading it again.
+    pub fn verify(
+        &self,
+        resource_id: ResourceId,
+        expected_revision: &str,
+    ) -> Result<VerifiedFile, ReadError> {
         let resource = self.readable_resource(resource_id)?;
         if resource.resource_revision != expected_revision {
             return Err(ReadError::RevisionMismatch {
@@ -422,21 +466,13 @@ impl SourceReader {
         }
 
         let (bytes, verification) = self.verified_bytes(&resource)?;
-        spans
-            .iter()
-            .map(|span| {
-                Ok(RangeRead {
-                    resource_id,
-                    path_rel: resource.path_rel.clone(),
-                    resource_revision: resource.resource_revision.clone(),
-                    requested_span: *span,
-                    effective_span: *span,
-                    source: slice(&bytes, *span)?,
-                    verification: verification.clone(),
-                    result_source: ResultSource::StructuralIndex,
-                })
-            })
-            .collect()
+        Ok(VerifiedFile {
+            resource_id,
+            path_rel: resource.path_rel,
+            resource_revision: resource.resource_revision,
+            bytes,
+            verification,
+        })
     }
 
     /// One Symbol's current metadata *and* the current source of its
