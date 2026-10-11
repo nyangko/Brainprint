@@ -10,8 +10,10 @@ through the shell only when you need these:
   (`-> callee` marks a further hop), and the tests found for them:
   `brainprint context change --symbol-name NAME --in-path FILE --change public-signature`
 - Project rules and policies: `brainprint knowledge rules`
-- An in-progress task: `brainprint knowledge work-items --status active`,
-  then `brainprint context resume --work-item ID`
+
+To resume an in-progress task, read or search `WORKING_STATE.md` with your
+usual tools. `brainprint context resume` still exists but costs more than
+that read, so it is not the default.
 
 `--in-path` is optional and narrows a common name to one file. Lines are
 1-based. Every answer states its coverage. If you see `Partial`,
