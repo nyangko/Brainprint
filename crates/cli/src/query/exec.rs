@@ -1,11 +1,18 @@
 //! Query command execution: build the wire request, send it, render the
 //! response, and run the #24 §23 ACK/output lifecycle.
 
-use brainprint_core::protocol::{
-    Request, Response,
-    query::{
-        AckStatusWire, FindQueryWire, QueryAckRequest, QueryErrorCodeWire, QueryOperationWire,
-        QueryOutcomeWire, QueryRequest, WorkspaceSelectorWire,
+use std::num::NonZeroUsize;
+
+use brainprint_core::{
+    ResourceId,
+    protocol::{
+        Request, Response,
+        query::{
+            AckStatusWire, DeliveryBudgetWire, DeliveryWire, FindQueryWire, FindResultWire,
+            GraphEndpointWire, ProjectionTargetWire, QueryAckRequest, QueryErrorCodeWire,
+            QueryOperationWire, QueryOutcomeWire, QueryRequest, QueryResultWire,
+            ResourceTargetWire, RetentionWire, TargetResolutionWire, WorkspaceSelectorWire,
+        },
     },
 };
 
@@ -19,7 +26,7 @@ use super::{
     delivery::DeliveryArgsError,
     knowledge::InvalidKnowledgeJson,
     render,
-    target::TargetArgsError,
+    target::{TargetArgs, TargetArgsError},
 };
 use crate::client;
 
@@ -185,6 +192,78 @@ async fn run(common: &CommonArgs, operation: QueryOperationWire) -> Exit {
     }
 }
 
+/// The selector as wire, with `--in-path` resolved to its Resource id.
+async fn target_wire(
+    mut target: TargetArgs,
+    common: &CommonArgs,
+) -> Result<ProjectionTargetWire, Exit> {
+    if let Some(path) = target.in_path.take() {
+        target.in_resource = Some(resource_at(common, path).await?);
+    }
+    target
+        .into_wire()
+        .map_err(|error| syntax_exit(error.into()))
+}
+
+/// #96: the id of the Resource at `path`, by one unretained find target
+/// query; anything but a resolved Resource is the CLI's error, by name.
+async fn resource_at(common: &CommonArgs, path: String) -> Result<ResourceId, Exit> {
+    let mut connection = client::connect_and_handshake().await.map_err(|error| {
+        eprintln!("brainprint: {error}");
+        Exit::DaemonOrProtocolFailure
+    })?;
+    let request = QueryRequest {
+        request_id: uuid::Uuid::new_v4().to_string(),
+        workspace: WorkspaceSelectorWire::Locator {
+            path: absolute_workspace(&common.workspace),
+        },
+        correlation: None,
+        operation: QueryOperationWire::Find(FindQueryWire::Target {
+            target: ProjectionTargetWire::Resource(ResourceTargetWire::Path(path.clone())),
+            delivery: DeliveryWire {
+                budget: DeliveryBudgetWire {
+                    max_items: NonZeroUsize::new(64),
+                    max_bytes: NonZeroUsize::new(64 * 1024),
+                },
+                continuation: None,
+                retention: RetentionWire::Disabled,
+            },
+        }),
+    };
+    let response = match client::send(&mut connection, Request::Query(request)).await {
+        Ok(Response::Query(response)) => response,
+        Ok(_) => {
+            eprintln!("brainprint: daemon sent an unexpected response to Query");
+            return Err(Exit::DaemonOrProtocolFailure);
+        }
+        Err(error) => {
+            eprintln!("brainprint: {error}");
+            return Err(Exit::DaemonOrProtocolFailure);
+        }
+    };
+    match response.outcome {
+        QueryOutcomeWire::Ok(QueryResultWire::Find(FindResultWire::Target(answer))) => {
+            match answer.target_resolution {
+                TargetResolutionWire::Resolved(GraphEndpointWire::Resource(id)) => Ok(id),
+                other => Err(syntax_exit(CliSyntaxError(format!(
+                    "--in-path {path}: {other:?}"
+                )))),
+            }
+        }
+        QueryOutcomeWire::Ok(_) => {
+            eprintln!("brainprint: daemon sent an unexpected result to find target");
+            Err(Exit::DaemonOrProtocolFailure)
+        }
+        QueryOutcomeWire::Err(error) => {
+            eprintln!(
+                "brainprint: --in-path {path}: {:?}: {}",
+                error.code, error.message
+            );
+            Err(exit_for_code(error.code))
+        }
+    }
+}
+
 fn syntax_exit(error: CliSyntaxError) -> Exit {
     eprintln!("brainprint: {}", error.0);
     Exit::CliSyntax
@@ -199,9 +278,9 @@ pub async fn run_find(mode: FindCommand) -> Exit {
 }
 
 async fn run_find_target(args: FindTargetArgs) -> Exit {
-    let target = match args.target.into_wire() {
+    let target = match target_wire(args.target, &args.common).await {
         Ok(target) => target,
-        Err(error) => return syntax_exit(error.into()),
+        Err(exit) => return exit,
     };
     let delivery = match args.delivery.into_wire(args.common.has_correlation()) {
         Ok(delivery) => delivery,
@@ -258,9 +337,9 @@ async fn run_find_text(args: FindTextArgs) -> Exit {
 }
 
 pub async fn run_inspect(args: InspectArgs) -> Exit {
-    let target = match args.target.into_wire() {
+    let target = match target_wire(args.target, &args.common).await {
         Ok(target) => target,
-        Err(error) => return syntax_exit(error.into()),
+        Err(exit) => return exit,
     };
     let delivery = match args.delivery.into_wire(args.common.has_correlation()) {
         Ok(delivery) => delivery,
@@ -277,9 +356,9 @@ pub async fn run_inspect(args: InspectArgs) -> Exit {
 }
 
 pub async fn run_relations(args: RelationsArgs) -> Exit {
-    let target = match args.target.into_wire() {
+    let target = match target_wire(args.target, &args.common).await {
         Ok(target) => target,
-        Err(error) => return syntax_exit(error.into()),
+        Err(exit) => return exit,
     };
     let delivery = match args.delivery.into_wire(args.common.has_correlation()) {
         Ok(delivery) => delivery,
@@ -298,9 +377,9 @@ pub async fn run_relations(args: RelationsArgs) -> Exit {
 }
 
 pub async fn run_impact(args: ImpactArgs) -> Exit {
-    let target = match args.target.into_wire() {
+    let target = match target_wire(args.target, &args.common).await {
         Ok(target) => target,
-        Err(error) => return syntax_exit(error.into()),
+        Err(exit) => return exit,
     };
     let delivery = match args.delivery.into_wire(args.common.has_correlation()) {
         Ok(delivery) => delivery,
@@ -325,9 +404,9 @@ pub async fn run_context(mode: ContextCommand) -> Exit {
 }
 
 async fn run_context_change(args: ContextChangeArgs) -> Exit {
-    let target = match args.target.into_wire() {
+    let target = match target_wire(args.target, &args.common).await {
         Ok(target) => target,
-        Err(error) => return syntax_exit(error.into()),
+        Err(exit) => return exit,
     };
     let knowledge = match args.knowledge.into_wire() {
         Ok(knowledge) => knowledge,
@@ -365,9 +444,9 @@ async fn run_context_resume(args: ContextResumeArgs) -> Exit {
     {
         None
     } else {
-        match args.target.into_wire() {
+        match target_wire(args.target, &args.common).await {
             Ok(target) => Some(target),
-            Err(error) => return syntax_exit(error.into()),
+            Err(exit) => return exit,
         }
     };
     let knowledge = match args.knowledge.into_wire() {

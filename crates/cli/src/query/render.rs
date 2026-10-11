@@ -9,6 +9,7 @@
 use std::io::Write;
 
 use brainprint_core::{
+    SymbolId,
     present::{self, Locale, Msg, text},
     protocol::query::*,
 };
@@ -113,6 +114,10 @@ fn print_one_evidence(out: &mut impl Write, item: &EvidenceWire) -> std::io::Res
             )?;
             Ok(false)
         }
+        EvidenceWire::Relation(projected) if sited_in_source(projected) => {
+            print_sources(out, projected, None)?;
+            Ok(false)
+        }
         EvidenceWire::Relation(projected) => {
             let relation = &projected.relation;
             writeln!(
@@ -164,6 +169,14 @@ fn print_one_evidence(out: &mut impl Write, item: &EvidenceWire) -> std::io::Res
             )?;
             Ok(false)
         }
+        EvidenceWire::Coverage(coverage) => {
+            print_coverage(out, coverage)?;
+            Ok(false)
+        }
+        EvidenceWire::TargetSelection(selection) => {
+            print_selection(out, selection)?;
+            Ok(false)
+        }
         // The remaining variants carry no source span, so their Debug form
         // is lossless and cites no line. ponytail: Debug-based; add
         // per-variant prose if a human compact reader needs it later.
@@ -172,6 +185,161 @@ fn print_one_evidence(out: &mut impl Write, item: &EvidenceWire) -> std::io::Res
             Ok(false)
         }
     }
+}
+
+/// #96: whether every site of an incoming row lies in its source -- the
+/// caller or importer -- so the sites name that end themselves.
+fn sited_in_source(projected: &ProjectedRelationWire) -> bool {
+    let relation = &projected.relation;
+    relation.direction == DirectionWire::Incoming
+        && !relation.evidence.is_empty()
+        && projected.sites.len() == relation.evidence.len()
+        && relation
+            .evidence
+            .iter()
+            .all(|location| match relation.source {
+                GraphEndpointWire::Symbol(id) => location.containing_symbol == Some(id),
+                GraphEndpointWire::Resource(id) => {
+                    location.resource == id && location.containing_symbol.is_none()
+                }
+                _ => false,
+            })
+}
+
+/// #96: an incoming row as its sites, `Calls from path:line in Owner` --
+/// what an answer cites, with no endpoint ids to look up (`--json` keeps
+/// them). A source Symbol whose name is not confirmed keeps its id. A row
+/// whose target is not the answer's own (an impact's further hop) ends in
+/// `-> callee`.
+fn print_sources(
+    out: &mut impl Write,
+    projected: &ProjectedRelationWire,
+    callee: Option<&str>,
+) -> std::io::Result<()> {
+    let relation = &projected.relation;
+    let callee = callee.map(|name| format!(" -> {name}")).unwrap_or_default();
+    for (site, location) in projected.sites.iter().zip(&relation.evidence) {
+        let path = site
+            .path_rel
+            .clone()
+            .unwrap_or_else(|| location.resource.to_string());
+        write!(out, "{:?} from {path}:{}", relation.kind, site.line_1based)?;
+        match (&site.owner, &relation.source) {
+            (Some(owner), _) => write!(out, " in {}", owner.qualified_name)?,
+            (None, GraphEndpointWire::Symbol(id)) => write!(out, " in unnamed symbol {id}")?,
+            (None, _) => {}
+        }
+        writeln!(out, "{callee}")?;
+    }
+    Ok(())
+}
+
+/// #96: the Symbol names a page confirms -- its Symbol items and the
+/// owners of sited incoming rows -- to name a further hop's callee.
+fn page_names(items: &[DeliveredItemWire]) -> Vec<(SymbolId, String)> {
+    let mut names = Vec::new();
+    for item in items {
+        match item {
+            DeliveredItemWire::Full(EvidenceWire::Symbol(candidate)) => {
+                names.push((candidate.symbol.id, candidate.symbol.qualified_name.clone()))
+            }
+            DeliveredItemWire::Full(EvidenceWire::Relation(projected))
+                if sited_in_source(projected) =>
+            {
+                if let (GraphEndpointWire::Symbol(id), Some(owner)) = (
+                    &projected.relation.source,
+                    projected.sites.iter().find_map(|site| site.owner.as_ref()),
+                ) {
+                    names.push((*id, owner.qualified_name.clone()));
+                }
+            }
+            _ => {}
+        }
+    }
+    names
+}
+
+fn callee_label(target: &GraphEndpointWire, names: &[(SymbolId, String)]) -> String {
+    match target {
+        GraphEndpointWire::Symbol(id) => names
+            .iter()
+            .find(|(known, _)| known == id)
+            .map_or_else(|| format!("unnamed symbol {id}"), |(_, name)| name.clone()),
+        other => format!("{other:?}"),
+    }
+}
+
+/// #96: one line per coverage report; its anchor is the answer's target.
+fn print_coverage(out: &mut impl Write, coverage: &CoverageEvidenceWire) -> std::io::Result<()> {
+    let subject = match &coverage.subject {
+        CoverageSubjectWire::TargetSelection(_) => "selection".to_owned(),
+        CoverageSubjectWire::Relations {
+            direction, kinds, ..
+        } if kinds.is_empty() => format!("relations {direction:?}"),
+        CoverageSubjectWire::Relations {
+            direction, kinds, ..
+        } => format!("relations {direction:?} {kinds:?}"),
+        CoverageSubjectWire::Impact { intent, .. } => format!("impact {intent:?}"),
+        CoverageSubjectWire::RelatedTests { intent, .. } => format!("related tests {intent:?}"),
+    };
+    let state = match coverage.answer_state {
+        AnswerStateWire::Confirmed => format!("{} confirmed", coverage.confirmed),
+        other => say(present::answer_state(other)).to_owned(),
+    };
+    let limits: Vec<String> = coverage
+        .report
+        .limits
+        .iter()
+        .map(|limit| format!("{limit:?}"))
+        .collect();
+    writeln!(out, "coverage {subject}: {state}{}", parenthesized(&limits))
+}
+
+/// #96: a selection in one line. Candidates are listed whenever the
+/// choice is still open; a resolved one counts its incomplete-coverage
+/// Resources, which a miss lists by path.
+fn print_selection(out: &mut impl Write, selection: &TargetSelectionWire) -> std::io::Result<()> {
+    let open = selection.candidates.len() > 1 || !selection.last_valid.is_empty();
+    write!(
+        out,
+        "selection: {} candidate(s), {}, {:?}, {:?}",
+        selection.candidates.len(),
+        if selection.exact_selector {
+            "exact"
+        } else {
+            "not exact"
+        },
+        selection.currentness,
+        selection.source,
+    )?;
+    if selection.truncated {
+        write!(out, ", candidates truncated")?;
+    }
+    let notes = &selection.incomplete_coverage;
+    if !notes.is_empty() && !selection.candidates.is_empty() {
+        write!(
+            out,
+            ", incomplete coverage in {} resources (listed by --json)",
+            notes.len()
+        )?;
+    }
+    writeln!(out)?;
+    if open {
+        writeln!(out, "  candidates {:?}", selection.candidates)?;
+        if !selection.last_valid.is_empty() {
+            writeln!(out, "  last valid {:?}", selection.last_valid)?;
+        }
+    }
+    if selection.candidates.is_empty() {
+        for note in notes {
+            writeln!(
+                out,
+                "  incomplete coverage {} {:?}",
+                note.path_rel, note.coverage
+            )?;
+        }
+    }
+    Ok(())
 }
 
 fn print_evidence(out: &mut impl Write, items: &[EvidenceWire]) -> std::io::Result<()> {
@@ -187,10 +355,22 @@ fn print_evidence(out: &mut impl Write, items: &[EvidenceWire]) -> std::io::Resu
 
 /// Same as [`print_evidence`], for a delivery page's slots: each is
 /// either the full item or a Task 8 reuse reference in its place (#41).
-fn print_delivered_items(out: &mut impl Write, items: &[DeliveredItemWire]) -> std::io::Result<()> {
+fn print_delivered_items(
+    out: &mut impl Write,
+    items: &[DeliveredItemWire],
+    anchor: Option<&GraphEndpointWire>,
+) -> std::io::Result<()> {
+    let names = page_names(items);
     let mut source_unavailable = false;
     for item in items {
         match item {
+            DeliveredItemWire::Full(EvidenceWire::Relation(projected))
+                if sited_in_source(projected)
+                    && anchor.is_some_and(|anchor| *anchor != projected.relation.target) =>
+            {
+                let callee = callee_label(&projected.relation.target, &names);
+                print_sources(out, projected, Some(&callee))?;
+            }
             DeliveredItemWire::Full(evidence) => {
                 source_unavailable |= print_one_evidence(out, evidence)?;
             }
@@ -230,7 +410,11 @@ fn print_projected_answer(
 ) -> std::io::Result<()> {
     print_target_resolution(out, &answer.target_resolution)?;
     print_currentness(out, &answer.currentness)?;
-    print_delivered_items(out, &answer.page.evidence)?;
+    let anchor = match &answer.target_resolution {
+        TargetResolutionWire::Resolved(endpoint) => Some(endpoint),
+        _ => None,
+    };
+    print_delivered_items(out, &answer.page.evidence, anchor)?;
     print_delivery_tail(out, &answer.page, &answer.economy, &answer.continuation)
 }
 
@@ -358,14 +542,6 @@ fn print_relations_result(
     let mut source_unavailable = false;
     for item in &answer.page.evidence {
         match item {
-            DeliveredItemWire::Full(EvidenceWire::Relation(projected)) => {
-                let relation = &projected.relation;
-                writeln!(
-                    out,
-                    "{:?} {:?} {:?} -> {:?}",
-                    relation.kind, relation.direction, relation.source, relation.target
-                )?;
-            }
             DeliveredItemWire::Full(evidence) => {
                 source_unavailable |= print_one_evidence(out, evidence)?;
             }
@@ -925,6 +1101,160 @@ mod tests {
         assert!(
             unsupported.contains("Incoming: Unsupported (scope Unsupported)"),
             "{unsupported}"
+        );
+    }
+
+    /// #96: an incoming row cites each site as `Kind from path:line in Owner` -- the
+    /// caller's name, never its id -- unless the owner is unconfirmed (its id stays) or a
+    /// site is not in the source (the endpoint form stays); coverage and selection are one
+    /// line each, with the incomplete-coverage list only counted once the target resolved.
+    #[test]
+    fn compact_incoming_rows_name_their_callers() {
+        let caller = SymbolId::from_bytes([2; 16]);
+        let site = |line: usize, owner: Option<&str>| EvidenceSiteWire {
+            path_rel: Some("crates/a/src/lib.rs".to_owned()),
+            line_1based: line + 1,
+            owner: owner.map(|name| SiteOwnerWire {
+                qualified_name: name.to_owned(),
+                kind: SymbolKindWire::Function,
+            }),
+        };
+        let sited = |line: usize, owner: Option<&str>| {
+            let mut relation = call(line);
+            relation.evidence[0].containing_symbol = Some(caller);
+            EvidenceWire::Relation(ProjectedRelationWire {
+                relation,
+                sites: vec![site(line, owner)],
+            })
+        };
+        let importer = ResourceId::from_bytes([1; 16]);
+        let mut import = call(4);
+        import.kind = RelationKindWire::Imports;
+        import.source = GraphEndpointWire::Resource(importer);
+        let import = EvidenceWire::Relation(ProjectedRelationWire {
+            relation: import,
+            sites: vec![site(4, None)],
+        });
+        let unsited = EvidenceWire::Relation(ProjectedRelationWire {
+            relation: call(9),
+            sites: vec![site(9, Some("elsewhere"))],
+        });
+        let note = CoverageNoteWire {
+            resource_id: importer,
+            path_rel: "web/src/App.svelte".to_owned(),
+            coverage: StructuralCoverageWire::ContainerOnly,
+        };
+        let selection = |candidates: Vec<GraphEndpointWire>| {
+            EvidenceWire::TargetSelection(TargetSelectionWire {
+                selector: ProjectionTargetWire::Symbol(SymbolTargetWire {
+                    name: SymbolNameWire::Name("load".to_owned()),
+                    resource: None,
+                    kind: None,
+                    language: None,
+                }),
+                candidates,
+                last_valid: Vec::new(),
+                exact_selector: true,
+                truncated: false,
+                currentness: CurrentnessWire::Current,
+                source: ResultSourceWire::StructuralIndex,
+                incomplete_coverage: vec![note.clone()],
+            })
+        };
+        let coverage = EvidenceWire::Coverage(CoverageEvidenceWire {
+            subject: CoverageSubjectWire::Relations {
+                anchor: GraphEndpointWire::Symbol(SymbolId::from_bytes([3; 16])),
+                direction: DirectionWire::Incoming,
+                kinds: Vec::new(),
+            },
+            report: CoverageReportWire {
+                limits: vec![CoverageLimitWire::UnattributedGaps],
+            },
+            confirmed: 3,
+            answer_state: AnswerStateWire::Confirmed,
+        });
+        let target = GraphEndpointWire::Symbol(SymbolId::from_bytes([3; 16]));
+        let mut out = Vec::new();
+        print_evidence(
+            &mut out,
+            &[
+                coverage,
+                sited(481, Some("tests::loads")),
+                sited(214, None),
+                import,
+                unsited,
+                selection(vec![target.clone()]),
+                selection(vec![target.clone(), GraphEndpointWire::Resource(importer)]),
+                selection(Vec::new()),
+            ],
+        )
+        .expect("render");
+        let body = String::from_utf8(out).expect("utf-8");
+        let expected = [
+            "coverage relations Incoming: 3 confirmed (UnattributedGaps)".to_owned(),
+            "Calls from crates/a/src/lib.rs:482 in tests::loads".to_owned(),
+            format!("Calls from crates/a/src/lib.rs:215 in unnamed symbol {caller}"),
+            "Imports from crates/a/src/lib.rs:5".to_owned(),
+            format!(
+                "Calls Incoming {:?} -> {target:?}",
+                GraphEndpointWire::Symbol(caller)
+            ),
+            "  at crates/a/src/lib.rs:10 in elsewhere".to_owned(),
+            "selection: 1 candidate(s), exact, Current, StructuralIndex, \
+             incomplete coverage in 1 resources (listed by --json)"
+                .to_owned(),
+            "selection: 2 candidate(s), exact, Current, StructuralIndex, \
+             incomplete coverage in 1 resources (listed by --json)"
+                .to_owned(),
+            format!(
+                "  candidates {:?}",
+                [target, GraphEndpointWire::Resource(importer)]
+            ),
+            "selection: 0 candidate(s), exact, Current, StructuralIndex".to_owned(),
+            "  incomplete coverage web/src/App.svelte ContainerOnly".to_owned(),
+        ];
+        assert_eq!(body, expected.join("\n") + "\n");
+    }
+
+    /// #96: in an impact or change answer a further hop says what it calls, by the name the
+    /// page confirmed (`load` <- `stage` <- `diagnose`), and a row at the answer's own target
+    /// does not.
+    #[test]
+    fn compact_further_hops_name_their_callee() {
+        let target = SymbolId::from_bytes([3; 16]);
+        let stage = SymbolId::from_bytes([2; 16]);
+        let diagnose = SymbolId::from_bytes([5; 16]);
+        let hop = |source: SymbolId, callee: SymbolId, line: usize, owner: &str| {
+            let mut relation = call(line);
+            relation.source = GraphEndpointWire::Symbol(source);
+            relation.target = GraphEndpointWire::Symbol(callee);
+            relation.evidence[0].containing_symbol = Some(source);
+            DeliveredItemWire::Full(EvidenceWire::Relation(ProjectedRelationWire {
+                relation,
+                sites: vec![EvidenceSiteWire {
+                    path_rel: Some("crates/d/src/m.rs".to_owned()),
+                    line_1based: line + 1,
+                    owner: Some(SiteOwnerWire {
+                        qualified_name: owner.to_owned(),
+                        kind: SymbolKindWire::Function,
+                    }),
+                }],
+            }))
+        };
+        let mut out = Vec::new();
+        print_delivered_items(
+            &mut out,
+            &[
+                hop(diagnose, stage, 60, "diagnose"),
+                hop(stage, target, 713, "stage"),
+            ],
+            Some(&GraphEndpointWire::Symbol(target)),
+        )
+        .expect("render");
+        assert_eq!(
+            String::from_utf8(out).expect("utf-8"),
+            "Calls from crates/d/src/m.rs:61 in diagnose -> stage\n\
+             Calls from crates/d/src/m.rs:714 in stage\n"
         );
     }
 

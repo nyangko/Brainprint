@@ -31,9 +31,14 @@ pub struct TargetArgs {
     pub target_json: Option<String>,
 
     /// Valid only alongside a Symbol selector (`--qualified`,
-    /// `--symbol-name`, `--partial-symbol`, `--symbol-id`).
-    #[arg(long)]
+    /// `--symbol-name`, `--partial-symbol`, `--symbol-id`), as is
+    /// `--in-path`.
+    #[arg(long, conflicts_with = "in_path")]
     pub in_resource: Option<ResourceId>,
+    /// #96: `--in-resource` by workspace-relative path; the CLI resolves
+    /// it to that Resource's id before the query.
+    #[arg(long)]
+    pub in_path: Option<String>,
     #[arg(long, value_enum)]
     pub symbol_kind: Option<SymbolKindArg>,
     #[arg(long, value_enum)]

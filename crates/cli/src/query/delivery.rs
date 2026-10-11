@@ -29,11 +29,12 @@ fn budget_profile(profile: BudgetProfileArg) -> (NonZeroUsize, NonZeroUsize) {
     }
 }
 
-/// Common flags every planner-backed command requires (#24 §16, §22).
+/// Common flags every planner-backed command takes (#24 §16, §22); #96:
+/// `standard`, no retention, unless given.
 #[derive(Debug, Clone, Args)]
 pub struct DeliveryArgs {
     /// Named delivery budget profile.
-    #[arg(long, value_enum)]
+    #[arg(long, value_enum, default_value_t = BudgetProfileArg::Standard)]
     pub budget: BudgetProfileArg,
     /// Overrides the profile's `max_items` axis.
     #[arg(long)]
@@ -41,7 +42,7 @@ pub struct DeliveryArgs {
     /// Overrides the profile's `max_bytes` axis.
     #[arg(long)]
     pub budget_bytes: Option<NonZeroUsize>,
-    #[arg(long, value_enum)]
+    #[arg(long, value_enum, default_value_t = RetentionArg::Disabled)]
     pub retention: RetentionArg,
     /// Continuation token from a previous `MORE_AVAILABLE` page.
     #[arg(long)]
@@ -132,7 +133,7 @@ fn search_budget_max_file_bytes(profile: BudgetProfileArg) -> u64 {
 
 #[derive(Debug, Clone, Args)]
 pub struct SearchBudgetArgs {
-    #[arg(long = "search-budget", value_enum)]
+    #[arg(long = "search-budget", value_enum, default_value_t = BudgetProfileArg::Standard)]
     pub profile: BudgetProfileArg,
     #[arg(long)]
     pub max_results: Option<usize>,
