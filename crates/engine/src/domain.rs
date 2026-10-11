@@ -1234,7 +1234,10 @@ export function quiet(): string {
 
         fixture.publish(&["src/env.py", "src/app.ts", "src/lib.rs", "src/Loader.cs"]);
         let stored = fs::read(fixture.db_path()).expect("index.db");
-        for body in ["os.getenv(", "unwrap_or_default", "return url, again"] {
+        // #97: a Rust method call is stored by its looked-up name, like a
+        // Python or TypeScript one, so the bare identifier is no longer a
+        // sign of mirrored source; the call expression still is.
+        for body in ["os.getenv(", ".unwrap_or_default()", "return url, again"] {
             assert!(
                 !stored
                     .windows(body.len())

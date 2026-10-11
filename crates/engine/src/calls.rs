@@ -660,9 +660,38 @@ fn callee_of(node: Node<'_>, source: &[u8]) -> Callee {
                 _ => Callee::Other,
             }
         }
+        // Rust `receiver.method()`. The method name is what a reverse
+        // query looks up; the receiver is only text, and its type is what
+        // stays unknown (`resolve_member` never confirms it).
+        "field_expression" => match (
+            node.child_by_field_name("value"),
+            node.child_by_field_name("field"),
+        ) {
+            (Some(receiver), Some(member)) if member.kind() == "field_identifier" => {
+                let receiver = text_of(receiver, source);
+                let is_path = receiver
+                    .chars()
+                    .all(|c| c.is_alphanumeric() || matches!(c, '_' | '.' | ':'));
+                Callee::Member {
+                    receiver: if is_path && receiver.len() <= RECEIVER_HINT_MAX_BYTES {
+                        receiver
+                    } else {
+                        String::new()
+                    },
+                    member: text_of(member, source),
+                }
+            }
+            _ => Callee::Other,
+        },
         _ => Callee::Other,
     }
 }
+
+/// The longest receiver kept as a gap's `module_hint`, and only when it is
+/// a plain path (`self`, `self.inner`). A call result, an index or a
+/// builder chain is source text, not an identity: it is dropped and the
+/// method name alone is kept.
+const RECEIVER_HINT_MAX_BYTES: usize = 80;
 
 fn collect_bindings(
     node: Node<'_>,
@@ -844,6 +873,7 @@ mod tests {
         config::WorkspaceConfig,
         evidence::{OccurrenceRef, RelationEvidence, replace_resource_evidence},
         extract::{assign_ids, extract},
+        gaps::{UnresolvedReason, call_gaps},
         generation,
         graph::GraphStore,
         imports::{WorkspaceModules, extract_imports, resolve_imports},
@@ -1007,6 +1037,67 @@ mod tests {
                 RelationKind::Calls,
                 CallOutcome::Internal(rust.symbol("src/lib.rs", "helper"))
             )]
+        );
+    }
+
+    /// #97: `self.run()` / `p.run()` / `self.reader.run()` are method calls.
+    /// Their receiver's type is not in the syntax, so none is confirmed --
+    /// but the looked-up name and the receiver text are, so a reverse
+    /// query for `run` can tell this owner holds a candidate site.
+    #[test]
+    fn a_rust_method_call_is_unresolved_by_receiver_type_and_keeps_its_name() {
+        let scenario = Scenario::new(&[(
+            "src/lib.rs",
+            "pub struct P;\n\nimpl P {\n    pub fn run(&self) {}\n\n    \
+             pub fn go(&self, other: &P) {\n        self.run();\n        other.run();\n        \
+             self.inner.run();\n        make().run();\n    }\n}\n",
+        )]);
+
+        let calls = scenario.resolve("src/lib.rs");
+        let callees: Vec<(&Callee, &CallOutcome)> = calls
+            .iter()
+            .map(|call| (&call.site.callee, &call.outcome))
+            .collect();
+        let receiver_required = CallOutcome::Unresolved(UnresolvedCall::ReceiverTypeRequired);
+        let make = Callee::Name("make".to_owned());
+        let no_binding = CallOutcome::Unresolved(UnresolvedCall::NoStructuralBinding);
+        let member = |receiver: &str| Callee::Member {
+            receiver: receiver.to_owned(),
+            member: "run".to_owned(),
+        };
+        assert_eq!(
+            callees,
+            vec![
+                (&member("self"), &receiver_required),
+                (&member("other"), &receiver_required),
+                (&member("self.inner"), &receiver_required),
+                (&member(""), &receiver_required),
+                (&make, &no_binding),
+            ],
+            "never a confirmed edge, never a nameless site; a call-result \
+             receiver is source text and is not kept"
+        );
+
+        let gaps = call_gaps(&calls);
+        assert_eq!(
+            gaps.iter()
+                .map(|gap| (
+                    gap.lookup_name.as_str(),
+                    gap.module_hint.as_deref(),
+                    gap.reason
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                ("run", Some("self"), UnresolvedReason::ReceiverTypeRequired),
+                ("run", Some("other"), UnresolvedReason::ReceiverTypeRequired),
+                (
+                    "run",
+                    Some("self.inner"),
+                    UnresolvedReason::ReceiverTypeRequired
+                ),
+                ("run", None, UnresolvedReason::ReceiverTypeRequired),
+                ("make", None, UnresolvedReason::NoStructuralBinding),
+            ]
         );
     }
 

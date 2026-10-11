@@ -410,7 +410,10 @@ pub fn call_gaps(resolved: &[ResolvedCall]) -> Vec<UnresolvedEvidence> {
                 crate::calls::Callee::Member { receiver, member } => {
                     // The receiver is where the name was looked for, and
                     // it is a hint, never a resolved module.
-                    (member.clone(), Some(receiver.clone()))
+                    (
+                        member.clone(),
+                        Some(receiver.clone()).filter(|receiver| !receiver.is_empty()),
+                    )
                 }
                 crate::calls::Callee::Other => (String::new(), None),
             };
