@@ -11,8 +11,8 @@ use brainprint_core::{
             AckStatusWire, DeliveryBudgetWire, DeliveryWire, FindQueryWire, FindResultWire,
             GraphEndpointWire, KnowledgeResultWire, KnowledgeWire, ProjectionTargetWire,
             QueryAckRequest, QueryErrorCodeWire, QueryOperationWire, QueryOutcomeWire,
-            QueryRequest, QueryResultWire, ResourceTargetWire, RetentionWire,
-            TargetResolutionWire, WorkItemStatusWire, WorkItemWire, WorkspaceSelectorWire,
+            QueryRequest, QueryResultWire, ResourceTargetWire, RetentionWire, TargetResolutionWire,
+            WorkItemStatusWire, WorkItemWire, WorkspaceSelectorWire,
         },
     },
 };
@@ -441,7 +441,9 @@ fn unique_work_item_by_title(
     if truncated {
         return Err("work-item list was truncated; use --work-item UUID");
     }
-    let mut matches = items.iter().filter(|item| item.title.as_deref() == Some(title));
+    let mut matches = items
+        .iter()
+        .filter(|item| item.title.as_deref() == Some(title));
     let Some(first) = matches.next() else {
         return Err("no unfinished WorkItem with this exact title; use --work-item UUID");
     };
@@ -511,7 +513,10 @@ async fn work_item_for_title(common: &CommonArgs, title: &str) -> Result<WorkIte
         };
         match client::send(&mut connection, Request::QueryAck(ack_request)).await {
             Ok(Response::QueryAck(ack))
-                if matches!(ack.status, AckStatusWire::Acknowledged | AckStatusWire::AlreadyAcknowledged) => {}
+                if matches!(
+                    ack.status,
+                    AckStatusWire::Acknowledged | AckStatusWire::AlreadyAcknowledged
+                ) => {}
             Ok(_) | Err(_) => {
                 eprintln!("brainprint: work-item lookup acknowledgement failed");
                 return Err(Exit::DaemonOrProtocolFailure);
@@ -696,7 +701,10 @@ mod title_lookup_tests {
             Ok(one.uid)
         );
         assert!(unique_work_item_by_title(&[one.clone()], false, "not found").is_err());
-        assert!(unique_work_item_by_title(&[one.clone(), one.clone()], false, "now_unix_ms u128").is_err());
+        assert!(
+            unique_work_item_by_title(&[one.clone(), one.clone()], false, "now_unix_ms u128")
+                .is_err()
+        );
         assert!(unique_work_item_by_title(&[one], true, "now_unix_ms u128").is_err());
     }
 }
