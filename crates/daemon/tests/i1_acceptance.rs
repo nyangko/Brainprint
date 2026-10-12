@@ -735,11 +735,18 @@ fn context_resume_exact_title_reaches_real_daemon() {
     let start_path = start_path.to_string_lossy().into_owned();
     let start = run_cli(
         home.path(),
-        &["work", "start", "--workspace", &ws, "--input", &start_path, "--json"],
+        &[
+            "work",
+            "start",
+            "--workspace",
+            &ws,
+            "--input",
+            &start_path,
+            "--json",
+        ],
     );
     assert!(start.status.success(), "{}", stderr_of(&start));
-    let started: serde_json::Value =
-        serde_json::from_str(&stdout_of(&start)).expect("start JSON");
+    let started: serde_json::Value = serde_json::from_str(&stdout_of(&start)).expect("start JSON");
     let uid = started["Started"]["working_state"]["work_item"]
         .as_str()
         .expect("one WorkItem UUID")
@@ -760,7 +767,15 @@ fn context_resume_exact_title_reaches_real_daemon() {
     let result_path = result_path.to_string_lossy().into_owned();
     let recorded = run_cli(
         home.path(),
-        &["work", "result", "--workspace", &ws, "--input", &result_path, "--json"],
+        &[
+            "work",
+            "result",
+            "--workspace",
+            &ws,
+            "--input",
+            &result_path,
+            "--json",
+        ],
     );
     assert!(recorded.status.success(), "{}", stderr_of(&recorded));
 
@@ -768,7 +783,15 @@ fn context_resume_exact_title_reaches_real_daemon() {
     // or discover --budget/--retention flags in extra turns.
     let resumed = run_cli(
         home.path(),
-        &["context", "resume", "--title", "now_unix_ms u128", "--workspace", &ws, "--json"],
+        &[
+            "context",
+            "resume",
+            "--title",
+            "now_unix_ms u128",
+            "--workspace",
+            &ws,
+            "--json",
+        ],
     );
     assert!(
         resumed.status.success(),
@@ -778,7 +801,11 @@ fn context_resume_exact_title_reaches_real_daemon() {
     );
     let title_json: serde_json::Value =
         serde_json::from_str(&stdout_of(&resumed)).expect("title resume JSON");
-    assert!(title_json["outcome"]["Ok"].is_object(), "{}", stdout_of(&resumed));
+    assert!(
+        title_json["outcome"]["Ok"].is_object(),
+        "{}",
+        stdout_of(&resumed)
+    );
     assert!(
         stdout_of(&resumed).contains("gate handoff: inspect now_unix_ms callers"),
         "title resume must return the real saved handoff: {}",
@@ -787,7 +814,15 @@ fn context_resume_exact_title_reaches_real_daemon() {
 
     let by_id = run_cli(
         home.path(),
-        &["context", "resume", "--work-item", &uid, "--workspace", &ws, "--json"],
+        &[
+            "context",
+            "resume",
+            "--work-item",
+            &uid,
+            "--workspace",
+            &ws,
+            "--json",
+        ],
     );
     assert!(by_id.status.success(), "{}", stderr_of(&by_id));
     assert!(
@@ -797,7 +832,14 @@ fn context_resume_exact_title_reaches_real_daemon() {
 
     let missing = run_cli(
         home.path(),
-        &["context", "resume", "--title", "nonexistent item", "--workspace", &ws],
+        &[
+            "context",
+            "resume",
+            "--title",
+            "nonexistent item",
+            "--workspace",
+            &ws,
+        ],
     );
     assert!(!missing.status.success(), "missing title must fail closed");
 
