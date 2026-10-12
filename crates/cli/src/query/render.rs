@@ -570,9 +570,9 @@ fn print_relations_result(
             say(summary.direction),
             parenthesized(&relation_limits(&totals.coverage))
         )?;
-        if totals.gaps > 0 {
-            marker(out, "TRUNCATED")?;
-        }
+        // An unresolved relation is incomplete knowledge, not a truncated
+        // delivery page. Its count is already shown in the coverage summary.
+        // Only actual page omissions should print the TRUNCATED marker.
     }
     // #58: the selection list goes last; when it is not here, say why.
     match result.selection {
@@ -1034,7 +1034,7 @@ mod tests {
                 direction: DirectionWire::Incoming,
                 kinds: vec![RelationKindWire::Calls],
                 confirmed: confirmed.len(),
-                gaps: 0,
+                gaps: coverage.gaps,
                 coverage,
             }],
             selection,
@@ -1102,6 +1102,30 @@ mod tests {
             unsupported.contains("Incoming: Unsupported (scope Unsupported)"),
             "{unsupported}"
         );
+    }
+
+    /// #96: unresolved call sites do not mean the *delivery* was truncated.
+    /// The coverage status must remain Partial while a complete page without
+    /// withheld items must not instruct the agent to fetch another page.
+    #[test]
+    fn unresolved_relation_gaps_are_not_delivery_truncation() {
+        let mut unresolved = coverage(0, 0);
+        unresolved.gaps = 2;
+
+        let confirmed = relations(vec![call(3)], unresolved.clone());
+        assert!(
+            confirmed.contains("Incoming: 1 confirmed, coverage Partial (gaps 2)"),
+            "{confirmed}"
+        );
+        assert!(!confirmed.contains("TRUNCATED"), "{confirmed}");
+        assert!(!confirmed.contains("MORE_AVAILABLE"), "{confirmed}");
+
+        let none = relations(Vec::new(), unresolved);
+        assert!(
+            none.contains("Incoming: None found -- coverage incomplete (gaps 2)"),
+            "{none}"
+        );
+        assert!(!none.contains("TRUNCATED"), "{none}");
     }
 
     /// #96: an incoming row cites each site as `Kind from path:line in Owner` -- the
