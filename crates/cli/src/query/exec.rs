@@ -700,7 +700,7 @@ mod title_lookup_tests {
             unique_work_item_by_title(&[one.clone(), other], false, "now_unix_ms u128"),
             Ok(one.uid)
         );
-        assert!(unique_work_item_by_title(&[one.clone()], false, "not found").is_err());
+        assert!(unique_work_item_by_title(std::slice::from_ref(&one), false, "not found").is_err());
         assert!(
             unique_work_item_by_title(&[one.clone(), one.clone()], false, "now_unix_ms u128")
                 .is_err()
