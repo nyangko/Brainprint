@@ -2498,6 +2498,64 @@ fn resume_is_the_stored_state_without_repository_reads() {
     assert_eq!((stats.source_file_reads, stats.source_bytes), (0, 0));
 }
 
+/// #96 T7: an explicitly targeted resume is the handoff and its current
+/// declaration/callers, without a separate context change or source lookup.
+#[test]
+fn targeted_resume_supplies_current_declaration_and_direct_callers() {
+    let fixture = Fixture::standard("surface-resume-target");
+    let mine = fixture.work_item(
+        "resume target",
+        &[("src/shared.ts", WorkResourceRole::Target)],
+    );
+    let surface = surface(&fixture);
+    let mut request = fixture.request(
+        ProjectionIntent::ResumeHandoff,
+        Some(at(&fixture, "src/shared.ts", "shared")),
+    );
+    request.work_item = Some(mine);
+    let answer = surface
+        .context(
+            context_request(ctx(&fixture), &request, wide()),
+            &mut ledger(),
+        )
+        .expect("targeted resume");
+
+    assert!(has(&answer, |item| matches!(
+        item,
+        EvidenceItem::WorkItem(work) if work.uid == mine
+    )));
+    assert_eq!(anchor_sources(&answer).len(), 1);
+    assert!(anchor_sources(&answer)[0].source.contains("function shared("));
+    let calls: Vec<_> = page(&answer)
+        .iter()
+        .filter_map(|item| match item {
+            EvidenceItem::Relation(projected)
+                if projected.relation.kind == RelationKind::Calls
+                    && projected.relation.direction == Direction::Incoming =>
+            {
+                Some(projected)
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(!calls.is_empty(), "confirmed direct callers must be delivered");
+    assert!(calls.iter().all(|call| call.sites.iter().any(|site| {
+        site.path_rel.is_some() && site.line_1based > 0 && site.owner.is_some()
+    })));
+    assert!(has(&answer, |item| matches!(
+        item,
+        EvidenceItem::Coverage(coverage)
+            if matches!(
+                coverage.subject,
+                CoverageSubject::Relations {
+                    direction: Direction::Incoming,
+                    ..
+                }
+            )
+    )));
+    assert!(surface.planner_stats().source_file_reads > 0);
+}
+
 #[test]
 fn equivalent_status_sets_give_the_same_canonical_listing() {
     // #23 fix: request order/duplicates must never change the result.
