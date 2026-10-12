@@ -16,6 +16,21 @@ usual tools. `brainprint context resume` still exists but costs more than
 that read, so it is not the default.
 
 `--in-path` is optional and narrows a common name to one file. Lines are
-1-based. Every answer states its coverage. If you see `Partial`,
-`unconfirmed owners` or `TRUNCATED`, some sites may be missing, so check them
-with one text search. An answer that is complete needs no re-check.
+1-based. Every answer states its coverage. Confirmed rows are positive
+evidence; `Partial` means the list might omit other sites, not that the
+reported rows are unconfirmed.
+
+- If the task **explicitly requests confirmed sites only**, return the
+  confirmed rows with their `Partial` caveat. Do not repeat text search
+  solely because the answer is partial.
+- If the task needs **all callers**, a negative/absence claim, or a
+  change that could break an unlisted caller (especially public APIs),
+  verify with one scoped native text search and relevant tests. Never
+  treat a partial zero as proof that there are no callers. Native search
+  does not prove dynamic dispatch complete either.
+- `TRUNCATED`/`MORE_AVAILABLE` means delivery may omit items. Request
+  continuation only when those items matter; do not call the list
+  complete without them. `unconfirmed owners` are not confirmed edges.
+
+For simple known-file lookups, use native read/search first. A complete,
+current Brainprint answer needs no routine re-check.
