@@ -700,3 +700,106 @@ fn cli_dependency_excludes_engine_daemon_rusqlite() {
         );
     }
 }
+
+// -----------------------------------------------------------------------------
+// #96: real CLI + real daemon + isolated Workspace; no Claude/API required.
+// Unlike a clap-only test, this proves the new --title path actually resolves
+// the stored WorkItem and delivers the saved handoff.
+#[test]
+fn context_resume_exact_title_reaches_real_daemon() {
+    let home = ScratchDir::create("resume-title-home");
+    let workspace = ScratchDir::create("resume-title-ws");
+    real_git_repo(workspace.path());
+
+    let daemon = DaemonGuard::spawn(home.path());
+    wait_for_daemon_ready(home.path());
+    let install = run_cli(home.path(), &["install"]);
+    assert!(install.status.success(), "{}", stderr_of(&install));
+    let ws = workspace.path().to_string_lossy().into_owned();
+    let init = run_cli(home.path(), &["init", &ws]);
+    assert!(init.status.success(), "{}", stderr_of(&init));
+
+    let start_path = home.path().join("start.json");
+    let start_input = serde_json::json!({
+        "work_item": {"New": {
+            "source_kind": "UserRequest",
+            "source_ref": null,
+            "title": "now_unix_ms u128",
+            "goal": "Change now_unix_ms to u128"
+        }},
+        "head": null,
+        "git": "Observe",
+        "owner_agent": null
+    });
+    fs::write(&start_path, start_input.to_string()).expect("write WorkItem start fixture");
+    let start_path = start_path.to_string_lossy().into_owned();
+    let start = run_cli(
+        home.path(),
+        &["work", "start", "--workspace", &ws, "--input", &start_path, "--json"],
+    );
+    assert!(start.status.success(), "{}", stderr_of(&start));
+    let started: serde_json::Value =
+        serde_json::from_str(&stdout_of(&start)).expect("start JSON");
+    let uid = started["Started"]["working_state"]["work_item"]
+        .as_str()
+        .expect("one WorkItem UUID")
+        .to_owned();
+
+    let result_input = serde_json::json!({
+        "work_item": uid,
+        "outcome": "Partial",
+        "summary": "gate handoff: inspect now_unix_ms callers",
+        "commit_id": null,
+        "verification_summary": null,
+        "verification": null,
+        "git": "Observe",
+        "change_set": null
+    });
+    let result_path = home.path().join("result.json");
+    fs::write(&result_path, result_input.to_string()).expect("write handoff fixture");
+    let result_path = result_path.to_string_lossy().into_owned();
+    let recorded = run_cli(
+        home.path(),
+        &["work", "result", "--workspace", &ws, "--input", &result_path, "--json"],
+    );
+    assert!(recorded.status.success(), "{}", stderr_of(&recorded));
+
+    // The title must be enough; never require the model to query the UUID
+    // or discover --budget/--retention flags in extra turns.
+    let resumed = run_cli(
+        home.path(),
+        &["context", "resume", "--title", "now_unix_ms u128", "--workspace", &ws, "--json"],
+    );
+    assert!(
+        resumed.status.success(),
+        "exact-title resume failed: stdout={} stderr={}",
+        stdout_of(&resumed),
+        stderr_of(&resumed)
+    );
+    let title_json: serde_json::Value =
+        serde_json::from_str(&stdout_of(&resumed)).expect("title resume JSON");
+    assert!(title_json["outcome"]["Ok"].is_object(), "{}", stdout_of(&resumed));
+    assert!(
+        stdout_of(&resumed).contains("gate handoff: inspect now_unix_ms callers"),
+        "title resume must return the real saved handoff: {}",
+        stdout_of(&resumed)
+    );
+
+    let by_id = run_cli(
+        home.path(),
+        &["context", "resume", "--work-item", &uid, "--workspace", &ws, "--json"],
+    );
+    assert!(by_id.status.success(), "{}", stderr_of(&by_id));
+    assert!(
+        stdout_of(&by_id).contains("gate handoff: inspect now_unix_ms callers"),
+        "existing UUID command must retain its behavior"
+    );
+
+    let missing = run_cli(
+        home.path(),
+        &["context", "resume", "--title", "nonexistent item", "--workspace", &ws],
+    );
+    assert!(!missing.status.success(), "missing title must fail closed");
+
+    drop(daemon);
+}
