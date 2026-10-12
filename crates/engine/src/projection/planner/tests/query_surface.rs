@@ -2525,7 +2525,11 @@ fn targeted_resume_supplies_current_declaration_and_direct_callers() {
         EvidenceItem::WorkItem(work) if work.uid == mine
     )));
     assert_eq!(anchor_sources(&answer).len(), 1);
-    assert!(anchor_sources(&answer)[0].source.contains("function shared("));
+    assert!(
+        anchor_sources(&answer)[0]
+            .source
+            .contains("function shared(")
+    );
     let calls: Vec<_> = page(&answer)
         .iter()
         .filter_map(|item| match item {
@@ -2538,10 +2542,15 @@ fn targeted_resume_supplies_current_declaration_and_direct_callers() {
             _ => None,
         })
         .collect();
-    assert!(!calls.is_empty(), "confirmed direct callers must be delivered");
-    assert!(calls.iter().all(|call| call.sites.iter().any(|site| {
-        site.path_rel.is_some() && site.line_1based > 0 && site.owner.is_some()
-    })));
+    assert!(
+        !calls.is_empty(),
+        "confirmed direct callers must be delivered"
+    );
+    assert!(calls.iter().all(|call| {
+        call.sites
+            .iter()
+            .any(|site| site.path_rel.is_some() && site.line_1based > 0 && site.owner.is_some())
+    }));
     assert!(has(&answer, |item| matches!(
         item,
         EvidenceItem::Coverage(coverage)
