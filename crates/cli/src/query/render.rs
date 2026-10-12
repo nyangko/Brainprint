@@ -389,10 +389,14 @@ fn print_delivery_tail(
     economy: &DeliveryEconomyWire,
     continuation: &Option<DeliveryContinuationWire>,
 ) -> std::io::Result<()> {
-    if !economy.limiting.is_empty() || economy.more_available {
+    // Planner gaps are missing *knowledge* (e.g. unconfirmed callers),
+    // not omitted delivery units. Keep the incomplete-evidence warning,
+    // but never describe it as a truncated page (#96, r6).
+    if !page.gaps.is_empty() || !economy.limiting.is_empty() || economy.more_available {
         marker(out, "PARTIAL")?;
     }
-    if !page.gaps.is_empty() {
+    // Only the delivery's explicit omission count means this page was cut.
+    if economy.omitted_items > 0 {
         marker(out, "TRUNCATED")?;
     }
     if economy.more_available {
@@ -776,6 +780,47 @@ mod tests {
         let mut out = Vec::new();
         write_compact(&mut out, result).expect("render");
         String::from_utf8(out).expect("utf-8")
+    }
+
+    /// #96 r6: unresolved callers are an evidence gap, not a cut delivery.
+    /// A real omitted optional unit still prints TRUNCATED.
+    #[test]
+    fn compact_delivery_tail_distinguishes_gaps_from_omitted_items() {
+        let unknown = StageAmountWire {
+            items: MeasureWire::NotMeasured,
+            bytes: MeasureWire::NotMeasured,
+            tokens: MeasureWire::NotMeasured,
+        };
+        let mut page = DeliveryPageWire {
+            evidence: Vec::new(),
+            gaps: vec![ProjectionGapWire::UnconfirmedCallerOwners(2)],
+            used_items: 0,
+            used_bytes: 0,
+        };
+        let mut economy = DeliveryEconomyWire {
+            raw_available: unknown,
+            prepared: unknown,
+            delivered: unknown,
+            omitted_items: 0,
+            more_available: false,
+            limiting: Vec::new(),
+            continuation_unavailable: None,
+        };
+        let text = |page: &DeliveryPageWire, economy: &DeliveryEconomyWire| {
+            let mut out = Vec::new();
+            print_delivery_tail(&mut out, page, economy, &None).expect("render");
+            String::from_utf8(out).expect("utf8")
+        };
+        assert_eq!(text(&page, &economy), "PARTIAL\n");
+
+        economy.omitted_items = 3;
+        economy.more_available = true;
+        assert_eq!(text(&page, &economy), "PARTIAL\nTRUNCATED\nMORE_AVAILABLE\n");
+
+        page.gaps.clear();
+        economy.omitted_items = 0;
+        economy.more_available = false;
+        assert_eq!(text(&page, &economy), "");
     }
 
     /// #76: the shared compact renderer (CLI, TUI, Web) cites 1-based editor lines for a
