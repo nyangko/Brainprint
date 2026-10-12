@@ -815,7 +815,10 @@ mod tests {
 
         economy.omitted_items = 3;
         economy.more_available = true;
-        assert_eq!(text(&page, &economy), "PARTIAL\nTRUNCATED\nMORE_AVAILABLE\n");
+        assert_eq!(
+            text(&page, &economy),
+            "PARTIAL\nTRUNCATED\nMORE_AVAILABLE\n"
+        );
 
         page.gaps.clear();
         economy.omitted_items = 0;
