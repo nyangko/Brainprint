@@ -4,14 +4,15 @@
 use std::num::NonZeroUsize;
 
 use brainprint_core::{
-    ResourceId,
+    ResourceId, WorkItemId,
     protocol::{
         Request, Response,
         query::{
             AckStatusWire, DeliveryBudgetWire, DeliveryWire, FindQueryWire, FindResultWire,
-            GraphEndpointWire, ProjectionTargetWire, QueryAckRequest, QueryErrorCodeWire,
-            QueryOperationWire, QueryOutcomeWire, QueryRequest, QueryResultWire,
-            ResourceTargetWire, RetentionWire, TargetResolutionWire, WorkspaceSelectorWire,
+            GraphEndpointWire, KnowledgeResultWire, KnowledgeWire, ProjectionTargetWire,
+            QueryAckRequest, QueryErrorCodeWire, QueryOperationWire, QueryOutcomeWire,
+            QueryRequest, QueryResultWire, ResourceTargetWire, RetentionWire,
+            TargetResolutionWire, WorkItemStatusWire, WorkItemWire, WorkspaceSelectorWire,
         },
     },
 };
@@ -431,7 +432,110 @@ async fn run_context_change(args: ContextChangeArgs) -> Exit {
     .await
 }
 
+/// Exact title lookup; never silently choose one of multiple WorkItems.
+fn unique_work_item_by_title(
+    items: &[WorkItemWire],
+    truncated: bool,
+    title: &str,
+) -> Result<WorkItemId, &'static str> {
+    if truncated {
+        return Err("work-item list was truncated; use --work-item UUID");
+    }
+    let mut matches = items.iter().filter(|item| item.title.as_deref() == Some(title));
+    let Some(first) = matches.next() else {
+        return Err("no unfinished WorkItem with this exact title; use --work-item UUID");
+    };
+    if matches.next().is_some() {
+        return Err("multiple unfinished WorkItems have this title; use --work-item UUID");
+    }
+    Ok(first.uid)
+}
+
+/// Resolve a title within the same Workspace before a single resume call.
+/// The intermediary WorkItem list is never printed into the agent's context.
+async fn work_item_for_title(common: &CommonArgs, title: &str) -> Result<WorkItemId, Exit> {
+    let mut connection = client::connect_and_handshake().await.map_err(|error| {
+        eprintln!("brainprint: {error}");
+        Exit::DaemonOrProtocolFailure
+    })?;
+    let request_id = uuid::Uuid::new_v4().to_string();
+    let request = QueryRequest {
+        request_id: request_id.clone(),
+        workspace: WorkspaceSelectorWire::Locator {
+            path: absolute_workspace(&common.workspace),
+        },
+        correlation: common.correlation(),
+        operation: QueryOperationWire::Knowledge(KnowledgeWire::WorkItems {
+            statuses: vec![
+                WorkItemStatusWire::Open,
+                WorkItemStatusWire::Active,
+                WorkItemStatusWire::Blocked,
+                WorkItemStatusWire::Paused,
+            ],
+            limit: NonZeroUsize::new(128).expect("128 is nonzero"),
+        }),
+    };
+    let response = match client::send(&mut connection, Request::Query(request)).await {
+        Ok(Response::Query(response)) => response,
+        Ok(_) => {
+            eprintln!("brainprint: unexpected response to work-item title lookup");
+            return Err(Exit::DaemonOrProtocolFailure);
+        }
+        Err(error) => {
+            eprintln!("brainprint: {error}");
+            return Err(Exit::DaemonOrProtocolFailure);
+        }
+    };
+    let selected = match &response.outcome {
+        QueryOutcomeWire::Ok(QueryResultWire::Knowledge(KnowledgeResultWire::WorkItems {
+            items,
+            truncated,
+        })) => unique_work_item_by_title(items, *truncated, title).map_err(|message| {
+            eprintln!("brainprint: {message}");
+            Exit::CliSyntax
+        }),
+        QueryOutcomeWire::Err(error) => {
+            eprintln!("brainprint: {:?}: {}", error.code, error.message);
+            Err(exit_for_code(error.code))
+        }
+        _ => {
+            eprintln!("brainprint: unexpected query result for work-item title lookup");
+            Err(Exit::DaemonOrProtocolFailure)
+        }
+    };
+    if let Some(ack_token) = response.ack_token {
+        let ack_request = QueryAckRequest {
+            request_id,
+            workspace_id: response.workspace_id,
+            ack_token,
+        };
+        match client::send(&mut connection, Request::QueryAck(ack_request)).await {
+            Ok(Response::QueryAck(ack))
+                if matches!(ack.status, AckStatusWire::Acknowledged | AckStatusWire::AlreadyAcknowledged) => {}
+            Ok(_) | Err(_) => {
+                eprintln!("brainprint: work-item lookup acknowledgement failed");
+                return Err(Exit::DaemonOrProtocolFailure);
+            }
+        }
+    }
+    selected
+}
+
 async fn run_context_resume(args: ContextResumeArgs) -> Exit {
+    let work_item = match (args.work_item, args.title.as_deref()) {
+        (Some(id), None) => id,
+        (None, Some(title)) if !title.is_empty() => {
+            match work_item_for_title(&args.common, title).await {
+                Ok(id) => id,
+                Err(exit) => return exit,
+            }
+        }
+        _ => {
+            return syntax_exit(CliSyntaxError(
+                "provide exactly one of --work-item UUID or --title EXACT_TITLE".to_owned(),
+            ));
+        }
+    };
     let target = if args.target.resource_id.is_none()
         && args.target.resource_path.is_none()
         && args.target.resource_basename.is_none()
@@ -460,7 +564,7 @@ async fn run_context_resume(args: ContextResumeArgs) -> Exit {
     run(
         &args.common,
         QueryOperationWire::Context(brainprint_core::protocol::query::ContextWire::Resume {
-            work_item: args.work_item,
+            work_item,
             target,
             scope_layers: knowledge.scope_layers,
             directives: knowledge.directives,
@@ -564,4 +668,35 @@ pub async fn run_structure(args: StructureArgs) -> Exit {
         }),
     )
     .await
+}
+
+#[cfg(test)]
+mod title_lookup_tests {
+    use super::*;
+
+    fn item(id: u8, title: &str) -> WorkItemWire {
+        WorkItemWire {
+            uid: WorkItemId::from_bytes([id; 16]),
+            source_kind: brainprint_core::protocol::query::WorkItemSourceKindWire::UserRequest,
+            source_ref: None,
+            title: Some(title.to_owned()),
+            goal: "test".to_owned(),
+            status: WorkItemStatusWire::Active,
+            created_at: "2026-10-12".to_owned(),
+            closed_at: None,
+        }
+    }
+
+    #[test]
+    fn exact_title_selects_one_without_guessing() {
+        let one = item(1, "now_unix_ms u128");
+        let other = item(2, "unrelated");
+        assert_eq!(
+            unique_work_item_by_title(&[one.clone(), other], false, "now_unix_ms u128"),
+            Ok(one.uid)
+        );
+        assert!(unique_work_item_by_title(&[one.clone()], false, "not found").is_err());
+        assert!(unique_work_item_by_title(&[one.clone(), one.clone()], false, "now_unix_ms u128").is_err());
+        assert!(unique_work_item_by_title(&[one], true, "now_unix_ms u128").is_err());
+    }
 }

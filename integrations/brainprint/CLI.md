@@ -8,8 +8,11 @@ Use native read/search for files and text. Use `brainprint` CLI only for:
   `brainprint context change --symbol-name NAME --in-path FILE --change public-signature`
 - Project rules: `brainprint knowledge rules`
 
-For resuming, read `WORKING_STATE.md` with native tools if present.
-`brainprint context resume` exists, but is not the economic default.
+For resuming, read `WORKING_STATE.md` natively if present. Otherwise
+resume a unique unfinished WorkItem by its exact title in **one CLI call**:
+`brainprint context resume --title "EXACT WORK ITEM TITLE"`
+Use `--work-item UUID` only if known. If titles are ambiguous, specify UUID.
+Resume returns the handoff; use native search for current source/callers.
 
 `--in-path` disambiguates; lines are 1-based. Coverage rules:
 - `Partial` may omit sites; confirmed rows remain valid. For **explicitly

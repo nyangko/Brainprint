@@ -321,8 +321,12 @@ pub struct ContextChangeArgs {
 
 #[derive(Debug, Args)]
 pub struct ContextResumeArgs {
-    #[arg(long = "work-item")]
-    pub work_item: WorkItemId,
+    /// Exact WorkItem ID, if already known.
+    #[arg(long = "work-item", conflicts_with = "title")]
+    pub work_item: Option<WorkItemId>,
+    /// Exact title of one unfinished WorkItem; resolved internally.
+    #[arg(long, conflicts_with = "work_item")]
+    pub title: Option<String>,
     #[command(flatten)]
     pub target: TargetArgs,
     #[command(flatten)]
