@@ -397,7 +397,8 @@ impl ProjectionPlanner {
             ProjectionIntent::Relations => {
                 request.relations.directions.contains(&Direction::Incoming)
             }
-            ProjectionIntent::Locate | ProjectionIntent::ResumeHandoff => false,
+            ProjectionIntent::ResumeHandoff => selected.is_some(),
+            ProjectionIntent::Locate => false,
         };
         let mut owners = None;
         if callers
@@ -458,6 +459,19 @@ impl ProjectionPlanner {
                 }
             }
             ProjectionIntent::ResumeHandoff => {
+                // A plain resume must stay state-only. When the caller names
+                // a target, include its current declaration and confirmed
+                // direct callers in the same on-demand response (#96 T7).
+                if let Some(selected) = &selected {
+                    plan.require_declarations(selected);
+                    self.direct(
+                        &selected.endpoint,
+                        &[Direction::Incoming],
+                        &[RelationKind::Calls],
+                        owners,
+                        &mut plan,
+                    )?;
+                }
                 self.knowledge(request, context, &mut plan)?;
                 if let Some(work_item) = request.work_item {
                     self.work(work_item, &mut plan)?;
