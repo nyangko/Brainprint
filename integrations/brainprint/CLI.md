@@ -12,7 +12,10 @@ For resuming, read `WORKING_STATE.md` natively if present. Otherwise
 resume a unique unfinished WorkItem by its exact title in **one CLI call**:
 `brainprint context resume --title "EXACT WORK ITEM TITLE"`
 Use `--work-item UUID` only if known. If titles are ambiguous, specify UUID.
-Resume returns the handoff; use native search for current source/callers.
+For a task that also requests the **current target signature/callers**, add
+`--symbol-name NAME --in-path FILE` to the same resume command; without a
+target it remains state-only. An incomplete caller list still needs scoped
+native verification before claiming **every** caller.
 
 `--in-path` disambiguates; lines are 1-based. Coverage rules:
 - `Partial` may omit sites; confirmed rows remain valid. For **explicitly
