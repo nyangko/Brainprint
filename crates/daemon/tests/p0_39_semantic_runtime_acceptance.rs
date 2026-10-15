@@ -28,8 +28,7 @@ use brainprint_core::{
     PROTOCOL_VERSION, WorkspaceId,
     protocol::{
         self, ClientConnection, HandshakeRequest, InitRequest, InitResponse, Request, Response,
-        query::*,
-        work::*,
+        query::*, work::*,
     },
 };
 use brainprint_daemon::{
