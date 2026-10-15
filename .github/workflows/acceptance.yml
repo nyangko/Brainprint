@@ -64,6 +64,20 @@ jobs:
       # Already covered by the workspace run above; named separately so
       # a milestone acceptance failure is legible in the CI summary
       # instead of being one line inside 600 tests.
+      # #99: the generic workspace suite compiles but does not RUN ignored
+      # real-rust-analyzer tests; make the targeted Resume gate observable.
+      # One OS is sufficient here; normal correctness runs on all three.
+      - name: Install rust-analyzer for targeted Resume integration
+        if: matrix.os == 'ubuntu-latest'
+        run: rustup component add rust-analyzer
+
+      - name: P0 targeted Resume cold/warm semantic integration
+        if: matrix.os == 'ubuntu-latest'
+        timeout-minutes: 12
+        run: |
+          rustup which rust-analyzer
+          cargo test -p brainprint-daemon --locked --test p0_39_semantic_runtime_acceptance cold_targeted_resume_activates_semantic_callers_without_prior_relation_query -- --ignored --exact --nocapture
+
       - name: I2 acceptance
         run: cargo test -p brainprint-engine --locked --test i2_acceptance
 

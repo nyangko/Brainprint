@@ -918,6 +918,17 @@ fn clone_core_error(
     }
 }
 
+/// A state-only resume needs no backend; a targeted resume needs the
+/// same lazy semantic caller enrichment as change context.
+fn semantic_target_for_context(
+    purpose: &ContextPurpose,
+) -> Option<&brainprint_engine::projection::ProjectionTarget> {
+    match purpose {
+        ContextPurpose::Change { target, .. } => Some(target),
+        ContextPurpose::Resume { target, .. } => target.as_ref(),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_query(
     surface: &CoreQuerySurface,
@@ -940,10 +951,9 @@ fn run_query(
             convert_in::ConvertedOperation::Inspect(request) => Some(&request.target),
             convert_in::ConvertedOperation::Relations(request) => Some(&request.target),
             convert_in::ConvertedOperation::Impact(request) => Some(&request.target),
-            convert_in::ConvertedOperation::Context(request) => match &request.purpose {
-                ContextPurpose::Change { target, .. } => Some(target),
-                ContextPurpose::Resume { .. } => None,
-            },
+            convert_in::ConvertedOperation::Context(request) => {
+                semantic_target_for_context(&request.purpose)
+            }
             _ => None,
         };
         // The callers' owners are re-checked only for an operation whose
@@ -1065,5 +1075,48 @@ mod freshness_tests {
 
         freshness_barrier(WorkspaceId::generate(), false, &mut lifecycle)
             .expect("Knowledge-style queries do not require structural currentness");
+    }
+}
+
+#[cfg(test)]
+mod semantic_target_tests {
+    use brainprint_engine::projection::{ProjectionTarget, SymbolName, SymbolTarget};
+
+    use super::{ContextPurpose, semantic_target_for_context};
+
+    fn target() -> ProjectionTarget {
+        ProjectionTarget::Symbol(SymbolTarget::new(SymbolName::Name(
+            "now_unix_ms".to_owned(),
+        )))
+    }
+
+    #[test]
+    fn targeted_resume_requests_lazy_semantic_enrichment() {
+        let symbol = target();
+        let resume = ContextPurpose::Resume {
+            work_item: brainprint_core::WorkItemId::generate(),
+            target: Some(symbol.clone()),
+        };
+        assert_eq!(semantic_target_for_context(&resume), Some(&symbol));
+    }
+
+    #[test]
+    fn state_only_resume_does_not_request_semantics() {
+        let resume = ContextPurpose::Resume {
+            work_item: brainprint_core::WorkItemId::generate(),
+            target: None,
+        };
+        assert!(semantic_target_for_context(&resume).is_none());
+    }
+
+    #[test]
+    fn change_context_keeps_existing_semantic_target() {
+        let symbol = target();
+        let change = ContextPurpose::Change {
+            target: symbol.clone(),
+            change: None,
+            work_item: None,
+        };
+        assert_eq!(semantic_target_for_context(&change), Some(&symbol));
     }
 }

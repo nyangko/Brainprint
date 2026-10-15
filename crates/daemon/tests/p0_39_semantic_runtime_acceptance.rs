@@ -28,7 +28,7 @@ use brainprint_core::{
     PROTOCOL_VERSION, WorkspaceId,
     protocol::{
         self, ClientConnection, HandshakeRequest, InitRequest, InitResponse, Request, Response,
-        query::*,
+        query::*, work::*,
     },
 };
 use brainprint_daemon::{
@@ -1665,5 +1665,111 @@ async fn brainprints_own_macro_calls_resolve_through_the_product_path() {
         "the grep-verified callers, and no false one"
     );
 
+    daemon.stop().await;
+}
+
+/// #99: the very first targeted Resume must take the same lazy semantic
+/// path as an incoming relation query. A plain state-only Resume must not
+/// launch rust-analyzer. Run explicitly with a trusted pinned backend.
+#[tokio::test]
+#[ignore = "requires a real installed rust-analyzer; run explicitly"]
+async fn cold_targeted_resume_activates_semantic_callers_without_prior_relation_query() {
+    let Some(executable) = rust_analyzer() else {
+        return;
+    };
+    let home = Home::new("targeted-resume-rust");
+    home.config(&format!(
+        "\n[semantic_backends.rust]\nexecutable = \"{}\"\n",
+        executable.display()
+    ));
+    let root = home.workspace("ws", "rust-semantic-spike");
+    workspace_config(&root, "project_execution_trust = \"Trusted\"\n");
+    let daemon = Daemon::start(&home.global).await;
+    let workspace = daemon.init(&root).await;
+
+    let result = send(
+        &mut daemon.connect().await,
+        Request::Work(WorkRequest {
+            workspace: WorkspaceSelectorWire::Id {
+                workspace_id: workspace,
+            },
+            operation: WorkOperationWire::Start(WorkStartWire {
+                work_item: WorkStartItemWire::New(NewWorkItemWire {
+                    source_kind: WorkItemSourceKindWire::Issue,
+                    source_ref: Some("#99".to_owned()),
+                    title: Some("target_probe caller change".to_owned()),
+                    goal: "Resume caller inspection".to_owned(),
+                }),
+                head: None,
+                git: GitObservationWire::Unknown,
+                owner_agent: None,
+            }),
+        }),
+    )
+    .await;
+    let Response::Work(WorkResponse::Started(started)) = result else {
+        panic!("could not start WorkItem: {result:?}");
+    };
+    let work_item = started.working_state.work_item;
+    let context = |target| {
+        QueryOperationWire::Context(ContextWire::Resume {
+            work_item,
+            target,
+            scope_layers: Vec::new(),
+            directives: Vec::new(),
+            knowledge_refs: ProjectionKnowledgeRefsWire::default(),
+            delivery: delivery(),
+        })
+    };
+
+    // WorkItem state alone must not turn on the semantic runtime.
+    let state_only = daemon.query(workspace, context(None)).await;
+    assert!(matches!(state_only, QueryResultWire::Context(_)));
+    assert_eq!(daemon.semantic(workspace).await.backend_starts, 0);
+
+    // Pin structurally without issuing an incoming relation query first.
+    let target = structural_target_for(
+        &root,
+        "target_probe",
+        ResourceLanguageWire::Rust,
+        Some("crates/core/src/target_probe.rs"),
+    );
+    assert_eq!(daemon.semantic(workspace).await.backend_starts, 0);
+
+    let cold = daemon.query(workspace, context(Some(target.clone()))).await;
+    let QueryResultWire::Context(cold_answer) = cold else {
+        panic!("targeted resume did not return Context");
+    };
+    assert!(matches!(
+        cold_answer.target_resolution,
+        TargetResolutionWire::Resolved(_)
+    ));
+    let stats = daemon.semantic(workspace).await;
+    assert_eq!(
+        stats.backend_starts, 1,
+        "cold targeted Resume must request semantic enrichment: {stats:?}"
+    );
+    let confirmed_calls = cold_answer
+        .page
+        .evidence
+        .iter()
+        .filter(|item| {
+            matches!(
+                item,
+                DeliveredItemWire::Full(EvidenceWire::Relation(relation))
+                    if relation.relation.kind == RelationKindWire::Calls
+            )
+        })
+        .count();
+    assert!(
+        confirmed_calls > 0 || !cold_answer.page.gaps.is_empty(),
+        "no caller evidence and no explicit gap: {cold_answer:?}"
+    );
+
+    // Repeating the same targeted request must reuse the daemon-owned
+    // backend; this does not claim every candidate is already resolved.
+    let warm = daemon.query(workspace, context(Some(target))).await;
+    assert!(matches!(warm, QueryResultWire::Context(_)));
+    assert_eq!(daemon.semantic(workspace).await.backend_starts, 1);
     daemon.stop().await;
 }
