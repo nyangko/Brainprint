@@ -953,7 +953,7 @@ fn run_query(
             convert_in::ConvertedOperation::Impact(request) => Some(&request.target),
             convert_in::ConvertedOperation::Context(request) => {
                 semantic_target_for_context(&request.purpose)
-            },
+            }
             _ => None,
         };
         // The callers' owners are re-checked only for an operation whose
@@ -1085,7 +1085,9 @@ mod semantic_target_tests {
     use super::{ContextPurpose, semantic_target_for_context};
 
     fn target() -> ProjectionTarget {
-        ProjectionTarget::Symbol(SymbolTarget::new(SymbolName::Name("now_unix_ms".to_owned())))
+        ProjectionTarget::Symbol(SymbolTarget::new(SymbolName::Name(
+            "now_unix_ms".to_owned(),
+        )))
     }
 
     #[test]
